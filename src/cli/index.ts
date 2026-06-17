@@ -4,6 +4,7 @@ import { getPackageVersion } from "../lib/version.js";
 import { DispatchClient } from "../sdk/index.js";
 import type { DispatchOptions } from "../types.js";
 import { formatRecord, formatSchedule, resolvePrompt } from "./format.js";
+import { registerDaemonCommands } from "./daemon-commands.js";
 
 export interface CliDeps {
   /** Factory for the client; when provided, the CLI will NOT close it (tests own it). */
@@ -146,6 +147,8 @@ export function buildProgram(deps: CliDeps = {}): Command {
         process.exitCode = 1;
       }
     });
+
+  registerDaemonCommands(program, { out, err });
 
   return program;
 }
