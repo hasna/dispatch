@@ -5,6 +5,8 @@ import { DispatchClient } from "../sdk/index.js";
 import type { DispatchOptions } from "../types.js";
 import { formatRecord, formatSchedule, resolvePrompt } from "./format.js";
 import { registerDaemonCommands } from "./daemon-commands.js";
+import { Tmux } from "../lib/tmux.js";
+import { createRunner } from "../lib/runner.js";
 
 export interface CliDeps {
   /** Factory for the client; when provided, the CLI will NOT close it (tests own it). */
@@ -94,6 +96,23 @@ export function buildProgram(deps: CliDeps = {}): Command {
         out("no dispatches yet");
       } else {
         for (const r of rows) out(formatRecord(r));
+      }
+    });
+
+  program
+    .command("targets")
+    .description("List dispatchable tmux targets (panes) on a machine")
+    .option("-m, --machine <id>", "machine to enumerate (local when omitted)")
+    .option("--json", "output JSON")
+    .action(async (opts) => {
+      const tmux = new Tmux(await createRunner(opts.machine));
+      const targets = tmux.listTargets();
+      if (opts.json) {
+        out(JSON.stringify(targets, null, 2));
+      } else if (targets.length === 0) {
+        out("no tmux targets found");
+      } else {
+        for (const t of targets) out(`${t.active ? "▸" : " "} ${t.target}  (${t.window})`);
       }
     });
 

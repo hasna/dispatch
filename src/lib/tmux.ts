@@ -83,6 +83,27 @@ export class Tmux {
     return res.stdout;
   }
 
+  /**
+   * Enumerate dispatchable targets (every pane across all sessions) on this
+   * machine, so an agent can discover where to send a prompt.
+   */
+  listTargets(): { target: string; window: string; active: boolean }[] {
+    const res = this.tmux([
+      "list-panes",
+      "-a",
+      "-F",
+      "#{session_name}:#{window_index}.#{pane_index}\t#{window_name}\t#{pane_active}",
+    ]);
+    if (res.exitCode !== 0) return [];
+    return res.stdout
+      .split("\n")
+      .filter((l) => l.trim().length > 0)
+      .map((line) => {
+        const [target = "", window = "", active = "0"] = line.split("\t");
+        return { target, window, active: active.trim() === "1" };
+      });
+  }
+
   /** Read a pane property via display-message, e.g. "pane_in_mode". */
   paneProperty(target: string, property: string): string {
     const res = this.tmux(["display-message", "-p", "-t", target, `#{${property}}`]);

@@ -98,8 +98,10 @@ export interface StartDaemonResult {
  * `daemon run`. Idempotent: returns `alreadyRunning` if one is up.
  */
 export async function startDaemon(opts: {
-  /** Path to the CLI entry to re-invoke (usually process.argv[1]). */
+  /** Path to the entry to launch (usually process.argv[1] for the CLI). */
   cliEntry: string;
+  /** Args after the entry. Default ["daemon", "run"] (the CLI path). */
+  args?: string[];
   execPath?: string;
   pidPath?: string;
   logPath?: string;
@@ -114,7 +116,7 @@ export async function startDaemon(opts: {
   const logPath = opts.logPath ?? daemonLogPath();
   const sleep = opts.sleep ?? realSleep;
   const out = openSync(logPath, "a");
-  const child = spawn(opts.execPath ?? process.execPath, [opts.cliEntry, "daemon", "run"], {
+  const child = spawn(opts.execPath ?? process.execPath, [opts.cliEntry, ...(opts.args ?? ["daemon", "run"])], {
     detached: true,
     stdio: ["ignore", out, out],
   });
