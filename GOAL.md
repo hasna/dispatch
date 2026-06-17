@@ -60,12 +60,17 @@ machines. `open-dispatch` makes this a first-class, reliable tool.
   tasks one by one, verifying each. Keep todos + the conversations space updated.
 
 ## Done when (all verified, not assumed)
-- [ ] `bun run build` clean; full `bun test` green (nothing skipped).
-- [ ] `dispatch send` reliably delivers a prompt to a tmux window AND auto-submits it, **verified with
-      a long multi-paragraph prompt** (no premature submit, no mangling), with delivery confirmed.
-- [ ] Delivery-confirmation reports delivered/not-delivered correctly (test against a real tmux pane).
-- [ ] Scheduled dispatch fires at the scheduled time; daemon runs and survives restart.
-- [ ] Cross-machine dispatch works (or is fully wired + tested against `@hasna/machines` with a real
-      second host when reachable; otherwise a tested integration with a clear note).
-- [ ] Published: `npm view @hasna/dispatch` shows it; installs + runs. GitHub hasna/dispatch is public.
-- [ ] todos plan complete; final summary posted to the conversations space.
+- [x] `bun run build` clean; full `bun test` green (nothing skipped). — 140 tests pass across 23 files.
+- [x] `dispatch send` reliably delivers a prompt to a tmux window AND auto-submits it, **verified with
+      a long multi-paragraph prompt** (no premature submit, no mangling), with delivery confirmed. —
+      `src/e2e.integration.test.ts` records a 5-paragraph prompt byte-for-byte off a real pane; verified
+      again against the built `dist` CLI.
+- [x] Delivery-confirmation reports delivered/not-delivered correctly (test against a real tmux pane). —
+      `src/lib/confirm.integration.test.ts` (working-state detected vs unsent prompt).
+- [x] Scheduled dispatch fires at the scheduled time; daemon runs and survives restart. —
+      `src/daemon/daemon.integration.test.ts` (fires + delivers; schedule survives a full daemon restart).
+- [x] Cross-machine dispatch works. — `src/cross-machine.integration.test.ts` dispatches to a tmux pane
+      on **spark01** over Tailscale via `@hasna/machines`; delivered + confirmed.
+- [x] Published: `npm view @hasna/dispatch` shows `0.0.1`; installs + runs (verified on spark02 + apple03).
+      GitHub **hasna/dispatch** is public (default branch `main`).
+- [x] todos plan complete; final summary posted to the conversations space.
