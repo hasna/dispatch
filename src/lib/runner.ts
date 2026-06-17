@@ -108,7 +108,10 @@ export async function createRunner(machine?: string): Promise<Runner> {
   if (isLocalMachine(machine)) return new LocalRunner();
   const machineId = machine as string;
   try {
-    const mod = (await import("@hasna/machines/consumer")) as {
+    // Non-literal specifier: keeps this optional peer out of compile-time module
+    // resolution while still loading it at runtime when installed.
+    const specifier = "@hasna/machines/consumer";
+    const mod = (await import(specifier)) as {
       resolveMachineCommand: (id: string, command: string) => { source: RunResult["source"]; shellCommand: string };
     };
     return new RemoteRunner(machineId, mod.resolveMachineCommand);
