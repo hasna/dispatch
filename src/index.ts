@@ -14,6 +14,8 @@ export { performDispatch, chooseMode, PASTE_LENGTH_THRESHOLD } from "./lib/engin
 export { computeSubmitDelay, countWords } from "./lib/delay.js";
 export { evaluateDelivery, confirmDelivery, detectWorking, DEFAULT_WORKING_PATTERNS } from "./lib/confirm.js";
 export { computeNextRun, parseCron, nextCronRun } from "./lib/schedule.js";
+export { tick } from "./lib/scheduler.js";
+export type { SchedulerDeps, TickResult } from "./lib/scheduler.js";
 export { Tmux, parseTarget, formatTarget } from "./lib/tmux.js";
 export { Store } from "./lib/store.js";
 export { createRunner, LocalRunner, RemoteRunner } from "./lib/runner.js";
