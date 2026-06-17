@@ -1,14 +1,22 @@
 {
   "name": "@hasna/dispatch",
   "version": "0.0.1",
-  "description": "Dispatch prompts to coding agents in tmux windows — reliable auto-submit, long-prompt support, delivery confirmation, scheduled + cross-machine dispatch. CLI + MCP + SDK + daemon.",
-  "type": "module",
+  "author": "Andrei Hasna <andrei@hasna.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hasna/dispatch.git"
+  },
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "bin": {
-    "dispatch": "dist/cli/index.js",
-    "dispatch-mcp": "dist/mcp/index.js",
-    "dispatch-daemon": "dist/daemon/index.js"
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "chalk": "^5.6.2",
+    "commander": "^13.1.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.4",
+    "bun-types": "1.3.9",
+    "typescript": "^5.7.3"
   },
   "exports": {
     ".": {
@@ -24,21 +32,24 @@
       "import": "./dist/mcp/index.js"
     }
   },
+  "bin": {
+    "dispatch": "dist/cli/index.js",
+    "dispatch-mcp": "dist/mcp/index.js",
+    "dispatch-daemon": "dist/daemon/index.js"
+  },
+  "bugs": {
+    "url": "https://github.com/hasna/dispatch/issues"
+  },
+  "description": "Dispatch prompts to coding agents in tmux windows — reliable auto-submit, long-prompt support, delivery confirmation, scheduled + cross-machine dispatch. CLI + MCP + SDK + daemon.",
+  "engines": {
+    "bun": ">=1.0.0"
+  },
   "files": [
     "dist",
     "LICENSE",
     "README.md"
   ],
-  "scripts": {
-    "build": "rm -rf dist && bun build src/cli/index.ts --outdir dist/cli --target bun --external @modelcontextprotocol/sdk --external @hasna/machines && bun build src/mcp/index.ts --outdir dist/mcp --target bun --external @modelcontextprotocol/sdk --external @hasna/machines && bun build src/daemon/index.ts --outdir dist/daemon --target bun --external @hasna/machines && bun build src/sdk/index.ts --outdir dist/sdk --target bun --external @hasna/machines && bun build src/index.ts --outdir dist --target bun --external @hasna/machines && tsc --emitDeclarationOnly --outDir dist",
-    "typecheck": "tsc --noEmit",
-    "test": "bun test",
-    "dev:cli": "bun run src/cli/index.ts",
-    "dev:mcp": "bun run src/mcp/index.ts",
-    "dev:daemon": "bun run src/daemon/index.ts",
-    "prepublishOnly": "bun run build",
-    "postinstall": "mkdir -p $HOME/.hasna/dispatch 2>/dev/null || true"
-  },
+  "homepage": "https://github.com/hasna/dispatch",
   "keywords": [
     "tmux",
     "dispatch",
@@ -51,35 +62,24 @@
     "automation",
     "ssh"
   ],
+  "license": "Apache-2.0",
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
     "access": "public"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/hasna/dispatch.git"
+  "scripts": {
+    "build": "rm -rf dist && bun build src/cli/index.ts --outdir dist/cli --target bun --external @modelcontextprotocol/sdk --external @hasna/machines && bun build src/mcp/index.ts --outdir dist/mcp --target bun --external @modelcontextprotocol/sdk --external @hasna/machines && bun build src/daemon/index.ts --outdir dist/daemon --target bun --external @hasna/machines && bun build src/sdk/index.ts --outdir dist/sdk --target bun --external @hasna/machines && bun build src/index.ts --outdir dist --target bun --external @hasna/machines && tsc --emitDeclarationOnly --outDir dist",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "dev:cli": "bun run src/cli/index.ts",
+    "dev:mcp": "bun run src/mcp/index.ts",
+    "dev:daemon": "bun run src/daemon/index.ts",
+    "prepublishOnly": "bun run build",
+    "postinstall": "mkdir -p $HOME/.hasna/dispatch 2>/dev/null || true"
   },
-  "homepage": "https://github.com/hasna/dispatch",
-  "bugs": {
-    "url": "https://github.com/hasna/dispatch/issues"
-  },
-  "engines": {
-    "bun": ">=1.0.0"
-  },
-  "author": "Andrei Hasna <andrei@hasna.com>",
-  "license": "Apache-2.0",
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.26.0",
-    "chalk": "^5.6.2",
-    "commander": "^13.1.0",
-    "zod": "^3.24.2"
-  },
+  "type": "module",
+  "types": "dist/index.d.ts",
   "optionalDependencies": {
-    "@hasna/machines": "^0.0.37"
-  },
-  "devDependencies": {
-    "@types/bun": "^1.2.4",
-    "bun-types": "1.3.9",
-    "typescript": "^5.7.3"
+    "@hasna/machines": "^0.0.24"
   }
 }
