@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { runDaemon } from "./daemon.js";
+import { runDaemon, startDaemon } from "./daemon.js";
 import { writePid } from "./control.js";
 import { Store } from "../lib/store.js";
 import { DispatchClient } from "../sdk/index.js";
@@ -53,5 +53,28 @@ describe("runDaemon", () => {
       runDaemon({ store, pidPath, shouldStop: () => true, sleep: noSleep, log: () => {} }),
     ).rejects.toThrow(/already running/);
     store.close();
+  });
+
+  test("startDaemon creates a missing log directory before spawning", async () => {
+    const root = mkdtempSync(join(tmpdir(), "dispatch_daemon_start_"));
+    const script = join(root, "exit.js");
+    const logPath = join(root, "missing", "daemon.log");
+    const childPidPath = join(root, "daemon.pid");
+    writeFileSync(script, "process.exit(0);\n");
+    try {
+      const res = await startDaemon({
+        execPath: process.execPath,
+        cliEntry: script,
+        args: [],
+        pidPath: childPidPath,
+        logPath,
+        waitMs: 10,
+        sleep: async () => {},
+      });
+      expect(res.started).toBe(false);
+      expect(existsSync(logPath)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

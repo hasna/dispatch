@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -49,6 +50,35 @@ describe("isDaemonRunning", () => {
   test("dead pid -> stale", () => {
     writePid(DEAD_PID, pidPath);
     expect(isDaemonRunning(pidPath)).toEqual({ running: false, pid: DEAD_PID, stale: true });
+  });
+  test("plain pidfile pointing at an unrelated live process is stale and is not stopped", async () => {
+    const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" });
+    try {
+      expect(child.pid).toBeDefined();
+      writeFileSync(pidPath, String(child.pid));
+      expect(isDaemonRunning(pidPath)).toEqual({ running: false, pid: child.pid, stale: true });
+      const stopped = await stopDaemon({ path: pidPath, sleep: async () => {} });
+      expect(stopped.wasRunning).toBe(false);
+      expect(isAlive(child.pid!)).toBe(true);
+    } finally {
+      child.kill("SIGKILL");
+    }
+  });
+  test("owned direct daemon entrypoint pidfile is recognized and stopped", async () => {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 30000)", "src/daemon/index.ts"], {
+      stdio: "ignore",
+    });
+    try {
+      expect(child.pid).toBeDefined();
+      writePid(child.pid!, pidPath);
+      expect(isDaemonRunning(pidPath)).toEqual({ running: true, pid: child.pid, stale: false });
+      const stopped = await stopDaemon({ path: pidPath, timeoutMs: 500, sleep: () => Bun.sleep(10) });
+      expect(stopped.wasRunning).toBe(true);
+      expect(stopped.stopped).toBe(true);
+      expect(isAlive(child.pid!)).toBe(false);
+    } finally {
+      child.kill("SIGKILL");
+    }
   });
 });
 

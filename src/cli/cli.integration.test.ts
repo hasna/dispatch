@@ -21,6 +21,30 @@ function runCli(args: string[]) {
   });
 }
 
+describe("dispatch CLI stdin handling", () => {
+  test("send --prompt does not drain an open stdin before parsing flags", () => {
+    const res = spawnSync("bash", ["-lc", `tail -f /dev/null | bun run ${JSON.stringify(cli)} send --help`], {
+      encoding: "utf8",
+      timeout: 4000,
+      env: { ...process.env, DISPATCH_DATA_DIR: dataDir },
+    });
+    expect(res.error).toBeUndefined();
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain("Usage: dispatch send");
+  });
+
+  test("schedule --prompt does not drain an open stdin before parsing flags", () => {
+    const res = spawnSync("bash", ["-lc", `tail -f /dev/null | bun run ${JSON.stringify(cli)} schedule --help`], {
+      encoding: "utf8",
+      timeout: 4000,
+      env: { ...process.env, DISPATCH_DATA_DIR: dataDir },
+    });
+    expect(res.error).toBeUndefined();
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain("Usage: dispatch schedule");
+  });
+});
+
 async function startAgent(): Promise<void> {
   spawnSync("tmux", ["kill-session", "-t", SESSION], { encoding: "utf8" });
   const res = spawnSync(

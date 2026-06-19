@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  fallbackSshCommand,
   LocalRunner,
   RemoteRunner,
   createRunner,
@@ -61,6 +62,23 @@ describe("RemoteRunner", () => {
     expect(res.stdout.trim()).toBe("resolved-for-box");
     // the resolver received the fully-quoted argv
     expect(calls[0]).toBe("box:'tmux' 'send-keys' '-t' 's:w' '-l' '--' 'hi'");
+  });
+
+  test("bounds remote commands with a timeout", () => {
+    const start = Date.now();
+    const r = new RemoteRunner("box", () => ({ source: "ssh", shellCommand: "sleep 5" }), 50);
+    const res = r.run(["tmux", "list-sessions"]);
+    expect(Date.now() - start).toBeLessThan(1500);
+    expect(res.exitCode).toBe(124);
+    expect(res.stderr).toMatch(/timed out/i);
+  });
+
+  test("fallback ssh command is noninteractive and bounded", () => {
+    const command = fallbackSshCommand("box", "tmux list-sessions");
+    expect(command).toContain("BatchMode=yes");
+    expect(command).toContain("ConnectTimeout=5");
+    expect(command).toContain("ServerAliveInterval=5");
+    expect(command).toContain("'box'");
   });
 });
 

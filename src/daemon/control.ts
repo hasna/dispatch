@@ -1,24 +1,43 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import { daemonLogPath, pidFilePath } from "../lib/paths.js";
 import { realSleep } from "../lib/submit.js";
 import type { Store } from "../lib/store.js";
 
-/** Read the daemon pid from its pidfile, if present and valid. */
-export function readPid(path: string = pidFilePath()): number | undefined {
+const PIDFILE_OWNER = "@hasna/dispatch-daemon";
+
+interface PidFileData {
+  pid: number;
+  owner?: string;
+}
+
+function readPidFile(path: string = pidFilePath()): PidFileData | undefined {
   if (!existsSync(path)) return undefined;
   try {
-    const pid = parseInt(readFileSync(path, "utf8").trim(), 10);
-    return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+    const raw = readFileSync(path, "utf8").trim();
+    if (!raw) return undefined;
+    if (raw.startsWith("{")) {
+      const parsed = JSON.parse(raw) as Partial<PidFileData>;
+      const pid = Number(parsed.pid);
+      return Number.isInteger(pid) && pid > 0 ? { pid, owner: parsed.owner } : undefined;
+    }
+    const pid = parseInt(raw, 10);
+    return Number.isInteger(pid) && pid > 0 ? { pid } : undefined;
   } catch {
     return undefined;
   }
 }
 
+/** Read the daemon pid from its pidfile, if present and valid. */
+export function readPid(path: string = pidFilePath()): number | undefined {
+  return readPidFile(path)?.pid;
+}
+
 /** Write the current (or given) pid to the pidfile. */
 export function writePid(pid: number = process.pid, path: string = pidFilePath()): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, String(pid));
+  writeFileSync(path, JSON.stringify({ pid, owner: PIDFILE_OWNER, startedAt: new Date().toISOString() }));
 }
 
 /** Remove the pidfile (best-effort). */
@@ -41,6 +60,37 @@ export function isAlive(pid: number): boolean {
   }
 }
 
+function processCommand(pid: number): string | undefined {
+  try {
+    return readFileSync(`/proc/${pid}/cmdline`, "utf8").replace(/\0/g, " ").trim();
+  } catch {
+    const result = spawnSync("ps", ["-p", String(pid), "-o", "command="], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 1000,
+    });
+    return result.status === 0 ? result.stdout.trim() : undefined;
+  }
+}
+
+function isDispatchDaemonProcess(pid: number, owner?: string): boolean {
+  if (pid === process.pid && owner === PIDFILE_OWNER) return true;
+  const command = processCommand(pid);
+  if (!command) return false;
+  const hasOwner = owner === PIDFILE_OWNER;
+  const looksLikeDispatch =
+    hasOwner ||
+    /\bdispatch-daemon\b/.test(command) ||
+    /@hasna\/dispatch/.test(command) ||
+    /open-dispatch/.test(command) ||
+    /\/dispatch(\s|$)/.test(command);
+  const looksLikeDaemonRun =
+    /\bdaemon\s+run\b/.test(command) ||
+    /\/daemon\/index\.(js|ts)(\s|$)/.test(command) ||
+    /\bdispatch-daemon\b.*\brun\b/.test(command);
+  return looksLikeDispatch && looksLikeDaemonRun;
+}
+
 export interface DaemonRunning {
   running: boolean;
   pid?: number;
@@ -50,9 +100,10 @@ export interface DaemonRunning {
 
 /** Determine whether the daemon is running, detecting a stale pidfile. */
 export function isDaemonRunning(path: string = pidFilePath()): DaemonRunning {
-  const pid = readPid(path);
-  if (pid === undefined) return { running: false, stale: false };
-  if (isAlive(pid)) return { running: true, pid, stale: false };
+  const data = readPidFile(path);
+  if (!data) return { running: false, stale: false };
+  const pid = data.pid;
+  if (isAlive(pid) && isDispatchDaemonProcess(pid, data.owner)) return { running: true, pid, stale: false };
   return { running: false, pid, stale: true };
 }
 

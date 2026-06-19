@@ -1,5 +1,6 @@
-import { openSync } from "node:fs";
+import { mkdirSync, openSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { dirname } from "node:path";
 import { Store } from "../lib/store.js";
 import { DispatchClient } from "../sdk/index.js";
 import { tick } from "../lib/scheduler.js";
@@ -75,6 +76,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
             log(`dispatch failed for schedule ${sched.id}: ${err instanceof Error ? err.message : String(err)}`),
         });
         if (res.fired.length > 0) log(`fired ${res.fired.length} schedule(s)`);
+        if (res.failed.length > 0) log(`deferred ${res.failed.length} failed schedule(s) for retry`);
       },
     });
   } finally {
@@ -114,6 +116,7 @@ export async function startDaemon(opts: {
   if (running.stale) removePid(pidPath);
 
   const logPath = opts.logPath ?? daemonLogPath();
+  mkdirSync(dirname(logPath), { recursive: true });
   const sleep = opts.sleep ?? realSleep;
   const out = openSync(logPath, "a");
   const child = spawn(opts.execPath ?? process.execPath, [opts.cliEntry, ...(opts.args ?? ["daemon", "run"])], {

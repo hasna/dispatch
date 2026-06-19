@@ -52,7 +52,8 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .option("--mode <mode>", "delivery mode: auto | paste | literal", "auto")
     .option("--json", "output JSON")
     .action(async (opts) => {
-      const prompt = resolvePrompt(opts, deps.stdin);
+      const stdin = opts.prompt || opts.file ? deps.stdin : deps.stdin ?? (await readStdinIfPiped());
+      const prompt = resolvePrompt(opts, stdin);
       const options: DispatchOptions = {
         target: opts.to,
         prompt,
@@ -127,7 +128,8 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .option("--cron <expr>", "recurring 5-field cron expression")
     .option("--json", "output JSON")
     .action(async (opts) => {
-      const prompt = resolvePrompt(opts, deps.stdin);
+      const stdin = opts.prompt || opts.file ? deps.stdin : deps.stdin ?? (await readStdinIfPiped());
+      const prompt = resolvePrompt(opts, stdin);
       const sched = await withClient((c) =>
         c.schedule({
           options: { target: opts.to, prompt, machine: opts.machine },
@@ -181,10 +183,7 @@ async function readStdinIfPiped(): Promise<string | undefined> {
 }
 
 async function main(): Promise<void> {
-  // Only consume stdin for commands that may need a piped prompt.
-  const needsStdin = process.argv.includes("send") || process.argv.includes("schedule");
-  const stdin = needsStdin ? await readStdinIfPiped() : undefined;
-  const program = buildProgram({ stdin });
+  const program = buildProgram();
   await program.parseAsync(process.argv);
 }
 

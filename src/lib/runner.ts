@@ -58,6 +58,23 @@ export class LocalRunner implements Runner {
   }
 }
 
+export function remoteTimeoutMs(): number {
+  const raw = Number(process.env.DISPATCH_REMOTE_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 5000;
+}
+
+export function fallbackSshCommand(id: string, command: string): string {
+  return [
+    "ssh",
+    "-o BatchMode=yes",
+    "-o ConnectTimeout=5",
+    "-o ServerAliveInterval=5",
+    "-o ServerAliveCountMax=1",
+    shellQuote(id),
+    shellQuote(command),
+  ].join(" ");
+}
+
 /**
  * Runs commands on a remote machine via @hasna/machines (`resolveMachineCommand`),
  * falling back to a plain `ssh <machine>` when the package or a route is absent.
@@ -69,6 +86,7 @@ export class RemoteRunner implements Runner {
   constructor(
     readonly machine: string,
     private readonly resolve: (machineId: string, command: string) => { source: RunResult["source"]; shellCommand: string },
+    private readonly timeoutMs: number = remoteTimeoutMs(),
   ) {}
 
   run(argv: string[], input?: string): RunResult {
@@ -79,14 +97,22 @@ export class RemoteRunner implements Runner {
       input,
       env: process.env,
       maxBuffer: 64 * 1024 * 1024,
+      timeout: this.timeoutMs,
     });
     if (result.error) {
-      return { stdout: "", stderr: String(result.error.message ?? result.error), exitCode: 127, source: resolved.source };
+      const code = (result.error as NodeJS.ErrnoException).code;
+      const timedOut = code === "ETIMEDOUT";
+      return {
+        stdout: result.stdout ?? "",
+        stderr: timedOut ? `remote command timed out after ${this.timeoutMs}ms` : String(result.error.message ?? result.error),
+        exitCode: timedOut ? 124 : 127,
+        source: resolved.source,
+      };
     }
     return {
       stdout: result.stdout ?? "",
       stderr: result.stderr ?? "",
-      exitCode: result.status ?? 1,
+      exitCode: result.status ?? (result.signal ? 124 : 1),
       source: resolved.source,
     };
   }
@@ -119,7 +145,7 @@ export async function createRunner(machine?: string): Promise<Runner> {
     // Fallback: plain ssh, no route resolution.
     return new RemoteRunner(machineId, (id, command) => ({
       source: "ssh",
-      shellCommand: `ssh ${shellQuote(id)} ${shellQuote(command)}`,
+      shellCommand: fallbackSshCommand(id, command),
     }));
   }
 }

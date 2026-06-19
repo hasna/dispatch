@@ -102,35 +102,36 @@ export function evaluateDelivery(input: EvaluateDeliveryInput): ConfirmResult {
   // to the pre-dispatch capture when no typed snapshot is available.
   const baseline = input.afterTyped ?? input.before;
 
-  const workingBefore = detectWorking(input.before, patterns);
-  const workingAfter = detectWorking(input.after, patterns);
-  const workingDetected = workingAfter && !workingBefore;
-
-  const queuedDetected = detectQueued(input.after, queuedPatterns) && !detectQueued(input.before, queuedPatterns);
-
   const promptVisible = (text: string): boolean => tail.length > 0 && squish(text).includes(tail);
   const visibleInBaseline = promptVisible(baseline);
   const visibleInAfter = promptVisible(input.after);
   const composerCleared = visibleInBaseline && !visibleInAfter;
 
+  const workingBefore = detectWorking(input.before, patterns);
+  const workingAfter = detectWorking(input.after, patterns);
+  const workingDetected = workingAfter && !workingBefore && !visibleInAfter;
+
+  const queuedDetected = detectQueued(input.after, queuedPatterns) && !detectQueued(input.before, queuedPatterns);
+
   // Did pressing Enter change the pane at all (vs the just-typed state)?
   const paneAdvanced = normalize(input.after) !== normalize(baseline);
 
-  // A busy agent that stays "working" and now shows our prompt has queued it.
-  const busyQueued = workingAfter && visibleInAfter && !composerCleared && paneAdvanced;
-
-  const delivered = workingDetected || queuedDetected || composerCleared || paneAdvanced;
-  const queued = delivered && (queuedDetected || busyQueued);
+  const promptStillParkedInBusyPane = workingBefore && workingAfter && visibleInAfter && !composerCleared && !queuedDetected;
+  const actedOnVisiblePrompt = paneAdvanced && visibleInAfter && !promptStillParkedInBusyPane;
+  const delivered = queuedDetected || workingDetected || composerCleared || (!visibleInAfter && paneAdvanced) || actedOnVisiblePrompt;
+  const queued = delivered && queuedDetected;
 
   let reason: string;
-  if (queuedDetected || busyQueued) {
+  if (queuedDetected) {
     reason = "prompt accepted but queued for submission (agent busy)";
   } else if (workingDetected) {
     reason = "working/interrupt indicator appeared after submit";
   } else if (composerCleared) {
     reason = "prompt left the composer after submit";
-  } else if (paneAdvanced) {
+  } else if (delivered && paneAdvanced) {
     reason = "pane advanced after submit (prompt was acted on)";
+  } else if (promptStillParkedInBusyPane) {
+    reason = "prompt is still parked in the composer while the busy indicator changed — not submitted";
   } else if (visibleInAfter) {
     reason = "prompt is still parked in the composer unchanged — not submitted";
   } else {

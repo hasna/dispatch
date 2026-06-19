@@ -119,6 +119,18 @@ describe("evaluateDelivery", () => {
     expect(res.reason).toMatch(/queued/i);
   });
 
+  test("busy spinner frame change with prompt still parked is not delivered", () => {
+    const res = evaluateDelivery({
+      before: "✶ Working (esc to interrupt) frame1",
+      afterTyped: "✶ Working (esc to interrupt) frame1\n> DO_NOT_SUBMIT_YET",
+      after: "✶ Working (esc to interrupt) frame2\n> DO_NOT_SUBMIT_YET",
+      prompt: "DO_NOT_SUBMIT_YET",
+    });
+    expect(res.delivered).toBe(false);
+    expect(res.queued).toBe(false);
+    expect(res.reason).toMatch(/parked|not submitted/i);
+  });
+
   test("busy agent with no recognized indicator but the pane advanced => delivered", () => {
     // Even if our working/queued patterns miss the agent's exact wording, the
     // pane changing after Enter is enough to know the prompt was acted on.

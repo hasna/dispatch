@@ -3,13 +3,13 @@ import { tick } from "./scheduler.js";
 import { Store } from "./store.js";
 import type { DispatchOptions, DispatchRecord } from "../types.js";
 
-function fakeRecord(id: string): DispatchRecord {
+function fakeRecord(id: string, status: DispatchRecord["status"] = "delivered"): DispatchRecord {
   return {
     id,
     target: "s:w",
     machine: "local",
     prompt: "x",
-    status: "delivered",
+    status,
     createdAt: "x",
     updatedAt: "x",
   };
@@ -81,7 +81,7 @@ describe("scheduler.tick", () => {
     store.close();
   });
 
-  test("a dispatch error still advances the schedule (no spin) and is reported", async () => {
+  test("a one-shot dispatch error stays scheduled at a retry time and is reported", async () => {
     const store = new Store(":memory:");
     const sched = store.createSchedule({
       options: { target: "s:w", prompt: "boom" },
@@ -89,16 +89,44 @@ describe("scheduler.tick", () => {
       nextRun: "2000-01-01T00:00:00.000Z",
     });
     const errors: unknown[] = [];
+    const fixedNow = new Date("2026-06-17T10:00:00.000Z");
     const res = await tick({
       store,
       dispatch: async () => {
         throw new Error("tmux down");
       },
+      now: () => fixedNow,
+      retryDelayMs: 5_000,
       onError: (_s, e) => errors.push(e),
     });
     expect(errors).toHaveLength(1);
-    expect(res.fired).toHaveLength(1);
-    expect(store.getSchedule(sched.id)!.status).toBe("fired");
+    expect(res.fired).toHaveLength(0);
+    expect(res.failed).toHaveLength(1);
+    const after = store.getSchedule(sched.id)!;
+    expect(after.status).toBe("scheduled");
+    expect(after.nextRun).toBe("2026-06-17T10:00:05.000Z");
+    store.close();
+  });
+
+  test("a failed dispatch record does not consume a one-shot schedule", async () => {
+    const store = new Store(":memory:");
+    const sched = store.createSchedule({
+      options: { target: "s:w", prompt: "failed-record" },
+      at: "2000-01-01T00:00:00.000Z",
+      nextRun: "2000-01-01T00:00:00.000Z",
+    });
+    const res = await tick({
+      store,
+      dispatch: async () => fakeRecord("rec-failed", "failed"),
+      now: () => new Date("2026-06-17T10:00:00.000Z"),
+      retryDelayMs: 5_000,
+    });
+    expect(res.fired).toHaveLength(0);
+    expect(res.failed).toHaveLength(1);
+    const after = store.getSchedule(sched.id)!;
+    expect(after.status).toBe("scheduled");
+    expect(after.lastDispatchId).toBe("rec-failed");
+    expect(after.nextRun).toBe("2026-06-17T10:00:05.000Z");
     store.close();
   });
 
