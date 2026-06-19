@@ -80,6 +80,22 @@ describe("isDaemonRunning", () => {
       child.kill("SIGKILL");
     }
   });
+  test("owned dispatch-daemon bin pidfile is recognized and stopped", async () => {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 30000)", "dispatch-daemon"], {
+      stdio: "ignore",
+    });
+    try {
+      expect(child.pid).toBeDefined();
+      writePid(child.pid!, pidPath);
+      expect(isDaemonRunning(pidPath)).toEqual({ running: true, pid: child.pid, stale: false });
+      const stopped = await stopDaemon({ path: pidPath, timeoutMs: 500, sleep: () => Bun.sleep(10) });
+      expect(stopped.wasRunning).toBe(true);
+      expect(stopped.stopped).toBe(true);
+      expect(isAlive(child.pid!)).toBe(false);
+    } finally {
+      child.kill("SIGKILL");
+    }
+  });
 });
 
 describe("daemonStatus", () => {

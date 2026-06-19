@@ -87,7 +87,7 @@ function isDispatchDaemonProcess(pid: number, owner?: string): boolean {
   const looksLikeDaemonRun =
     /\bdaemon\s+run\b/.test(command) ||
     /\/daemon\/index\.(js|ts)(\s|$)/.test(command) ||
-    /\bdispatch-daemon\b.*\brun\b/.test(command);
+    /\bdispatch-daemon\b/.test(command);
   return looksLikeDispatch && looksLikeDaemonRun;
 }
 
