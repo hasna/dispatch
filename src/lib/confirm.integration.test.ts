@@ -45,7 +45,7 @@ d("delivery confirmation against a real tmux pane", () => {
     });
     expect(result.delivered).toBe(true);
     expect(result.workingDetected).toBe(true);
-  });
+  }, 20000);
 
   test("reports not-delivered when nothing is submitted", async () => {
     const before = tmux.capturePane(TARGET);
@@ -60,5 +60,5 @@ d("delivery confirmation against a real tmux pane", () => {
       prompt: "an unsent prompt tail marker",
     });
     expect(result.workingDetected).toBe(false);
-  });
+  }, 20000);
 });

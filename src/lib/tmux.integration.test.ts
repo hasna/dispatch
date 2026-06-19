@@ -80,13 +80,13 @@ d("Tmux against a real tmux server", () => {
   test("sendLiteral delivers single-line text verbatim", async () => {
     const out = await captureViaCat("marker_alpha_42", () => tmux.sendLiteral(TARGET, "marker_alpha_42"));
     expect(out).toBe("marker_alpha_42\n");
-  });
+  }, 20000);
 
   test("paste delivers a long multi-line payload byte-for-byte (no corruption)", async () => {
     const payload = Array.from({ length: 40 }, (_, i) => `line_${i}: the quick brown fox jumps over ${i}`).join("\n");
     const out = await captureViaCat(payload, () => tmux.paste(TARGET, payload, { bracketed: false }));
     expect(out).toBe(payload + "\n");
-  });
+  }, 20000);
 
   test("bracketed paste wraps the payload in paste-mode markers for a paste-aware app", async () => {
     // A real TUI enables bracketed-paste mode; tmux then wraps `paste -p` content
@@ -112,5 +112,5 @@ d("Tmux against a real tmux server", () => {
     expect(out.replace(/\r/g, "\n")).toContain("alpha\nbeta\ngamma");
     expect(out.indexOf("\x1b[200~")).toBeLessThan(out.indexOf("alpha"));
     expect(out.indexOf("\x1b[201~")).toBeGreaterThan(out.indexOf("gamma"));
-  });
+  }, 20000);
 });

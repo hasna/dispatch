@@ -31,6 +31,12 @@ export interface ConfirmResult {
   composerCleared?: boolean;
   /** Whether a working/processing indicator appeared after submit. */
   workingDetected?: boolean;
+  /**
+   * True when the prompt was accepted but staged for later submission (the
+   * target agent was busy, e.g. "Messages to be submitted after next tool
+   * call"). Still counts as delivered.
+   */
+  queued?: boolean;
 }
 
 /** Options controlling a single dispatch. */

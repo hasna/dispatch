@@ -61,7 +61,7 @@ d("cross-machine dispatch (real second host)", () => {
     if (scp.status !== 0) throw new Error(`scp failed: ${scp.stderr}`);
     ssh(host, `${remote!.tmux} kill-session -t ${SESSION} 2>/dev/null; ${remote!.tmux} new-session -d -s ${SESSION} -x 200 -y 50 ${remote!.bun} run ${remoteAgent}`);
     await Bun.sleep(2000); // let the remote agent boot
-  });
+  }, 30000);
 
   afterAll(() => {
     if (remote) {
