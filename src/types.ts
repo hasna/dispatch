@@ -37,6 +37,12 @@ export interface ConfirmResult {
    * call"). Still counts as delivered.
    */
   queued?: boolean;
+  /**
+   * True when the target app handled the prompt by rendering an immediate
+   * rejection/disabled/unavailable message. Still counts as delivered because
+   * the prompt reached the app and should not be retried.
+   */
+  handledOutput?: boolean;
 }
 
 /** Options controlling a single dispatch. */

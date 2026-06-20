@@ -43,6 +43,25 @@ export function detectQueued(text: string, patterns: RegExp[] = DEFAULT_QUEUED_P
 }
 
 /**
+ * Patterns indicating the target app handled the prompt immediately by
+ * rejecting it, for example a disabled slash command while another turn is
+ * streaming. This is delivery evidence: retrying would repeat the side effect.
+ */
+export const DEFAULT_HANDLED_OUTPUT_PATTERNS: RegExp[] = [
+  /\bdisabled\b/i,
+  /\bnot\s+(available|enabled|supported|allowed)\b/i,
+  /\bunavailable\b/i,
+  /\bunknown\s+(slash\s+)?command\b/i,
+  /\bslash\s+command\b.*\b(disabled|unavailable|not\s+(available|enabled|supported|allowed))\b/i,
+  /\bcommand\b.*\b(disabled|unavailable|not\s+(available|enabled|supported|allowed))\b/i,
+];
+
+/** True if the text contains a handled rejection/disabled-output signal. */
+export function detectHandledOutput(text: string, patterns: RegExp[] = DEFAULT_HANDLED_OUTPUT_PATTERNS): boolean {
+  return patterns.some((p) => p.test(text));
+}
+
+/**
  * A distinctive tail of the prompt used to detect whether it is still sitting
  * unsent in the composer. We use the last non-empty line (trimmed, collapsed
  * whitespace), capped, since the composer shows the end of what was typed.
@@ -64,6 +83,10 @@ function squish(text: string): string {
   return text.replace(/\s+/g, "");
 }
 
+function handledOutputLineCount(text: string, patterns: RegExp[] = DEFAULT_HANDLED_OUTPUT_PATTERNS): number {
+  return text.split("\n").filter((line) => detectHandledOutput(line, patterns)).length;
+}
+
 export interface EvaluateDeliveryInput {
   /** Pane capture before dispatch. */
   before: string;
@@ -77,6 +100,8 @@ export interface EvaluateDeliveryInput {
   workingPatterns?: RegExp[];
   /** Override queued/staged patterns. */
   queuedPatterns?: RegExp[];
+  /** Override handled rejection/disabled-output patterns. */
+  handledOutputPatterns?: RegExp[];
   /** True when the target pane is a shell rather than an agent composer. */
   shellCommand?: boolean;
 }
@@ -98,6 +123,7 @@ export interface EvaluateDeliveryInput {
 export function evaluateDelivery(input: EvaluateDeliveryInput): ConfirmResult {
   const patterns = input.workingPatterns ?? DEFAULT_WORKING_PATTERNS;
   const queuedPatterns = input.queuedPatterns ?? DEFAULT_QUEUED_PATTERNS;
+  const handledOutputPatterns = input.handledOutputPatterns ?? DEFAULT_HANDLED_OUTPUT_PATTERNS;
   const tail = squish(promptTail(input.prompt));
 
   // Baseline = how the pane looked right after typing (before Enter). Falls back
@@ -117,12 +143,15 @@ export function evaluateDelivery(input: EvaluateDeliveryInput): ConfirmResult {
 
   // Did pressing Enter change the pane at all (vs the just-typed state)?
   const paneAdvanced = normalize(input.after) !== normalize(baseline);
+  const handledOutputDetected =
+    handledOutputLineCount(input.after, handledOutputPatterns) > handledOutputLineCount(baseline, handledOutputPatterns);
 
   const promptStillParkedInBusyPane = workingBefore && workingAfter && visibleInAfter && !composerCleared && !queuedDetected;
   const actedOnVisiblePrompt = paneAdvanced && visibleInAfter && !promptStillParkedInBusyPane;
   const shellEchoedCommand = input.shellCommand === true && visibleInBaseline && visibleInAfter;
   const delivered =
     queuedDetected ||
+    handledOutputDetected ||
     workingDetected ||
     composerCleared ||
     (!visibleInAfter && paneAdvanced) ||
@@ -133,6 +162,8 @@ export function evaluateDelivery(input: EvaluateDeliveryInput): ConfirmResult {
   let reason: string;
   if (queuedDetected) {
     reason = "prompt accepted but queued for submission (agent busy)";
+  } else if (handledOutputDetected) {
+    reason = "target handled the prompt with disabled/rejection output";
   } else if (workingDetected) {
     reason = "working/interrupt indicator appeared after submit";
   } else if (composerCleared) {
@@ -149,7 +180,7 @@ export function evaluateDelivery(input: EvaluateDeliveryInput): ConfirmResult {
     reason = "no change after submit — not delivered";
   }
 
-  return { delivered, reason, composerCleared, workingDetected, queued };
+  return { delivered, reason, composerCleared, workingDetected, queued, handledOutput: delivered && handledOutputDetected };
 }
 
 export interface ConfirmDeliveryOptions {
@@ -162,6 +193,7 @@ export interface ConfirmDeliveryOptions {
   maxPolls?: number;
   workingPatterns?: RegExp[];
   queuedPatterns?: RegExp[];
+  handledOutputPatterns?: RegExp[];
   shellCommand?: boolean;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -190,6 +222,7 @@ export async function confirmDelivery(
       prompt: opts.prompt,
       workingPatterns: opts.workingPatterns,
       queuedPatterns: opts.queuedPatterns,
+      handledOutputPatterns: opts.handledOutputPatterns,
       shellCommand: opts.shellCommand,
     });
     if (last.delivered) return last;

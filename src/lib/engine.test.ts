@@ -127,4 +127,42 @@ describe("performDispatch", () => {
     );
     expect(rec.submitDelayMs).toBe(42);
   });
+
+  test("disabled slash-command output is confirmed without Enter retries", async () => {
+    const r = new MockRunner();
+    let typed = false;
+    let enterCount = 0;
+    r.responder = (argv) => {
+      if (argv[1] === "list-panes") return { stdout: "%1\n", stderr: "", exitCode: 0, source: "local" };
+      if (argv[1] === "display-message") return { stdout: "codewith\n", stderr: "", exitCode: 0, source: "local" };
+      if (argv[1] === "send-keys" && argv.includes("-l")) {
+        typed = true;
+        return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "send-keys" && argv.includes("Enter")) {
+        enterCount += 1;
+        return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "capture-pane") {
+        const stdout =
+          enterCount > 0
+            ? "✻ Working… (esc to interrupt)\nThe /workflow slash command is disabled while a response is streaming.\n> /workflow"
+            : typed
+              ? "✶ Working… (esc to interrupt)\n> /workflow"
+              : "✶ Working… (esc to interrupt)";
+        return { stdout, stderr: "", exitCode: 0, source: "local" };
+      }
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    };
+
+    const rec = await performDispatch(
+      { target: "work:agent", prompt: "/workflow", submitDelayMs: 0 },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("delivered");
+    expect(rec.confirm?.handledOutput).toBe(true);
+    expect(rec.detail).toMatch(/disabled|rejection/i);
+    expect(enterCount).toBe(1);
+  });
 });

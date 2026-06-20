@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   confirmDelivery,
+  detectHandledOutput,
   detectQueued,
   detectWorking,
   evaluateDelivery,
@@ -31,6 +32,18 @@ describe("detectQueued", () => {
   test("does not match ordinary content", () => {
     expect(detectQueued("> type your prompt")).toBe(false);
     expect(detectQueued("running the test suite")).toBe(false);
+  });
+});
+
+describe("detectHandledOutput", () => {
+  test("matches disabled slash-command output", () => {
+    expect(detectHandledOutput("The /model slash command is disabled while a response is streaming.")).toBe(true);
+    expect(detectHandledOutput("Command /permissions is not available right now.")).toBe(true);
+    expect(detectHandledOutput("Unknown slash command: /workflow")).toBe(true);
+  });
+  test("does not match ordinary busy output", () => {
+    expect(detectHandledOutput("Messages to be submitted after next tool call")).toBe(false);
+    expect(detectHandledOutput("Working on the request")).toBe(false);
   });
 });
 
@@ -145,6 +158,32 @@ describe("evaluateDelivery", () => {
     expect(res.delivered).toBe(true);
     expect(res.queued).toBe(true);
     expect(res.reason).toMatch(/queued/i);
+  });
+
+  test("busy agent disabled slash-command output => delivered, not retried", () => {
+    const before = "✶ Working… (esc to interrupt)\n  streaming mock response";
+    const res = evaluateDelivery({
+      before,
+      afterTyped: `${before}\n> /workflow`,
+      after: "✻ Working… (esc to interrupt)\n  The /workflow slash command is disabled while a response is streaming.\n> /workflow",
+      prompt: "/workflow",
+    });
+    expect(res.delivered).toBe(true);
+    expect(res.handledOutput).toBe(true);
+    expect(res.queued).toBe(false);
+    expect(res.reason).toMatch(/disabled|rejection/i);
+  });
+
+  test("old disabled output plus parked busy prompt is still not delivered", () => {
+    const before = "✶ Working… (esc to interrupt)\n  The /model slash command is disabled.";
+    const res = evaluateDelivery({
+      before,
+      afterTyped: `${before}\n> /model`,
+      after: "✻ Working… (esc to interrupt)\n  The /model slash command is disabled.\n> /model",
+      prompt: "/model",
+    });
+    expect(res.delivered).toBe(false);
+    expect(res.handledOutput).toBe(false);
   });
 
   test("busy spinner frame change with prompt still parked is not delivered", () => {
