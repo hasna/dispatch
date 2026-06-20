@@ -19,6 +19,10 @@ export function chooseMode(prompt: string, mode: DispatchOptions["mode"] = "auto
   return "literal";
 }
 
+function isShellCommand(command: string): boolean {
+  return /^(ba|z|fi)?sh$|^fish$|^nu$/.test(command.trim());
+}
+
 export interface DispatchDeps {
   tmux: Tmux;
   /** When present, the dispatch is persisted and updated as it progresses. */
@@ -69,6 +73,7 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
   if (!tmux.paneExists(options.target)) {
     return finish({ status: "failed", detail: `target pane not found: ${options.target} (machine: ${machine})` });
   }
+  const shellCommand = isShellCommand(tmux.paneProperty(options.target, "pane_current_command"));
 
   // 2. Snapshot before.
   const before = tmux.capturePane(options.target, { start: 50 });
@@ -109,7 +114,7 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
   const probe = confirmEnabled
     ? async (): Promise<boolean> => {
         const after = tmux.capturePane(options.target, { start: 50 });
-        return evaluateDelivery({ before, after, afterTyped, prompt: options.prompt }).delivered;
+        return evaluateDelivery({ before, after, afterTyped, prompt: options.prompt, shellCommand }).delivered;
       }
     : undefined;
 
@@ -136,6 +141,7 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
     prompt: options.prompt,
     waitMs: 250,
     maxPolls: 3,
+    shellCommand,
     sleep,
   });
 

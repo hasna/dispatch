@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +18,26 @@ function runCli(args: string[]) {
     input: "",
     // Cap the auto-delay so the real submit path stays exercised but fast.
     env: { ...process.env, DISPATCH_DATA_DIR: dataDir, DISPATCH_MAX_DELAY_MS: "500" },
+  });
+}
+
+function runCliAsync(args: string[], env: NodeJS.ProcessEnv): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn("bun", ["run", cli, ...args], {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
   });
 }
 
@@ -43,6 +63,27 @@ describe("dispatch CLI stdin handling", () => {
     expect(res.status).toBe(0);
     expect(res.stdout).toContain("Usage: dispatch schedule");
   });
+});
+
+describe("dispatch CLI concurrent ledger writes", () => {
+  test("parallel sends wait for sqlite writer locks instead of throwing", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "dispatch_cli_concurrent_"));
+    try {
+      const env = { ...process.env, DISPATCH_DATA_DIR: dir, DISPATCH_MAX_DELAY_MS: "100" };
+      const sends = Array.from({ length: 8 }, (_, i) =>
+        runCliAsync(["send", "--to", `dispatch_missing_${i}`, "--prompt", `parallel ${i}`, "--json"], env),
+      );
+      const results = await Promise.all(sends);
+      expect(results.every((r) => r.stderr.includes("database is locked"))).toBe(false);
+      for (const result of results) {
+        expect(result.stderr).not.toContain("database is locked");
+        expect(result.status).toBe(1);
+        expect(JSON.parse(result.stdout).status).toBe("failed");
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20000);
 });
 
 async function startAgent(): Promise<void> {

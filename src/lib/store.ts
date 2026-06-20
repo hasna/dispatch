@@ -69,6 +69,33 @@ function rowToSchedule(r: ScheduleRow): ScheduledDispatch {
   };
 }
 
+const STALE_SENDING_DISPATCH_MS = 60 * 1000;
+const SQLITE_BUSY_TIMEOUT_MS = 10000;
+const SQLITE_BUSY_RETRY_BUFFER = new Int32Array(new SharedArrayBuffer(4));
+
+function isSqliteBusy(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /SQLITE_BUSY|database is locked/i.test(message);
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(SQLITE_BUSY_RETRY_BUFFER, 0, 0, ms);
+}
+
+function withSqliteBusyRetry<T>(fn: () => T): T {
+  const deadline = Date.now() + SQLITE_BUSY_TIMEOUT_MS;
+  let delayMs = 10;
+  while (true) {
+    try {
+      return fn();
+    } catch (err) {
+      if (!isSqliteBusy(err) || Date.now() >= deadline) throw err;
+      sleepSync(delayMs);
+      delayMs = Math.min(delayMs * 2, 250);
+    }
+  }
+}
+
 /** Persistent store for dispatch records and scheduled dispatches (sqlite). */
 export class Store {
   private db: Database;
@@ -78,13 +105,14 @@ export class Store {
     if (file !== ":memory:") {
       mkdirSync(dirname(file), { recursive: true });
     }
-    this.db = new Database(file);
-    this.db.exec("PRAGMA journal_mode = WAL;");
+    this.db = withSqliteBusyRetry(() => new Database(file));
+    withSqliteBusyRetry(() => this.db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS};`));
+    withSqliteBusyRetry(() => this.db.exec("PRAGMA journal_mode = WAL;"));
     this.migrate();
   }
 
   private migrate(): void {
-    this.db.exec(`
+    withSqliteBusyRetry(() => this.db.exec(`
       CREATE TABLE IF NOT EXISTS dispatches (
         id TEXT PRIMARY KEY,
         target TEXT NOT NULL,
@@ -115,10 +143,25 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS idx_schedules_status ON schedules(status);
       CREATE INDEX IF NOT EXISTS idx_schedules_next ON schedules(next_run);
-    `);
+    `));
   }
 
   // ---- dispatches ----
+
+  failStaleSendingDispatches(maxAgeMs: number = STALE_SENDING_DISPATCH_MS): number {
+    const cutoff = new Date(Date.now() - maxAgeMs).toISOString();
+    const now = nowIso();
+    const detail = `dispatch left in sending state for more than ${Math.round(maxAgeMs / 1000)}s; marking stale`;
+    const result = withSqliteBusyRetry(() =>
+      this.db.query(
+        `UPDATE dispatches
+         SET status='failed', detail=$detail, updated_at=$updated
+         WHERE status='sending' AND updated_at < $cutoff`,
+      )
+      .run({ $detail: detail, $updated: now, $cutoff: cutoff }),
+    );
+    return result.changes;
+  }
 
   createDispatch(input: {
     target: string;
@@ -140,8 +183,8 @@ export class Store {
       createdAt: now,
       updatedAt: now,
     };
-    this.db
-      .query(
+    withSqliteBusyRetry(() =>
+      this.db.query(
         `INSERT INTO dispatches (id, target, machine, prompt, status, detail, confirm_json, submit_delay_ms, created_at, delivered_at, updated_at)
          VALUES ($id, $target, $machine, $prompt, $status, $detail, $confirm, $delay, $created, $delivered, $updated)`,
       )
@@ -157,11 +200,13 @@ export class Store {
         $created: rec.createdAt,
         $delivered: null,
         $updated: rec.updatedAt,
-      });
+      }),
+    );
     return rec;
   }
 
   getDispatch(id: string): DispatchRecord | undefined {
+    this.failStaleSendingDispatches();
     const row = this.db.query<DispatchRow, [string]>("SELECT * FROM dispatches WHERE id = ?").get(id);
     return row ? rowToDispatch(row) : undefined;
   }
@@ -173,8 +218,8 @@ export class Store {
     const existing = this.getDispatch(id);
     if (!existing) throw new Error(`dispatch not found: ${id}`);
     const merged: DispatchRecord = { ...existing, ...patch, updatedAt: nowIso() };
-    this.db
-      .query(
+    withSqliteBusyRetry(() =>
+      this.db.query(
         `UPDATE dispatches SET status=$status, detail=$detail, confirm_json=$confirm, submit_delay_ms=$delay, delivered_at=$delivered, updated_at=$updated WHERE id=$id`,
       )
       .run({
@@ -185,11 +230,13 @@ export class Store {
         $delay: merged.submitDelayMs ?? null,
         $delivered: merged.deliveredAt ?? null,
         $updated: merged.updatedAt,
-      });
+      }),
+    );
     return merged;
   }
 
   listDispatches(opts: { status?: DispatchStatus; limit?: number } = {}): DispatchRecord[] {
+    this.failStaleSendingDispatches();
     const limit = opts.limit ?? 100;
     const rows = opts.status
       ? this.db
@@ -222,8 +269,8 @@ export class Store {
       createdAt: now,
       updatedAt: now,
     };
-    this.db
-      .query(
+    withSqliteBusyRetry(() =>
+      this.db.query(
         `INSERT INTO schedules (id, options_json, at, cron, next_run, status, last_dispatch_id, last_fired_at, created_at, updated_at)
          VALUES ($id, $options, $at, $cron, $next, $status, $lastDispatch, $lastFired, $created, $updated)`,
       )
@@ -238,7 +285,8 @@ export class Store {
         $lastFired: null,
         $created: sched.createdAt,
         $updated: sched.updatedAt,
-      });
+      }),
+    );
     return sched;
   }
 
@@ -254,8 +302,8 @@ export class Store {
     const existing = this.getSchedule(id);
     if (!existing) throw new Error(`schedule not found: ${id}`);
     const merged: ScheduledDispatch = { ...existing, ...patch, updatedAt: nowIso() };
-    this.db
-      .query(
+    withSqliteBusyRetry(() =>
+      this.db.query(
         `UPDATE schedules SET next_run=$next, status=$status, last_dispatch_id=$lastDispatch, last_fired_at=$lastFired, updated_at=$updated WHERE id=$id`,
       )
       .run({
@@ -265,12 +313,13 @@ export class Store {
         $lastDispatch: merged.lastDispatchId ?? null,
         $lastFired: merged.lastFiredAt ?? null,
         $updated: merged.updatedAt,
-      });
+      }),
+    );
     return merged;
   }
 
   deleteSchedule(id: string): boolean {
-    const res = this.db.query("DELETE FROM schedules WHERE id = ?").run(id);
+    const res = withSqliteBusyRetry(() => this.db.query("DELETE FROM schedules WHERE id = ?").run(id));
     return res.changes > 0;
   }
 

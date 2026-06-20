@@ -77,6 +77,8 @@ export interface EvaluateDeliveryInput {
   workingPatterns?: RegExp[];
   /** Override queued/staged patterns. */
   queuedPatterns?: RegExp[];
+  /** True when the target pane is a shell rather than an agent composer. */
+  shellCommand?: boolean;
 }
 
 /**
@@ -118,7 +120,14 @@ export function evaluateDelivery(input: EvaluateDeliveryInput): ConfirmResult {
 
   const promptStillParkedInBusyPane = workingBefore && workingAfter && visibleInAfter && !composerCleared && !queuedDetected;
   const actedOnVisiblePrompt = paneAdvanced && visibleInAfter && !promptStillParkedInBusyPane;
-  const delivered = queuedDetected || workingDetected || composerCleared || (!visibleInAfter && paneAdvanced) || actedOnVisiblePrompt;
+  const shellEchoedCommand = input.shellCommand === true && visibleInBaseline && visibleInAfter;
+  const delivered =
+    queuedDetected ||
+    workingDetected ||
+    composerCleared ||
+    (!visibleInAfter && paneAdvanced) ||
+    actedOnVisiblePrompt ||
+    shellEchoedCommand;
   const queued = delivered && queuedDetected;
 
   let reason: string;
@@ -128,6 +137,8 @@ export function evaluateDelivery(input: EvaluateDeliveryInput): ConfirmResult {
     reason = "working/interrupt indicator appeared after submit";
   } else if (composerCleared) {
     reason = "prompt left the composer after submit";
+  } else if (shellEchoedCommand) {
+    reason = "shell command echo remained visible after submit";
   } else if (delivered && paneAdvanced) {
     reason = "pane advanced after submit (prompt was acted on)";
   } else if (promptStillParkedInBusyPane) {
@@ -151,6 +162,7 @@ export interface ConfirmDeliveryOptions {
   maxPolls?: number;
   workingPatterns?: RegExp[];
   queuedPatterns?: RegExp[];
+  shellCommand?: boolean;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -178,6 +190,7 @@ export async function confirmDelivery(
       prompt: opts.prompt,
       workingPatterns: opts.workingPatterns,
       queuedPatterns: opts.queuedPatterns,
+      shellCommand: opts.shellCommand,
     });
     if (last.delivered) return last;
   }

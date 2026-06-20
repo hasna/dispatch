@@ -5,6 +5,13 @@ function mem(): Store {
   return new Store(":memory:");
 }
 
+function ageDispatch(s: Store, id: string, updatedAt: string): void {
+  const store = s as unknown as {
+    db: { query: (sql: string) => { run: (updatedAt: string, id: string) => void } };
+  };
+  store.db.query("UPDATE dispatches SET updated_at = ? WHERE id = ?").run(updatedAt, id);
+}
+
 describe("Store — dispatches", () => {
   test("create/get round-trips with defaults", () => {
     const s = mem();
@@ -47,6 +54,31 @@ describe("Store — dispatches", () => {
     expect(s.listDispatches({ status: "delivered" })).toHaveLength(1);
     expect(s.listDispatches({ status: "pending" })).toHaveLength(2);
     expect(s.listDispatches({ limit: 2 })).toHaveLength(2);
+    s.close();
+  });
+
+  test("list marks old sending dispatches as failed", () => {
+    const s = mem();
+    const rec = s.createDispatch({ target: "s:w", prompt: "stale", status: "sending" });
+    ageDispatch(s, rec.id, "2000-01-01T00:00:00.000Z");
+    expect(s.listDispatches({ status: "sending" })).toHaveLength(0);
+    expect(s.listDispatches({ status: "failed" })[0]).toMatchObject({
+      id: rec.id,
+      status: "failed",
+      detail: expect.stringContaining("left in sending state"),
+    });
+    s.close();
+  });
+
+  test("get marks old sending dispatches as failed", () => {
+    const s = mem();
+    const rec = s.createDispatch({ target: "s:w", prompt: "stale", status: "sending" });
+    ageDispatch(s, rec.id, "2000-01-01T00:00:00.000Z");
+    expect(s.getDispatch(rec.id)).toMatchObject({
+      id: rec.id,
+      status: "failed",
+      detail: expect.stringContaining("left in sending state"),
+    });
     s.close();
   });
 });

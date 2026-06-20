@@ -95,6 +95,34 @@ describe("evaluateDelivery", () => {
     expect(res.reason).toMatch(/advanced|acted on/i);
   });
 
+  test("raw shell: echoed long command with no immediate output => delivered", () => {
+    const prompt =
+      "cd /home/hasna/workspace/hasna/opensource/open-codewith-qa/codex-rs && just test-fast -p codex-state managed_worktree";
+    const echoed = `hasna@spark01:~/workspace$ ${prompt}`;
+    const res = evaluateDelivery({
+      before: "hasna@spark01:~/workspace$ ",
+      afterTyped: echoed,
+      after: echoed,
+      prompt,
+      shellCommand: true,
+    });
+    expect(res.delivered).toBe(true);
+    expect(res.reason).toMatch(/shell command echo/i);
+  });
+
+  test("agent composer: unchanged prompt is still not delivered", () => {
+    const prompt =
+      "cd /home/hasna/workspace/hasna/opensource/open-codewith-qa/codex-rs && just test-fast -p codex-state managed_worktree";
+    const parked = `> ${prompt}`;
+    const res = evaluateDelivery({
+      before: "> ",
+      afterTyped: parked,
+      after: parked,
+      prompt,
+    });
+    expect(res.delivered).toBe(false);
+  });
+
   test("line-wrapped command echo still recognized as delivered", () => {
     // The shell prompt + command wrap across lines; the tail is split.
     const res = evaluateDelivery({
