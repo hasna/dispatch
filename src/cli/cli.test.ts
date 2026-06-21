@@ -23,6 +23,11 @@ describe("resolvePrompt", () => {
   test("throws when no source", () => {
     expect(() => resolvePrompt({})).toThrow(/no prompt/);
   });
+  test("throws on an empty / whitespace-only prompt (e.g. empty file)", () => {
+    expect(() => resolvePrompt({ prompt: "" })).toThrow(/empty/);
+    expect(() => resolvePrompt({ prompt: "   \n\t " })).toThrow(/empty/);
+    expect(() => resolvePrompt({}, "   ")).toThrow(/empty|no prompt/);
+  });
 });
 
 describe("formatters", () => {

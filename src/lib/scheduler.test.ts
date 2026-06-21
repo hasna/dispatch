@@ -108,6 +108,63 @@ describe("scheduler.tick", () => {
     store.close();
   });
 
+  test("a one-shot gives up (status failed) after its retry window is exhausted", async () => {
+    const store = new Store(":memory:");
+    const sched = store.createSchedule({
+      options: { target: "dead:0", prompt: "permanently broken" },
+      at: "2000-01-01T00:00:00.000Z",
+      nextRun: "2000-01-01T00:00:00.000Z",
+    });
+    const errors: unknown[] = [];
+    // now is just after creation; window of 0 means "already exhausted".
+    const fixedNow = new Date(Date.now() + 5_000);
+    const res = await tick({
+      store,
+      dispatch: async () => {
+        throw new Error("target pane not found");
+      },
+      now: () => fixedNow,
+      maxRetryWindowMs: 0,
+      onError: (_s, e) => errors.push(e),
+    });
+    expect(errors).toHaveLength(1);
+    expect(res.failed).toHaveLength(1);
+    const after = store.getSchedule(sched.id)!;
+    expect(after.status).toBe("failed");
+    // A subsequent tick must not re-fire a failed (terminal) schedule.
+    const res2 = await tick({
+      store,
+      dispatch: async () => fakeRecord("should-not-run"),
+      now: () => new Date(Date.now() + 10_000),
+      maxRetryWindowMs: 0,
+    });
+    expect(res2.fired).toHaveLength(0);
+    expect(res2.failed).toHaveLength(0);
+    store.close();
+  });
+
+  test("a cron schedule keeps retrying on failure regardless of the retry window", async () => {
+    const store = new Store(":memory:");
+    const sched = store.createSchedule({
+      options: { target: "s:w", prompt: "cron-fail" },
+      cron: "* * * * *",
+      nextRun: "2000-01-01T00:00:00.000Z",
+    });
+    const res = await tick({
+      store,
+      dispatch: async () => {
+        throw new Error("transient");
+      },
+      now: () => new Date("2026-06-17T10:00:30.000Z"),
+      maxRetryWindowMs: 0, // would expire a one-shot, but crons ignore it
+    });
+    expect(res.failed).toHaveLength(1);
+    const after = store.getSchedule(sched.id)!;
+    expect(after.status).toBe("scheduled");
+    expect(new Date(after.nextRun).getTime()).toBeGreaterThan(Date.parse("2026-06-17T10:00:30.000Z"));
+    store.close();
+  });
+
   test("a failed dispatch record does not consume a one-shot schedule", async () => {
     const store = new Store(":memory:");
     const sched = store.createSchedule({

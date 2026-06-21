@@ -110,6 +110,23 @@ export class Tmux {
     return res.exitCode === 0 ? res.stdout.replace(/\n$/, "") : "";
   }
 
+  /** Whether the pane is in a tmux mode (copy-mode, view-mode, …). */
+  paneInMode(target: string): boolean {
+    return this.paneProperty(target, "pane_in_mode") === "1";
+  }
+
+  /**
+   * Exit any active tmux mode (e.g. copy-mode from scrollback) on the pane.
+   * While a pane is in copy-mode, send-keys/paste are interpreted as mode
+   * commands rather than delivered to the program, so a dispatch would be
+   * silently swallowed. Returns true if the pane was in a mode and was exited.
+   */
+  exitCopyMode(target: string): boolean {
+    if (!this.paneInMode(target)) return false;
+    this.tmux(["copy-mode", "-q", "-t", target]);
+    return true;
+  }
+
   /**
    * Send literal text to a pane (no key-name interpretation). Newlines in the
    * text are sent as Enter keypresses, so this is for short single-line text;

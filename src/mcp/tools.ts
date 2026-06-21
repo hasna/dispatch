@@ -105,7 +105,7 @@ export const TOOLS: ToolDef[] = [
     verb: "schedules",
     title: "List scheduled dispatches",
     description: "List scheduled dispatches (optionally filter by status).",
-    inputSchema: { status: z.enum(["scheduled", "fired", "cancelled"]).optional() },
+    inputSchema: { status: z.enum(["scheduled", "fired", "cancelled", "failed"]).optional() },
     handler: async (deps, a) => deps.client.listSchedules({ status: a.status as never }),
   },
   {

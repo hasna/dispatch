@@ -38,6 +38,30 @@ describe("Tmux command construction", () => {
     expect(r.lastArgv()).toEqual(["tmux", "send-keys", "-t", "s:w", "Enter"]);
   });
 
+  test("paneInMode reflects pane_in_mode", () => {
+    const on = new MockRunner();
+    on.queue.push({ stdout: "1\n" });
+    expect(new Tmux(on).paneInMode("s:w")).toBe(true);
+    const off = new MockRunner();
+    off.queue.push({ stdout: "0\n" });
+    expect(new Tmux(off).paneInMode("s:w")).toBe(false);
+  });
+
+  test("exitCopyMode cancels the mode only when the pane is in one", () => {
+    // In a mode -> cancel issued.
+    const inMode = new MockRunner();
+    inMode.queue.push({ stdout: "1\n" }); // pane_in_mode
+    expect(new Tmux(inMode).exitCopyMode("s:w")).toBe(true);
+    expect(inMode.lastArgv()).toEqual(["tmux", "copy-mode", "-q", "-t", "s:w"]);
+
+    // Not in a mode -> no cancel command issued.
+    const notMode = new MockRunner();
+    notMode.queue.push({ stdout: "0\n" });
+    const t = new Tmux(notMode);
+    expect(t.exitCopyMode("s:w")).toBe(false);
+    expect(notMode.calls).toHaveLength(1); // only the display-message probe
+  });
+
   test("capturePane uses -p and returns stdout", () => {
     const r = new MockRunner();
     r.queue.push({ stdout: "pane contents\n" });

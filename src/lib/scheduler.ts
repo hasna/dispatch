@@ -11,6 +11,12 @@ export interface SchedulerDeps {
   now?: () => Date;
   /** Delay before retrying a failed one-shot schedule. Default 60s. */
   retryDelayMs?: number;
+  /**
+   * How long a failing one-shot schedule keeps retrying (measured from its fire
+   * time) before it gives up and is marked `failed`, instead of retrying
+   * forever against a permanently-dead target. Default 1 hour.
+   */
+  maxRetryWindowMs?: number;
   /** Optional sink for errors (a dispatch failing should not stop the tick). */
   onError?: (schedule: ScheduledDispatch, error: unknown) => void;
 }
@@ -32,6 +38,7 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
   const now = deps.now ?? (() => new Date());
   const current = now();
   const retryDelayMs = deps.retryDelayMs ?? 60_000;
+  const maxRetryWindowMs = deps.maxRetryWindowMs ?? 60 * 60_000;
   const due = deps.store.dueSchedules(current.getTime());
   const fired: ScheduledDispatch[] = [];
   const failed: ScheduledDispatch[] = [];
@@ -53,6 +60,26 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
 
     const firedAt = nowIso();
     if (failedDispatch) {
+      // One-shots give up after the retry window so a permanently-dead target
+      // does not cause infinite retries; crons always retry at their cadence.
+      if (!sched.cron) {
+        // Measure the retry window from the effective first-due time: the later
+        // of the scheduled time and creation. A past `at` means "fire ASAP" and
+        // must not be treated as decades of expired retries.
+        const firstDue = Math.max(
+          new Date(sched.at ?? sched.createdAt).getTime(),
+          new Date(sched.createdAt).getTime(),
+        );
+        if (current.getTime() - firstDue >= maxRetryWindowMs) {
+          const updated = deps.store.updateSchedule(sched.id, {
+            status: "failed",
+            lastDispatchId,
+            lastFiredAt: firedAt,
+          });
+          failed.push(updated);
+          continue;
+        }
+      }
       const nextRun = sched.cron
         ? computeNextRun({ cron: sched.cron }, now())
         : new Date(current.getTime() + retryDelayMs).toISOString();

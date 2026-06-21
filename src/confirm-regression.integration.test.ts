@@ -77,4 +77,29 @@ d("confirmation regressions (real tmux)", () => {
     const pane = spawnSync("tmux", ["capture-pane", "-t", SESSION, "-p"], { encoding: "utf8" }).stdout;
     expect(pane).toMatch(/to be submitted after next tool call/i);
   }, 20000);
+
+  test("pane scrolled into copy-mode: dispatch exits the mode and still lands", async () => {
+    const res = spawnSync("tmux", ["new-session", "-d", "-s", SESSION, "-x", "120", "-y", "30"], {
+      encoding: "utf8",
+    });
+    if (res.status !== 0) throw new Error(`failed to start shell session: ${res.stderr}`);
+    await Bun.sleep(700);
+    // Generate scrollback and scroll up into copy-mode (keys would be swallowed).
+    spawnSync("tmux", ["send-keys", "-t", SESSION, "seq 1 200", "Enter"], { encoding: "utf8" });
+    await Bun.sleep(300);
+    spawnSync("tmux", ["copy-mode", "-t", SESSION], { encoding: "utf8" });
+    spawnSync("tmux", ["send-keys", "-t", SESSION, "-X", "history-top"], { encoding: "utf8" });
+    expect(spawnSync("tmux", ["display-message", "-p", "-t", SESSION, "#{pane_in_mode}"], { encoding: "utf8" }).stdout.trim()).toBe("1");
+
+    const marker = `DISPATCH_COPYMODE_${process.pid}`;
+    const send = runCli(["send", "--to", SESSION, "--prompt", `echo ${marker}`, "--json"]);
+    expect(send.status).toBe(0);
+    expect(JSON.parse(send.stdout).status).toBe("delivered");
+
+    await Bun.sleep(300);
+    // Mode exited and the command executed.
+    expect(spawnSync("tmux", ["display-message", "-p", "-t", SESSION, "#{pane_in_mode}"], { encoding: "utf8" }).stdout.trim()).toBe("0");
+    const pane = spawnSync("tmux", ["capture-pane", "-t", SESSION, "-p"], { encoding: "utf8" }).stdout;
+    expect(pane).toContain(marker);
+  }, 20000);
 });

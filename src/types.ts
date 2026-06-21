@@ -99,7 +99,12 @@ export interface ScheduledDispatch {
   cron?: string;
   /** Next computed fire time (ISO 8601). */
   nextRun: string;
-  status: "scheduled" | "fired" | "cancelled";
+  /**
+   * `scheduled` — waiting to fire (or retrying). `fired` — a one-shot completed
+   * (or last cron run succeeded). `cancelled` — cancelled by a user. `failed` —
+   * a one-shot gave up after exhausting its retry window.
+   */
+  status: "scheduled" | "fired" | "cancelled" | "failed";
   /** Id of the last dispatch this schedule produced. */
   lastDispatchId?: string;
   lastFiredAt?: string;

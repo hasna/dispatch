@@ -75,6 +75,14 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
   }
   const shellCommand = isShellCommand(tmux.paneProperty(options.target, "pane_current_command"));
 
+  // 1b. If the pane is scrolled into copy-mode, keys would be swallowed —
+  //     exit the mode first so the prompt is actually delivered.
+  try {
+    tmux.exitCopyMode(options.target);
+  } catch {
+    // best-effort; a delivery failure below will be reported normally
+  }
+
   // 2. Snapshot before.
   const before = tmux.capturePane(options.target, { start: 50 });
 
