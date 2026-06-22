@@ -10,12 +10,14 @@ import type {
   DispatchOptions,
   DispatchRecord,
   DispatchStatus,
+  ExecOptions,
   ScheduledDispatch,
 } from "../types.js";
 import { Store } from "../lib/store.js";
 import { Tmux } from "../lib/tmux.js";
 import { createRunner } from "../lib/runner.js";
 import { performDispatch } from "../lib/engine.js";
+import { performExec } from "../lib/exec.js";
 import { computeNextRun } from "../lib/schedule.js";
 
 export interface DispatchClientOptions {
@@ -50,6 +52,13 @@ export class DispatchClient {
     const runner = await createRunner(options.machine);
     const tmux = new Tmux(runner);
     return performDispatch(options, { tmux, store: this.store });
+  }
+
+  /** Dispatch a shell command to a detected shell tmux target after policy filtering. */
+  async exec(options: ExecOptions): Promise<DispatchRecord> {
+    const runner = await createRunner(options.machine);
+    const tmux = new Tmux(runner);
+    return performExec(options, { tmux, store: this.store });
   }
 
   /** Look up a previously-recorded dispatch by id. */
@@ -94,6 +103,16 @@ export async function dispatch(options: DispatchOptions): Promise<DispatchRecord
   const client = new DispatchClient({ persist: false });
   try {
     return await client.send(options);
+  } finally {
+    client.close();
+  }
+}
+
+/** One-shot convenience: exec without managing a client. */
+export async function dispatchExec(options: ExecOptions): Promise<DispatchRecord> {
+  const client = new DispatchClient({ persist: false });
+  try {
+    return await client.exec(options);
   } finally {
     client.close();
   }

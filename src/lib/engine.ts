@@ -5,6 +5,7 @@ import { computeSubmitDelay } from "./delay.js";
 import { submit } from "./submit.js";
 import { confirmDelivery, evaluateDelivery } from "./confirm.js";
 import { genId, nowIso } from "./ids.js";
+import { classifyPaneCommand, looksLikeAgentPane } from "./exec-policy.js";
 
 /** Single-line prompts longer than this also go through paste, not send-keys. */
 export const PASTE_LENGTH_THRESHOLD = 1000;
@@ -17,10 +18,6 @@ export function chooseMode(prompt: string, mode: DispatchOptions["mode"] = "auto
   if (prompt.includes("\n")) return "paste";
   if (prompt.length > PASTE_LENGTH_THRESHOLD) return "paste";
   return "literal";
-}
-
-function isShellCommand(command: string): boolean {
-  return /^(ba|z|fi)?sh$|^fish$|^nu$/.test(command.trim());
 }
 
 export interface DispatchDeps {
@@ -47,6 +44,7 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
     ? store.createDispatch({ target: options.target, machine, prompt: options.prompt, status: "sending" })
     : {
         id: genId(),
+        kind: "prompt",
         target: options.target,
         machine,
         prompt: options.prompt,
@@ -73,7 +71,22 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
   if (!tmux.paneExists(options.target)) {
     return finish({ status: "failed", detail: `target pane not found: ${options.target} (machine: ${machine})` });
   }
-  const shellCommand = isShellCommand(tmux.paneProperty(options.target, "pane_current_command"));
+  const paneCommand = tmux.paneProperty(options.target, "pane_current_command");
+  const targetKind = classifyPaneCommand(paneCommand);
+  const shellCommand = targetKind === "shell";
+  if (shellCommand) {
+    return finish({
+      status: "failed",
+      detail: `target appears to be a shell (${paneCommand || "unknown"}); use dispatch exec for shell commands`,
+    });
+  }
+  const before = tmux.capturePane(options.target, { start: 50 });
+  if (targetKind !== "agent" && !looksLikeAgentPane(before)) {
+    return finish({
+      status: "failed",
+      detail: `target is not a recognized agent composer (${paneCommand || "unknown"}); refusing prompt delivery`,
+    });
+  }
 
   // 1b. If the pane is scrolled into copy-mode, keys would be swallowed —
   //     exit the mode first so the prompt is actually delivered.
@@ -82,9 +95,6 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
   } catch {
     // best-effort; a delivery failure below will be reported normally
   }
-
-  // 2. Snapshot before.
-  const before = tmux.capturePane(options.target, { start: 50 });
 
   // 3. Deliver the prompt.
   const mode = chooseMode(options.prompt, options.mode);

@@ -39,6 +39,39 @@ describe("Store — dispatches", () => {
     s.close();
   });
 
+  test("exec audit fields round-trip", () => {
+    const s = mem();
+    const rec = s.createDispatch({
+      kind: "exec",
+      target: "open-mailery:01",
+      prompt: "mailery status",
+      status: "skipped",
+      commandHash: "0123456789abcdef",
+      targetKind: "shell",
+      dryRun: true,
+      filter: {
+        allowed: true,
+        code: "allowed_prefix",
+        reason: "command prefix is allowlisted",
+        commandHash: "0123456789abcdef",
+        normalizedCommand: "mailery status",
+        targetKind: "shell",
+        matchedRule: "mailery status",
+      },
+      execPlan: { interrupt: false, pasteText: "mailery status", submitKey: "Enter" },
+    });
+
+    expect(s.getDispatch(rec.id)).toMatchObject({
+      kind: "exec",
+      commandHash: "0123456789abcdef",
+      targetKind: "shell",
+      dryRun: true,
+      filter: { allowed: true, code: "allowed_prefix" },
+      execPlan: { pasteText: "mailery status", submitKey: "Enter" },
+    });
+    s.close();
+  });
+
   test("update throws for unknown id", () => {
     const s = mem();
     expect(() => s.updateDispatch("nope", { status: "failed" })).toThrow(/not found/);

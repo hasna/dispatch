@@ -1,10 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { TOOLS, VERBS, type ToolDeps } from "./tools.js";
 import { DispatchClient } from "../sdk/index.js";
 import { Store } from "../lib/store.js";
 import { Tmux } from "../lib/tmux.js";
 import { MockRunner } from "../test/mock-runner.js";
 import { buildProgram } from "../cli/index.js";
+import type { DispatchRecord, ExecOptions } from "../types.js";
 
 function deps(): ToolDeps {
   const store = new Store(":memory:");
@@ -60,6 +64,49 @@ describe("MCP tool handlers", () => {
     d.store.createSchedule({ options: { target: "s:w", prompt: "x" }, nextRun: "2099-01-01T00:00:00Z" });
     const st = (await tool("dispatch_daemon_status").handler(d, {})) as { scheduled: number };
     expect(st.scheduled).toBe(1);
+  });
+
+  test("exec loads a reviewed policy file and delegates command dispatch options to the client", async () => {
+    const d = deps();
+    const dir = mkdtempSync(join(tmpdir(), "dispatch_mcp_policy_"));
+    const policyFile = join(dir, "exec-policy.json");
+    writeFileSync(policyFile, JSON.stringify({ allowPrefixes: ["mailery status"], allowTargets: ["open-mailery:*"] }));
+    let received: ExecOptions | undefined;
+    d.client.exec = async (opts: ExecOptions): Promise<DispatchRecord> => {
+      received = opts;
+      return {
+        id: "exec1",
+        kind: "exec",
+        target: opts.target,
+        machine: "local",
+        prompt: opts.command,
+        status: "skipped",
+        detail: "dry run",
+        createdAt: "x",
+        updatedAt: "x",
+      };
+    };
+
+    try {
+      const result = await tool("dispatch_exec").handler(d, {
+        target: "open-mailery:01",
+        command: "mailery status",
+        dryRun: true,
+        forceInterrupt: true,
+        policyFile,
+      });
+
+      expect(result).toMatchObject({ id: "exec1", kind: "exec" });
+      expect(received).toMatchObject({
+        target: "open-mailery:01",
+        command: "mailery status",
+        dryRun: true,
+        forceInterrupt: true,
+        policy: { allowPrefixes: ["mailery status"], allowTargets: ["open-mailery:*"] },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

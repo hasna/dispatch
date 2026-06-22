@@ -2,11 +2,12 @@
 import { Command } from "commander";
 import { getPackageVersion } from "../lib/version.js";
 import { DispatchClient } from "../sdk/index.js";
-import type { DispatchOptions } from "../types.js";
+import type { DispatchOptions, ExecOptions } from "../types.js";
 import { formatRecord, formatSchedule, resolvePrompt } from "./format.js";
 import { registerDaemonCommands } from "./daemon-commands.js";
 import { Tmux } from "../lib/tmux.js";
 import { createRunner } from "../lib/runner.js";
+import { loadExecPolicy } from "../lib/exec-policy.js";
 
 export interface CliDeps {
   /** Factory for the client; when provided, the CLI will NOT close it (tests own it). */
@@ -67,6 +68,39 @@ export function buildProgram(deps: CliDeps = {}): Command {
       const rec = await withClient((c) => c.send(options));
       out(opts.json ? JSON.stringify(rec, null, 2) : formatRecord(rec));
       if (rec.status === "failed") process.exitCode = 1;
+    });
+
+  program
+    .command("exec")
+    .description("Dispatch a filtered shell command to a detected shell tmux target")
+    .requiredOption("-t, --to <target>", "tmux target, e.g. session:window or session:window.pane")
+    .requiredOption("-c, --command <command>", "single-line shell command to submit")
+    .option("-m, --machine <id>", "target machine (via @hasna/machines); local when omitted")
+    .option("--dry-run", "validate and show the exact tmux input without sending it")
+    .option("--allow <path>", "JSON exec policy file with reviewed allowPrefixes/targets/sensitive paths")
+    .option("--force-interrupt", "send C-c before pasting the command")
+    .option("--json", "output JSON")
+    .action(async (opts) => {
+      const options: ExecOptions = {
+        target: opts.to,
+        command: opts.command,
+        machine: opts.machine,
+        dryRun: opts.dryRun === true,
+        forceInterrupt: opts.forceInterrupt === true,
+        policy: opts.allow ? loadExecPolicy(opts.allow) : undefined,
+      };
+      const rec = await withClient((c) => c.exec(options));
+      if (opts.json) {
+        out(JSON.stringify(rec, null, 2));
+      } else {
+        out(formatRecord(rec));
+        if (opts.dryRun && rec.execPlan && rec.filter?.allowed === true) {
+          if (rec.execPlan.interrupt) out("would send key: C-c");
+          out(`would paste: ${JSON.stringify(rec.execPlan.pasteText)}`);
+          out(`would send key: ${rec.execPlan.submitKey}`);
+        }
+      }
+      if (rec.status === "failed" || (rec.kind === "exec" && rec.filter?.allowed === false)) process.exitCode = 1;
     });
 
   program

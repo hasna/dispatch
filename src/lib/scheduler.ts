@@ -49,9 +49,9 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
     try {
       const rec = await deps.dispatch(sched.options);
       lastDispatchId = rec?.id;
-      if (rec?.status === "failed") {
+      if (rec?.status !== "delivered") {
         failedDispatch = true;
-        deps.onError?.(sched, new Error(rec.detail ?? `dispatch ${rec.id} failed`));
+        deps.onError?.(sched, new Error(rec.detail ?? `dispatch ${rec.id} ended with status ${rec.status}`));
       }
     } catch (err) {
       failedDispatch = true;

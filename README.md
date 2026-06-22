@@ -19,6 +19,8 @@ dispatch send --to work:agent --prompt "Refactor the parser and add tests"
 |---|---|
 | Enter doesn't submit (text stuck in composer) | **Auto-calculated delay** before Enter (derived from word/char count), then **Enter-with-retry** until delivery is confirmed |
 | Long / multi-line prompts get mangled or submit early | **Bracketed paste** via a tmux buffer — the whole prompt arrives as one paste, newlines and all, with no premature submit |
+| Prompt text accidentally lands in a shell | **Target-class checks** — `dispatch send` refuses detected shell panes; shell commands must use `dispatch exec` |
+| Shell command dispatch needs guardrails | **Exec security filter** — shell targets only, allowlisted command prefixes, destructive/exfiltration blockers, dry-run audit, and no `C-c` unless explicitly requested |
 | "Did it actually go through?" | **Smart delivery confirmation** — diffs the pane before/after and detects the agent's working/`esc to interrupt` state and the composer clearing |
 | Doesn't work across machines | **Cross-machine** routing through [`@hasna/machines`](https://github.com/hasna/machines) (Tailscale / LAN / SSH) |
 | Fire-and-forget / later | **Scheduled dispatches** (`--at` / `--cron`) owned by a **persistent daemon** that survives restarts |
@@ -36,6 +38,7 @@ bun install -g @hasna/dispatch
 
 ```text
 dispatch send       Dispatch a prompt to a tmux target and auto-submit it
+dispatch exec       Dispatch a filtered shell command to a shell tmux target
 dispatch status     Show a recorded dispatch by id
 dispatch list       List recorded dispatches (newest first)
 dispatch targets    List dispatchable tmux targets (panes) on a machine
@@ -67,6 +70,48 @@ dispatch send --machine spark01 --to work:agent.1 --prompt "build it" --json
 Key flags: `--to <session:window[.pane]>`, `--prompt`/`--file`/stdin, `--machine`,
 `--no-submit`, `--no-confirm`, `--delay <ms>`, `--retries <n>`,
 `--mode auto|paste|literal`, `--json`.
+
+### Exec
+
+`dispatch exec` is for shell commands, not agent prompts. It refuses detected agent
+composer panes, and `dispatch send` refuses detected shell panes so prompt text cannot
+accidentally execute in bash.
+
+```bash
+# Validate the target, command filter, and exact tmux input without typing.
+dispatch exec --to open-mailery:01 --command "mailery status" --dry-run
+
+# Submit a reviewed safe command to a detected shell pane.
+dispatch exec --to open-mailery:01 \
+  --command "cd ~/workspace/hasna/opensource/open-emails && mailery doctor" \
+  --allow ./dispatch-exec-policy.json
+
+# Prompts still use send.
+dispatch send --to open-mailery:01 --file ./goal.md
+```
+
+The exec filter blocks destructive patterns such as root/home removal, filesystem
+formatting, fork bombs, `curl|bash`, credential-looking network exfiltration, and
+rewrites under `~/.ssh`. Commands must match a built-in safe prefix or an allow prefix
+from a reviewed JSON policy file:
+
+```json
+{
+  "allowPrefixes": ["git reset --hard"],
+  "allowGitResetHardPaths": ["/home/hasna/workspace/hasna/opensource/open-dispatch"],
+  "allowTargets": ["open-dispatch:*"]
+}
+```
+
+Use `--allow ./dispatch-exec-policy.json` for that file. `git reset --hard` is refused
+unless the command first `cd`s into an allowed path. Non-dry-run exec requires
+`allowTargets` in a policy file; dry-run can run without one. `dispatch exec` rejects
+shell chaining, pipes, redirects, command substitution, and background operators except
+for the single reviewed form `cd <path> && <allowlisted-command>`. It sends the command
+with tmux `load-buffer` / `paste-buffer -p`, then Enter; it never sends `C-c` unless
+`--force-interrupt` is passed. Exec records appear in `dispatch list` / `dispatch status`
+with command hash, target kind, filter result, and delivered/skipped status. Persisted
+records store redacted command placeholders plus the hash rather than the raw command.
 
 ### Discover targets
 
@@ -123,7 +168,16 @@ dispatch.status(rec.id);
 dispatch.close();
 ```
 
-One-shot helper: `import { dispatch } from "@hasna/dispatch"`.
+```ts
+const execRec = await dispatch.exec({
+  target: "open-mailery:01",
+  command: "mailery status",
+  dryRun: true,
+});
+console.log(execRec.commandHash, execRec.filter?.code);
+```
+
+One-shot helpers: `import { dispatch, dispatchExec } from "@hasna/dispatch"`.
 
 ## MCP
 
@@ -132,7 +186,7 @@ Every CLI verb is also an MCP tool, so agents can dispatch over MCP:
 ```jsonc
 // register the server: dispatch-mcp  (stdio)
 // tools:
-//   dispatch_send, dispatch_status, dispatch_list, dispatch_targets,
+//   dispatch_send, dispatch_exec, dispatch_status, dispatch_list, dispatch_targets,
 //   dispatch_schedule, dispatch_schedules, dispatch_cancel,
 //   dispatch_daemon_start, dispatch_daemon_stop, dispatch_daemon_status
 ```
@@ -140,6 +194,9 @@ Every CLI verb is also an MCP tool, so agents can dispatch over MCP:
 ```bash
 dispatch-mcp        # stdio MCP server
 ```
+
+`dispatch_exec` accepts `policyFile` for the same reviewed JSON policy used by
+CLI `--allow`; it does not accept inline allowlists from the caller.
 
 ## How auto-submit works (the key feature)
 

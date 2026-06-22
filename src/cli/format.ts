@@ -31,6 +31,7 @@ const STATUS_ICON: Record<string, string> = {
   sending: "→",
   scheduled: "⧗",
   cancelled: "⊘",
+  skipped: "↷",
 };
 
 /** One-line human summary of a dispatch record. */
@@ -39,6 +40,13 @@ export function formatRecord(rec: DispatchRecord): string {
   const where = rec.machine && rec.machine !== "local" ? `${rec.machine}/${rec.target}` : rec.target;
   const preview = rec.prompt.replace(/\s+/g, " ").slice(0, 50);
   const detail = rec.detail ? ` — ${rec.detail}` : "";
+  if (rec.kind === "exec") {
+    const hash = rec.commandHash ? ` sha=${rec.commandHash}` : "";
+    const targetKind = rec.targetKind ? ` target=${rec.targetKind}` : "";
+    const filter = rec.filter ? ` filter=${rec.filter.code}` : "";
+    const dryRun = rec.dryRun ? " dry-run" : "";
+    return `${icon} ${rec.id}  ${rec.status.padEnd(9)} exec${dryRun}${hash}${targetKind}${filter} ${where}  "${preview}"${detail}`;
+  }
   return `${icon} ${rec.id}  ${rec.status.padEnd(9)} ${where}  "${preview}"${detail}`;
 }
 

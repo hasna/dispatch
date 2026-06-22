@@ -6,6 +6,7 @@ import { buildProgram } from "./index.js";
 import { formatRecord, formatSchedule, resolvePrompt } from "./format.js";
 import { DispatchClient } from "../sdk/index.js";
 import { Store } from "../lib/store.js";
+import type { DispatchRecord, ExecOptions } from "../types.js";
 
 describe("resolvePrompt", () => {
   test("prefers --prompt", () => {
@@ -121,5 +122,94 @@ describe("CLI read/schedule commands (in-memory client)", () => {
     await expect(
       program.parseAsync(["schedule", "--to", "s:w", "--prompt", "x"], { from: "user" }),
     ).rejects.toThrow(/at.*cron/);
+  });
+
+  test("exec --dry-run prints the exact paste plan", async () => {
+    const out: string[] = [];
+    let received: ExecOptions | undefined;
+    const fakeClient = {
+      exec: async (opts: ExecOptions): Promise<DispatchRecord> => {
+        received = opts;
+        return {
+          id: "exec123",
+          kind: "exec",
+          target: opts.target,
+          machine: "local",
+          prompt: opts.command,
+          status: "skipped",
+          detail: "dry run: command would be submitted",
+          commandHash: "0123456789abcdef",
+          targetKind: "shell",
+          dryRun: true,
+          filter: {
+            allowed: true,
+            code: "allowed_prefix",
+            reason: "command prefix is allowlisted",
+            commandHash: "0123456789abcdef",
+            normalizedCommand: opts.command,
+            targetKind: "shell",
+            matchedRule: "mailery status",
+          },
+          execPlan: { interrupt: false, pasteText: opts.command, submitKey: "Enter" },
+          createdAt: "x",
+          updatedAt: "x",
+        };
+      },
+    } as DispatchClient;
+    const program = buildProgram({
+      clientFactory: () => fakeClient,
+      out: (s) => out.push(s),
+    });
+
+    await program.parseAsync(["exec", "--to", "open-mailery:01", "--command", "mailery status", "--dry-run"], {
+      from: "user",
+    });
+
+    expect(received).toMatchObject({ target: "open-mailery:01", command: "mailery status", dryRun: true });
+    expect(out.join("\n")).toContain("would paste: \"mailery status\"");
+    expect(out.join("\n")).toContain("would send key: Enter");
+  });
+
+  test("blocked exec --dry-run does not print a send plan", async () => {
+    const out: string[] = [];
+    const fakeClient = {
+      exec: async (opts: ExecOptions): Promise<DispatchRecord> => ({
+        id: "exec-blocked",
+        kind: "exec",
+        target: opts.target,
+        machine: "local",
+        prompt: "<exec-command sha256:blocked>",
+        status: "skipped",
+        detail: "destructive root/home removal is blocked",
+        commandHash: "blocked",
+        targetKind: "shell",
+        dryRun: true,
+        filter: {
+          allowed: false,
+          code: "blocked_destructive",
+          reason: "destructive root/home removal is blocked",
+          commandHash: "blocked",
+          normalizedCommand: "<redacted>",
+          targetKind: "shell",
+        },
+        execPlan: { interrupt: false, pasteText: "<redacted>", submitKey: "Enter" },
+        createdAt: "x",
+        updatedAt: "x",
+      }),
+    } as DispatchClient;
+    const program = buildProgram({
+      clientFactory: () => fakeClient,
+      out: (s) => out.push(s),
+    });
+
+    await program.parseAsync(["exec", "--to", "open-mailery:01", "--command", "rm -rf /", "--dry-run"], {
+      from: "user",
+    });
+
+    const text = out.join("\n");
+    expect(text).toContain("blocked_destructive");
+    expect(text).not.toContain("would paste");
+    expect(text).not.toContain("would send key");
+    process.exitCode = 0;
   });
 });

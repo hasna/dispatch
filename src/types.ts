@@ -9,7 +9,58 @@ export type DispatchStatus =
   | "delivered"
   | "failed"
   | "scheduled"
-  | "cancelled";
+  | "cancelled"
+  | "skipped";
+
+/** What kind of payload a dispatch record represents. */
+export type DispatchKind = "prompt" | "exec";
+
+/** Runtime class of a target pane, based on tmux pane_current_command. */
+export type ExecTargetKind = "shell" | "agent" | "unknown";
+
+/** Command filter result recorded before any exec delivery is attempted. */
+export interface ExecFilterResult {
+  allowed: boolean;
+  code: string;
+  reason: string;
+  commandHash: string;
+  normalizedCommand: string;
+  targetKind: ExecTargetKind;
+  matchedRule?: string;
+}
+
+/** Policy additions for exec command allowlists and sensitive operations. */
+export interface ExecPolicy {
+  /** Command prefixes allowed in addition to the built-in safe prefixes. */
+  allowPrefixes?: string[];
+  /** Optional target allowlist. Supports `*` wildcards. */
+  allowTargets?: string[];
+  /** Paths where `git reset --hard` is explicitly permitted. Supports `*`. */
+  allowGitResetHardPaths?: string[];
+}
+
+/** The exact tmux input plan for a command exec. */
+export interface ExecDeliveryPlan {
+  interrupt: boolean;
+  pasteText: string;
+  submitKey: "Enter";
+}
+
+/** Options controlling a single shell command exec. */
+export interface ExecOptions {
+  /** Target tmux address, e.g. "session:window" or "session:window.pane". */
+  target: string;
+  /** Single-line shell command to submit. */
+  command: string;
+  /** Optional machine id (local when omitted). Resolved via @hasna/machines. */
+  machine?: string;
+  /** Validate and record the exact delivery plan without typing anything. */
+  dryRun?: boolean;
+  /** Send C-c before the command. Off by default and never inferred. */
+  forceInterrupt?: boolean;
+  /** Additional allow policy, usually loaded from `dispatch exec --allow`. */
+  policy?: ExecPolicy;
+}
 
 /**
  * A parsed tmux target: session, optional window, optional pane.
@@ -74,6 +125,8 @@ export interface DispatchOptions {
 /** A persisted dispatch record. */
 export interface DispatchRecord {
   id: string;
+  /** `prompt` for agent prompts, `exec` for shell command records. Defaults to `prompt` for older records. */
+  kind?: DispatchKind;
   target: string;
   machine: string;
   prompt: string;
@@ -84,6 +137,16 @@ export interface DispatchRecord {
   confirm?: ConfirmResult;
   /** Computed submit delay used (ms). */
   submitDelayMs?: number;
+  /** Short SHA-256 hash of the command for exec audit logs. */
+  commandHash?: string;
+  /** Security filter result for exec records. */
+  filter?: ExecFilterResult;
+  /** Detected target class for exec records. */
+  targetKind?: ExecTargetKind;
+  /** True when exec only validated and recorded the delivery plan. */
+  dryRun?: boolean;
+  /** Exact tmux input that would be or was sent for exec records. */
+  execPlan?: ExecDeliveryPlan;
   createdAt: string;
   deliveredAt?: string;
   updatedAt: string;

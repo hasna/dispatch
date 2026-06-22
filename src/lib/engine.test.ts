@@ -31,6 +31,9 @@ function tuiRunner(): MockRunner {
   let submitted = false;
   r.responder = (argv) => {
     if (argv[1] === "list-panes") return { stdout: "%1\n", stderr: "", exitCode: 0, source: "local" };
+    if (argv[1] === "display-message" && argv.at(-1) === "#{pane_current_command}") {
+      return { stdout: "codewith\n", stderr: "", exitCode: 0, source: "local" };
+    }
     if (argv[1] === "send-keys" && argv.includes("Enter")) {
       submitted = true;
       return { stdout: "", stderr: "", exitCode: 0, source: "local" };
@@ -45,6 +48,47 @@ function tuiRunner(): MockRunner {
 }
 
 describe("performDispatch", () => {
+  test("refuses prompt delivery to detected shell panes before text with parentheses can hit bash", async () => {
+    const r = new MockRunner();
+    r.responder = (argv) => {
+      if (argv[1] === "list-panes") return { stdout: "%1\n", stderr: "", exitCode: 0, source: "local" };
+      if (argv[1] === "display-message" && argv.at(-1) === "#{pane_current_command}") {
+        return { stdout: "bash\n", stderr: "", exitCode: 0, source: "local" };
+      }
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    };
+
+    const rec = await performDispatch(
+      { target: "live-codewith:0", prompt: "Refactor parser (but do not interrupt)" },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("failed");
+    expect(rec.detail).toMatch(/shell.*dispatch exec/i);
+    expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
+  });
+
+  test("refuses prompt delivery to unknown non-agent panes", async () => {
+    const r = new MockRunner();
+    r.responder = (argv) => {
+      if (argv[1] === "list-panes") return { stdout: "%1\n", stderr: "", exitCode: 0, source: "local" };
+      if (argv[1] === "display-message" && argv.at(-1) === "#{pane_current_command}") {
+        return { stdout: "vim\n", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "capture-pane") return { stdout: "-- INSERT --", stderr: "", exitCode: 0, source: "local" };
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    };
+
+    const rec = await performDispatch(
+      { target: "work:editor", prompt: "Refactor parser (but do not interrupt)" },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("failed");
+    expect(rec.detail).toMatch(/not a recognized agent composer/i);
+    expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
+  });
+
   test("delivers + confirms against a simulated TUI and records it", async () => {
     const r = tuiRunner();
     const store = new Store(":memory:");

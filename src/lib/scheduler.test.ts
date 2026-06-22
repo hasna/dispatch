@@ -187,6 +187,28 @@ describe("scheduler.tick", () => {
     store.close();
   });
 
+  test("a skipped dispatch record does not consume a one-shot schedule", async () => {
+    const store = new Store(":memory:");
+    const sched = store.createSchedule({
+      options: { target: "s:w", prompt: "skipped-record" },
+      at: "2000-01-01T00:00:00.000Z",
+      nextRun: "2000-01-01T00:00:00.000Z",
+    });
+    const res = await tick({
+      store,
+      dispatch: async () => fakeRecord("rec-skipped", "skipped"),
+      now: () => new Date("2026-06-17T10:00:00.000Z"),
+      retryDelayMs: 5_000,
+    });
+    expect(res.fired).toHaveLength(0);
+    expect(res.failed).toHaveLength(1);
+    const after = store.getSchedule(sched.id)!;
+    expect(after.status).toBe("scheduled");
+    expect(after.lastDispatchId).toBe("rec-skipped");
+    expect(after.nextRun).toBe("2026-06-17T10:00:05.000Z");
+    store.close();
+  });
+
   test("cancelled schedules never fire", async () => {
     const store = new Store(":memory:");
     const sched = store.createSchedule({

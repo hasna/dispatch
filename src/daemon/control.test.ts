@@ -18,6 +18,10 @@ import { Store } from "../lib/store.js";
 const pidPath = join(tmpdir(), `dispatch_test_pid_${process.pid}_${Math.floor(Math.random() * 1e6)}.pid`);
 const DEAD_PID = 2147480000; // almost certainly not a live process
 
+function spawnNamedSleeper(argv0: string) {
+  return spawn("bash", ["-lc", 'exec -a "$0" sleep 30', argv0], { stdio: "ignore" });
+}
+
 afterEach(() => {
   rmSync(pidPath, { force: true });
 });
@@ -65,11 +69,10 @@ describe("isDaemonRunning", () => {
     }
   });
   test("owned direct daemon entrypoint pidfile is recognized and stopped", async () => {
-    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 30000)", "src/daemon/index.ts"], {
-      stdio: "ignore",
-    });
+    const child = spawnNamedSleeper(join(import.meta.dir, "index.ts"));
     try {
       expect(child.pid).toBeDefined();
+      await Bun.sleep(20);
       writePid(child.pid!, pidPath);
       expect(isDaemonRunning(pidPath)).toEqual({ running: true, pid: child.pid, stale: false });
       const stopped = await stopDaemon({ path: pidPath, timeoutMs: 500, sleep: () => Bun.sleep(10) });
@@ -81,11 +84,10 @@ describe("isDaemonRunning", () => {
     }
   });
   test("owned dispatch-daemon bin pidfile is recognized and stopped", async () => {
-    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 30000)", "dispatch-daemon"], {
-      stdio: "ignore",
-    });
+    const child = spawnNamedSleeper("dispatch-daemon");
     try {
       expect(child.pid).toBeDefined();
+      await Bun.sleep(20);
       writePid(child.pid!, pidPath);
       expect(isDaemonRunning(pidPath)).toEqual({ running: true, pid: child.pid, stale: false });
       const stopped = await stopDaemon({ path: pidPath, timeoutMs: 500, sleep: () => Bun.sleep(10) });

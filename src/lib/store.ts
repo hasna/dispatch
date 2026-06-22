@@ -6,13 +6,18 @@ import { genId, nowIso } from "./ids.js";
 import type {
   ConfirmResult,
   DispatchOptions,
+  DispatchKind,
   DispatchRecord,
   DispatchStatus,
+  ExecFilterResult,
+  ExecTargetKind,
+  ExecDeliveryPlan,
   ScheduledDispatch,
 } from "../types.js";
 
 interface DispatchRow {
   id: string;
+  kind: string;
   target: string;
   machine: string;
   prompt: string;
@@ -20,6 +25,11 @@ interface DispatchRow {
   detail: string | null;
   confirm_json: string | null;
   submit_delay_ms: number | null;
+  command_hash: string | null;
+  filter_json: string | null;
+  target_kind: string | null;
+  dry_run: number | null;
+  exec_plan_json: string | null;
   created_at: string;
   delivered_at: string | null;
   updated_at: string;
@@ -41,6 +51,7 @@ interface ScheduleRow {
 function rowToDispatch(r: DispatchRow): DispatchRecord {
   return {
     id: r.id,
+    kind: (r.kind as DispatchKind | undefined) ?? "prompt",
     target: r.target,
     machine: r.machine,
     prompt: r.prompt,
@@ -48,6 +59,11 @@ function rowToDispatch(r: DispatchRow): DispatchRecord {
     detail: r.detail ?? undefined,
     confirm: r.confirm_json ? (JSON.parse(r.confirm_json) as ConfirmResult) : undefined,
     submitDelayMs: r.submit_delay_ms ?? undefined,
+    commandHash: r.command_hash ?? undefined,
+    filter: r.filter_json ? (JSON.parse(r.filter_json) as ExecFilterResult) : undefined,
+    targetKind: (r.target_kind as ExecTargetKind | null) ?? undefined,
+    dryRun: r.dry_run === null ? undefined : r.dry_run === 1,
+    execPlan: r.exec_plan_json ? (JSON.parse(r.exec_plan_json) as ExecDeliveryPlan) : undefined,
     createdAt: r.created_at,
     deliveredAt: r.delivered_at ?? undefined,
     updatedAt: r.updated_at,
@@ -115,6 +131,7 @@ export class Store {
     withSqliteBusyRetry(() => this.db.exec(`
       CREATE TABLE IF NOT EXISTS dispatches (
         id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL DEFAULT 'prompt',
         target TEXT NOT NULL,
         machine TEXT NOT NULL,
         prompt TEXT NOT NULL,
@@ -122,6 +139,11 @@ export class Store {
         detail TEXT,
         confirm_json TEXT,
         submit_delay_ms INTEGER,
+        command_hash TEXT,
+        filter_json TEXT,
+        target_kind TEXT,
+        dry_run INTEGER,
+        exec_plan_json TEXT,
         created_at TEXT NOT NULL,
         delivered_at TEXT,
         updated_at TEXT NOT NULL
@@ -144,6 +166,20 @@ export class Store {
       CREATE INDEX IF NOT EXISTS idx_schedules_status ON schedules(status);
       CREATE INDEX IF NOT EXISTS idx_schedules_next ON schedules(next_run);
     `));
+    this.ensureDispatchColumn("kind", "TEXT NOT NULL DEFAULT 'prompt'");
+    this.ensureDispatchColumn("command_hash", "TEXT");
+    this.ensureDispatchColumn("filter_json", "TEXT");
+    this.ensureDispatchColumn("target_kind", "TEXT");
+    this.ensureDispatchColumn("dry_run", "INTEGER");
+    this.ensureDispatchColumn("exec_plan_json", "TEXT");
+  }
+
+  private ensureDispatchColumn(name: string, definition: string): void {
+    const rows = withSqliteBusyRetry(() =>
+      this.db.query<{ name: string }, []>("PRAGMA table_info(dispatches)").all(),
+    );
+    if (rows.some((row) => row.name === name)) return;
+    withSqliteBusyRetry(() => this.db.exec(`ALTER TABLE dispatches ADD COLUMN ${name} ${definition};`));
   }
 
   // ---- dispatches ----
@@ -164,32 +200,45 @@ export class Store {
   }
 
   createDispatch(input: {
+    kind?: DispatchKind;
     target: string;
     machine?: string;
     prompt: string;
     status?: DispatchStatus;
     detail?: string;
     submitDelayMs?: number;
+    commandHash?: string;
+    filter?: ExecFilterResult;
+    targetKind?: ExecTargetKind;
+    dryRun?: boolean;
+    execPlan?: ExecDeliveryPlan;
   }): DispatchRecord {
     const now = nowIso();
     const rec: DispatchRecord = {
       id: genId(),
+      kind: input.kind ?? "prompt",
       target: input.target,
       machine: input.machine ?? "local",
       prompt: input.prompt,
       status: input.status ?? "pending",
       detail: input.detail,
       submitDelayMs: input.submitDelayMs,
+      commandHash: input.commandHash,
+      filter: input.filter,
+      targetKind: input.targetKind,
+      dryRun: input.dryRun,
+      execPlan: input.execPlan,
       createdAt: now,
       updatedAt: now,
     };
     withSqliteBusyRetry(() =>
       this.db.query(
-        `INSERT INTO dispatches (id, target, machine, prompt, status, detail, confirm_json, submit_delay_ms, created_at, delivered_at, updated_at)
-         VALUES ($id, $target, $machine, $prompt, $status, $detail, $confirm, $delay, $created, $delivered, $updated)`,
+        `INSERT INTO dispatches (id, kind, target, machine, prompt, status, detail, confirm_json, submit_delay_ms, command_hash, filter_json, target_kind, dry_run, exec_plan_json, created_at, delivered_at, updated_at)
+         VALUES ($id, $kind, $target, $machine, $prompt, $status, $detail, $confirm, $delay, $commandHash, $filter, $targetKind, $dryRun, $execPlan, $created, $delivered, $updated)`,
       )
       .run({
         $id: rec.id,
+        $kind: rec.kind ?? "prompt",
         $target: rec.target,
         $machine: rec.machine,
         $prompt: rec.prompt,
@@ -197,6 +246,11 @@ export class Store {
         $detail: rec.detail ?? null,
         $confirm: null,
         $delay: rec.submitDelayMs ?? null,
+        $commandHash: rec.commandHash ?? null,
+        $filter: rec.filter ? JSON.stringify(rec.filter) : null,
+        $targetKind: rec.targetKind ?? null,
+        $dryRun: rec.dryRun === undefined ? null : rec.dryRun ? 1 : 0,
+        $execPlan: rec.execPlan ? JSON.stringify(rec.execPlan) : null,
         $created: rec.createdAt,
         $delivered: null,
         $updated: rec.updatedAt,
@@ -213,14 +267,33 @@ export class Store {
 
   updateDispatch(
     id: string,
-    patch: Partial<Pick<DispatchRecord, "status" | "detail" | "confirm" | "submitDelayMs" | "deliveredAt">>,
+    patch: Partial<
+      Pick<
+        DispatchRecord,
+        | "status"
+        | "detail"
+        | "confirm"
+        | "submitDelayMs"
+        | "deliveredAt"
+        | "commandHash"
+        | "filter"
+        | "targetKind"
+        | "dryRun"
+        | "execPlan"
+      >
+    >,
   ): DispatchRecord {
     const existing = this.getDispatch(id);
     if (!existing) throw new Error(`dispatch not found: ${id}`);
     const merged: DispatchRecord = { ...existing, ...patch, updatedAt: nowIso() };
     withSqliteBusyRetry(() =>
       this.db.query(
-        `UPDATE dispatches SET status=$status, detail=$detail, confirm_json=$confirm, submit_delay_ms=$delay, delivered_at=$delivered, updated_at=$updated WHERE id=$id`,
+        `UPDATE dispatches
+         SET status=$status, detail=$detail, confirm_json=$confirm, submit_delay_ms=$delay,
+             command_hash=$commandHash, filter_json=$filter, target_kind=$targetKind,
+             dry_run=$dryRun, exec_plan_json=$execPlan, delivered_at=$delivered,
+             updated_at=$updated
+         WHERE id=$id`,
       )
       .run({
         $id: id,
@@ -228,6 +301,11 @@ export class Store {
         $detail: merged.detail ?? null,
         $confirm: merged.confirm ? JSON.stringify(merged.confirm) : null,
         $delay: merged.submitDelayMs ?? null,
+        $commandHash: merged.commandHash ?? null,
+        $filter: merged.filter ? JSON.stringify(merged.filter) : null,
+        $targetKind: merged.targetKind ?? null,
+        $dryRun: merged.dryRun === undefined ? null : merged.dryRun ? 1 : 0,
+        $execPlan: merged.execPlan ? JSON.stringify(merged.execPlan) : null,
         $delivered: merged.deliveredAt ?? null,
         $updated: merged.updatedAt,
       }),

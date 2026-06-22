@@ -4,6 +4,7 @@ import { DispatchClient } from "../sdk/index.js";
 import { Store } from "../lib/store.js";
 import { Tmux } from "../lib/tmux.js";
 import { createRunner } from "../lib/runner.js";
+import { loadExecPolicy } from "../lib/exec-policy.js";
 import { daemonStatus, stopDaemon } from "../daemon/control.js";
 import { startDaemon } from "../daemon/daemon.js";
 
@@ -59,6 +60,30 @@ export const TOOLS: ToolDef[] = [
         submitDelayMs: a.delayMs as number | undefined,
         maxSubmitRetries: a.retries as number | undefined,
         mode: a.mode as "auto" | "paste" | "literal" | undefined,
+      }),
+  },
+  {
+    name: "dispatch_exec",
+    verb: "exec",
+    title: "Dispatch a shell command",
+    description:
+      "Validate a single-line shell command with the exec security filter, require a detected shell tmux target, then submit it safely via tmux paste-buffer + Enter. Supports dry-run and explicit force-interrupt.",
+    inputSchema: {
+      target: z.string().describe("tmux target, e.g. session:window or session:window.pane"),
+      command: z.string().describe("single-line shell command to deliver"),
+      machine: z.string().optional().describe("target machine id (local when omitted)"),
+      dryRun: z.boolean().optional().describe("validate and record without sending tmux input"),
+      forceInterrupt: z.boolean().optional().describe("send C-c before the command (default false)"),
+      policyFile: z.string().optional().describe("reviewed JSON exec policy file, equivalent to CLI --allow"),
+    },
+    handler: (deps, a) =>
+      deps.client.exec({
+        target: a.target as string,
+        command: a.command as string,
+        machine: a.machine as string | undefined,
+        dryRun: a.dryRun as boolean | undefined,
+        forceInterrupt: a.forceInterrupt as boolean | undefined,
+        policy: a.policyFile ? loadExecPolicy(a.policyFile as string) : undefined,
       }),
   },
   {
