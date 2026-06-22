@@ -198,6 +198,80 @@ describe("evaluateDelivery", () => {
     expect(res.reason).toMatch(/parked|not submitted/i);
   });
 
+  test("historical working text does not make a submitted active turn look parked", () => {
+    const prompt = "Finish validation and report changed files summary";
+    const before = `
+Earlier transcript:
+• Working through prior validation notes.
+• Ran git diff --stat
+
+──────────────────────────────────────────────────────────────────────────────
+
+• Pursuing goal (18m • esc to interrupt)
+
+› Use /skills to list available skills
+
+  gpt-5.5 xhigh fast · account007 · 5h 37% left · Main [default]       Goal achieved (21s)
+`;
+    const afterTyped = `${before}
+› ${prompt}`;
+    const after = `
+Earlier transcript:
+• Working through prior validation notes.
+• Ran git diff --stat
+
+User
+${prompt}
+
+• Ran just check-fast -p codex-tui
+  └ Finished dev profile
+
+• Working (2m 58s • esc to interrupt)
+
+
+› Use /skills to list available skills
+
+  gpt-5.5 xhigh fast · account007 · 5h 37% left · Main [default]       Pursuing goal (2m)
+`;
+
+    const res = evaluateDelivery({ before, afterTyped, after, prompt });
+    expect(res.delivered).toBe(true);
+    expect(res.reason).toMatch(/advanced|working|acted on|composer/i);
+  });
+
+  test("existing busy queue plus newly appended prompt is delivered", () => {
+    const prompt = "add the missing adversarial regression";
+    const before = `✶ Working… (esc to interrupt)
+Messages to be submitted after next tool call:
+  old queued task`;
+    const afterTyped = `${before}
+> ${prompt}`;
+    const after = `✶ Working… (esc to interrupt)
+Messages to be submitted after next tool call:
+  old queued task
+  ${prompt}`;
+
+    const res = evaluateDelivery({ before, afterTyped, after, prompt });
+    expect(res.delivered).toBe(true);
+    expect(res.queued).toBe(true);
+    expect(res.reason).toMatch(/queued/i);
+  });
+
+  test("long parked composer remains not delivered even when it pushes busy text out of the live tail", () => {
+    const prompt = `START ${Array.from({ length: 35 }, (_, i) => `line-${i}`).join("\n")} FINAL_UNSENT_MARKER`;
+    const before = "✶ Working… (esc to interrupt)\n  running previous task";
+    const afterTyped = `${before}
+› ${prompt}`;
+    const after = `✻ Working… (esc to interrupt)
+  running previous task
+› ${prompt}`;
+
+    const res = evaluateDelivery({ before, afterTyped, after, prompt });
+    expect(res.delivered).toBe(false);
+    expect(res.queued).toBe(false);
+    expect(res.reason).toMatch(/parked|not submitted/i);
+  });
+
   test("busy agent with no recognized indicator but the pane advanced => delivered", () => {
     // Even if our working/queued patterns miss the agent's exact wording, the
     // pane changing after Enter is enough to know the prompt was acted on.
