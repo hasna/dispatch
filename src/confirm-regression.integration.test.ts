@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { codewithFixtureLauncher } from "./test/agent-launcher.js";
 
 /**
  * Regression coverage for the confirmation false-negatives reported from
@@ -63,7 +64,7 @@ d("confirmation regressions (real tmux)", () => {
   test("busy agent that queues the message is reported delivered + queued (not failed)", async () => {
     const res = spawnSync(
       "tmux",
-      ["new-session", "-d", "-s", SESSION, "-x", "200", "-y", "50", "bun", "run", busyAgent],
+      ["new-session", "-d", "-s", SESSION, "-x", "200", "-y", "50", codewithFixtureLauncher(dataDir), "run", busyAgent],
       { encoding: "utf8" },
     );
     if (res.status !== 0) throw new Error(`failed to start busy agent: ${res.stderr}`);

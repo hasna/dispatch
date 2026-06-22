@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chooseMode, performDispatch } from "./engine.js";
+import { applyGoalPrefix, chooseMode, performDispatch } from "./engine.js";
 import { Tmux } from "./tmux.js";
 import { Store } from "./store.js";
 import { MockRunner } from "../test/mock-runner.js";
@@ -58,6 +58,11 @@ const codewithProcessTree = `
 1241 1240 Sl+ /home/hasna/.bun/install/global/node_modules/@hasna/codewith/node_modules/@hasna/codewith-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codewith --auth-profile account005
 `;
 
+const codexProcessTree = `
+1234 1 Ss /usr/bin/bash
+1240 1234 Sl+ bun /home/hasna/.bun/bin/codex
+`;
+
 describe("chooseMode", () => {
   test("multiline always pastes", () => {
     expect(chooseMode("a\nb")).toBe("paste");
@@ -71,6 +76,31 @@ describe("chooseMode", () => {
   test("explicit mode wins", () => {
     expect(chooseMode("a\nb", "literal")).toBe("literal");
     expect(chooseMode("short", "paste")).toBe("paste");
+  });
+});
+
+describe("applyGoalPrefix", () => {
+  test("prefixes prompts when goal mode is enabled", () => {
+    expect(applyGoalPrefix("Fix native chat", true)).toBe("/goal Fix native chat");
+  });
+
+  test("does not double-prefix prompts that already start with /goal", () => {
+    expect(applyGoalPrefix("/goal Fix native chat", true)).toBe("/goal Fix native chat");
+  });
+
+  test("prefixes slash commands that only start with goal-like text", () => {
+    expect(applyGoalPrefix("/goals Fix native chat", true)).toBe("/goal /goals Fix native chat");
+    expect(applyGoalPrefix("/goalkeeper Fix native chat", true)).toBe("/goal /goalkeeper Fix native chat");
+  });
+
+  test("preserves multiline prompt contents after the prefix", () => {
+    expect(applyGoalPrefix("Fix native chat\n\nDetails:\n- keep tests", true)).toBe(
+      "/goal Fix native chat\n\nDetails:\n- keep tests",
+    );
+  });
+
+  test("leaves prompts unchanged when goal mode is disabled", () => {
+    expect(applyGoalPrefix("Fix native chat", false)).toBe("Fix native chat");
   });
 });
 
@@ -343,7 +373,7 @@ describe("performDispatch", () => {
   });
 
   test("accepts a node-launched Codewith composer when pane content proves it", async () => {
-    const r = composerRunner("node", codewithComposerCapture);
+    const r = composerRunner("node", codewithComposerCapture, "✶ Working… (esc to interrupt)", codewithProcessTree);
 
     const rec = await performDispatch(
       { target: "open-codewith-04:1.1", prompt: "Fix the dispatch bug", submit: false },
@@ -399,7 +429,7 @@ describe("performDispatch", () => {
   });
 
   test("accepts a bun-launched Codex composer when pane content proves it", async () => {
-    const r = composerRunner("bun", codexComposerCapture);
+    const r = composerRunner("bun", codexComposerCapture, "✶ Working… (esc to interrupt)", codexProcessTree);
 
     const rec = await performDispatch(
       { target: "work:codex", prompt: "Add regression coverage", submitDelayMs: 0 },
@@ -461,6 +491,33 @@ GET /health 200
     // persisted
     expect(store.getDispatch(rec.id)!.status).toBe("delivered");
     store.close();
+  });
+
+  test("goal mode records and delivers the prefixed prompt", async () => {
+    const r = tuiRunner();
+    const store = new Store(":memory:");
+    const rec = await performDispatch(
+      { target: "work:agent", prompt: "Fix native chat", goal: true, submit: false },
+      { tmux: new Tmux(r), store, sleep: noSleep },
+    );
+
+    expect(rec.prompt).toBe("/goal Fix native chat");
+    expect(store.getDispatch(rec.id)!.prompt).toBe("/goal Fix native chat");
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("/goal Fix native chat"))).toBe(true);
+    store.close();
+  });
+
+  test("goal mode preserves multiline file-style prompt content through bracketed paste", async () => {
+    const r = tuiRunner();
+    const prompt = "Fix native chat\n\nDetails:\n- keep tests";
+    const rec = await performDispatch(
+      { target: "work:agent", prompt, goal: true, submit: false },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.prompt).toBe(`/goal ${prompt}`);
+    const load = r.calls.find((c) => c.argv[1] === "load-buffer");
+    expect(load?.input).toBe(`/goal ${prompt}`);
   });
 
   test("fails cleanly when the target pane does not exist", async () => {

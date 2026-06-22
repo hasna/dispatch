@@ -5,7 +5,7 @@ import { computeSubmitDelay } from "./delay.js";
 import { submit } from "./submit.js";
 import { confirmDelivery, evaluateDelivery } from "./confirm.js";
 import { genId, nowIso } from "./ids.js";
-import { classifyPaneCommand, isAgentWrapperCommand, looksLikeWrappedAgentComposer } from "./exec-policy.js";
+import { validateAgentComposerTarget } from "./agent-target.js";
 
 /** Single-line prompts longer than this also go through paste, not send-keys. */
 export const PASTE_LENGTH_THRESHOLD = 1000;
@@ -18,6 +18,12 @@ export function chooseMode(prompt: string, mode: DispatchOptions["mode"] = "auto
   if (prompt.includes("\n")) return "paste";
   if (prompt.length > PASTE_LENGTH_THRESHOLD) return "paste";
   return "literal";
+}
+
+/** Prefix a prompt as a Codewith goal without trimming or rewriting the user's body. */
+export function applyGoalPrefix(prompt: string, enabled = false): string {
+  if (!enabled || /^\/goal(?:\s|$)/.test(prompt)) return prompt;
+  return `/goal ${prompt}`;
 }
 
 export interface DispatchDeps {
@@ -38,16 +44,17 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
   const machine = tmux.machine;
   const submitEnabled = options.submit !== false;
   const confirmEnabled = options.confirm !== false;
+  const prompt = applyGoalPrefix(options.prompt, options.goal === true);
 
   // Create (or synthesize) the record.
   let record: DispatchRecord = store
-    ? store.createDispatch({ target: options.target, machine, prompt: options.prompt, status: "sending" })
+    ? store.createDispatch({ target: options.target, machine, prompt, status: "sending" })
     : {
         id: genId(),
         kind: "prompt",
         target: options.target,
         machine,
-        prompt: options.prompt,
+        prompt,
         status: "sending",
         createdAt: nowIso(),
         updatedAt: nowIso(),
@@ -68,60 +75,18 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
   };
 
   // 1. Validate target.
-  if (!tmux.paneExists(options.target)) {
-    return finish({ status: "failed", detail: `target pane not found: ${options.target} (machine: ${machine})` });
-  }
-  const paneCommand = tmux.paneProperty(options.target, "pane_current_command");
-  const targetKind = classifyPaneCommand(paneCommand);
-  const shellCommand = targetKind === "shell";
-  if (shellCommand) {
-    return finish({
-      status: "failed",
-      detail: `target appears to be a shell (${paneCommand || "unknown"}); use dispatch exec for shell commands`,
-    });
-  }
-
-  // If the pane is scrolled into copy-mode, visible captures can show stale
-  // scrollback. Exit first so wrapper safety checks inspect the live process.
-  try {
-    if (tmux.paneInMode(options.target) && !tmux.exitCopyMode(options.target)) {
-      return finish({
-        status: "failed",
-        detail: "target is in tmux copy-mode or another pane mode; refusing prompt delivery until mode exits",
-      });
-    }
-  } catch {
-    return finish({
-      status: "failed",
-      detail: "could not verify target left tmux copy-mode; refusing prompt delivery",
-    });
-  }
-
-  if (targetKind !== "agent") {
-    if (!isAgentWrapperCommand(paneCommand)) {
-      return finish({
-        status: "failed",
-        detail: `target is not a recognized agent composer (${paneCommand || "unknown"}); refusing prompt delivery`,
-      });
-    }
-    const visibleBefore = tmux.capturePane(options.target);
-    const processTree = tmux.processTree(options.target);
-    if (!looksLikeWrappedAgentComposer(visibleBefore, { processTree })) {
-      return finish({
-        status: "failed",
-        detail: `target is not a recognized agent composer (${paneCommand || "unknown"}); refusing prompt delivery`,
-      });
-    }
-  }
+  const target = validateAgentComposerTarget(tmux, options.target);
+  const shellCommand = target.targetKind === "shell";
+  if (!target.ok) return finish({ status: "failed", detail: target.detail });
   const before = tmux.capturePane(options.target, { start: 50 });
 
   // 3. Deliver the prompt.
-  const mode = chooseMode(options.prompt, options.mode);
+  const mode = chooseMode(prompt, options.mode);
   try {
     if (mode === "paste") {
-      tmux.paste(options.target, options.prompt, { bracketed: true });
+      tmux.paste(options.target, prompt, { bracketed: true });
     } else {
-      tmux.sendLiteral(options.target, options.prompt);
+      tmux.sendLiteral(options.target, prompt);
     }
   } catch (err) {
     return finish({ status: "failed", detail: `delivery failed: ${(err as Error).message}` });
@@ -135,7 +100,7 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
     afterTyped = undefined;
   }
 
-  const delayMs = options.submitDelayMs ?? computeSubmitDelay(options.prompt);
+  const delayMs = options.submitDelayMs ?? computeSubmitDelay(prompt);
 
   // 5. Type-only mode: don't submit.
   if (!submitEnabled) {
@@ -151,7 +116,7 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
   const probe = confirmEnabled
     ? async (): Promise<boolean> => {
         const after = tmux.capturePane(options.target, { start: 50 });
-        return evaluateDelivery({ before, after, afterTyped, prompt: options.prompt, shellCommand }).delivered;
+        return evaluateDelivery({ before, after, afterTyped, prompt, shellCommand }).delivered;
       }
     : undefined;
 
@@ -175,7 +140,7 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
   const confirm = await confirmDelivery(tmux, options.target, {
     before,
     afterTyped,
-    prompt: options.prompt,
+    prompt,
     waitMs: 250,
     maxPolls: 3,
     shellCommand,

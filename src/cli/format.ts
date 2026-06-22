@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { DispatchRecord, ScheduledDispatch } from "../types.js";
+import type { CaptureResult, DispatchRecord, ScheduledDispatch } from "../types.js";
 
 /**
  * Resolve the prompt text from the flags: --prompt wins, else --file, else
@@ -47,7 +47,27 @@ export function formatRecord(rec: DispatchRecord): string {
     const dryRun = rec.dryRun ? " dry-run" : "";
     return `${icon} ${rec.id}  ${rec.status.padEnd(9)} exec${dryRun}${hash}${targetKind}${filter} ${where}  "${preview}"${detail}`;
   }
+  if (rec.kind === "key") {
+    return `${icon} ${rec.id}  ${rec.status.padEnd(9)} key ${where}  "${preview}"${detail}`;
+  }
   return `${icon} ${rec.id}  ${rec.status.padEnd(9)} ${where}  "${preview}"${detail}`;
+}
+
+/** Plain-text output for a pane transcript capture. */
+export function formatCapture(result: CaptureResult): string {
+  if (result.status === "failed") return `✗ capture failed for ${result.target} — ${result.detail ?? "unknown error"}`;
+  const parts = [result.text];
+  if (result.ai) {
+    const label = result.ai.transform ?? "custom";
+    if (result.ai.status === "completed") {
+      parts.push(
+        `\n--- AI ${label} (${result.ai.provider}${result.ai.model ? `/${result.ai.model}` : ""}) ---\n${result.ai.text ?? ""}`,
+      );
+    } else {
+      parts.push(`\n--- AI ${label} (${result.ai.provider}) ${result.ai.status} ---\n${result.ai.detail ?? "no detail"}`);
+    }
+  }
+  return parts.join("\n");
 }
 
 /** One-line human summary of a scheduled dispatch. */

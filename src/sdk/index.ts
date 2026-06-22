@@ -7,10 +7,13 @@
  *   console.log(rec.status, rec.confirm?.reason);
  */
 import type {
+  CaptureOptions,
+  CaptureResult,
   DispatchOptions,
   DispatchRecord,
   DispatchStatus,
   ExecOptions,
+  KeyOptions,
   ScheduledDispatch,
 } from "../types.js";
 import { Store } from "../lib/store.js";
@@ -18,6 +21,8 @@ import { Tmux } from "../lib/tmux.js";
 import { createRunner } from "../lib/runner.js";
 import { performDispatch } from "../lib/engine.js";
 import { performExec } from "../lib/exec.js";
+import { performKeyDispatch } from "../lib/key.js";
+import { performCapture } from "../lib/capture.js";
 import { computeNextRun } from "../lib/schedule.js";
 
 export interface DispatchClientOptions {
@@ -59,6 +64,20 @@ export class DispatchClient {
     const runner = await createRunner(options.machine);
     const tmux = new Tmux(runner);
     return performExec(options, { tmux, store: this.store });
+  }
+
+  /** Dispatch a safe allowlisted special key to a tmux agent composer. */
+  async key(options: KeyOptions): Promise<DispatchRecord> {
+    const runner = await createRunner(options.machine);
+    const tmux = new Tmux(runner);
+    return performKeyDispatch(options, { tmux, store: this.store });
+  }
+
+  /** Capture a bounded, redacted pane transcript, optionally with an AI transform. */
+  async capture(options: CaptureOptions): Promise<CaptureResult> {
+    const runner = await createRunner(options.machine);
+    const tmux = new Tmux(runner);
+    return performCapture(options, { tmux });
   }
 
   /** Look up a previously-recorded dispatch by id. */
@@ -113,6 +132,26 @@ export async function dispatchExec(options: ExecOptions): Promise<DispatchRecord
   const client = new DispatchClient({ persist: false });
   try {
     return await client.exec(options);
+  } finally {
+    client.close();
+  }
+}
+
+/** One-shot convenience: key dispatch without managing a client. */
+export async function dispatchKey(options: KeyOptions): Promise<DispatchRecord> {
+  const client = new DispatchClient({ persist: false });
+  try {
+    return await client.key(options);
+  } finally {
+    client.close();
+  }
+}
+
+/** One-shot convenience: capture without managing a client. */
+export async function dispatchCapture(options: CaptureOptions): Promise<CaptureResult> {
+  const client = new DispatchClient({ persist: false });
+  try {
+    return await client.capture(options);
   } finally {
     client.close();
   }

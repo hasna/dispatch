@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { codewithFixtureLauncher } from "../test/agent-launcher.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "./index.js";
@@ -33,7 +34,7 @@ function textOf(res: any): any {
 d("MCP server (in-memory transport, real tmux)", () => {
   beforeAll(async () => {
     spawnSync("tmux", ["kill-session", "-t", SESSION], { encoding: "utf8" });
-    const res = spawnSync("tmux", ["new-session", "-d", "-s", SESSION, "-x", "200", "-y", "50", "bun", "run", agent], {
+    const res = spawnSync("tmux", ["new-session", "-d", "-s", SESSION, "-x", "200", "-y", "50", codewithFixtureLauncher(dataDir), "run", agent], {
       encoding: "utf8",
     });
     if (res.status !== 0) throw new Error(`failed to start fake agent: ${res.stderr}`);

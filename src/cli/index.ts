@@ -2,8 +2,8 @@
 import { Command } from "commander";
 import { getPackageVersion } from "../lib/version.js";
 import { DispatchClient } from "../sdk/index.js";
-import type { DispatchOptions, ExecOptions } from "../types.js";
-import { formatRecord, formatSchedule, resolvePrompt } from "./format.js";
+import type { CaptureOptions, CaptureTransform, DispatchOptions, ExecOptions, KeyOptions } from "../types.js";
+import { formatCapture, formatRecord, formatSchedule, resolvePrompt } from "./format.js";
 import { registerDaemonCommands } from "./daemon-commands.js";
 import { Tmux } from "../lib/tmux.js";
 import { createRunner } from "../lib/runner.js";
@@ -45,6 +45,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .requiredOption("-t, --to <target>", "tmux target, e.g. session:window or session:window.pane")
     .option("-p, --prompt <text>", "prompt text (or use --file / stdin)")
     .option("-f, --file <path>", "read the prompt from a file")
+    .option("--goal", "prefix the delivered prompt with /goal unless it already starts with /goal")
     .option("-m, --machine <id>", "target machine (via @hasna/machines); local when omitted")
     .option("--no-submit", "type into the composer but do not press Enter")
     .option("--no-confirm", "skip delivery confirmation")
@@ -58,6 +59,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
       const options: DispatchOptions = {
         target: opts.to,
         prompt,
+        goal: opts.goal === true,
         machine: opts.machine,
         submit: opts.submit,
         confirm: opts.confirm,
@@ -68,6 +70,57 @@ export function buildProgram(deps: CliDeps = {}): Command {
       const rec = await withClient((c) => c.send(options));
       out(opts.json ? JSON.stringify(rec, null, 2) : formatRecord(rec));
       if (rec.status === "failed") process.exitCode = 1;
+    });
+
+  program
+    .command("key")
+    .description("Send an allowlisted special key to a recognized agent composer")
+    .requiredOption("-t, --to <target>", "tmux target, e.g. session:window or session:window.pane")
+    .requiredOption("-k, --key <key>", "special key: Enter, Tab, Escape, arrows, Backspace/Delete, Home/End, PageUp/PageDown")
+    .option("-m, --machine <id>", "target machine (via @hasna/machines); local when omitted")
+    .option("--json", "output JSON")
+    .action(async (opts) => {
+      const options: KeyOptions = {
+        target: opts.to,
+        key: opts.key,
+        machine: opts.machine,
+      };
+      const rec = await withClient((c) => c.key(options));
+      out(opts.json ? JSON.stringify(rec, null, 2) : formatRecord(rec));
+      if (rec.status === "failed" || rec.status === "skipped") process.exitCode = 1;
+    });
+
+  program
+    .command("capture")
+    .description("Capture a bounded, redacted tmux pane transcript, optionally with an AI transform")
+    .requiredOption("-t, --to <target>", "tmux target, e.g. session:window or session:window.pane")
+    .option("-n, --lines <n>", "recent line count to capture (default 200, max 2000)", (v) => parseInt(v, 10))
+    .option("-m, --machine <id>", "target machine (via @hasna/machines); local when omitted")
+    .option("--ai", "run an optional AI transform over the redacted capture")
+    .option("--transform <name>", "built-in AI transform: summary | blockers | changes | next-steps")
+    .option("--prompt <text>", "custom AI transform prompt")
+    .option("--provider <name>", "AI provider: groq | cerebras | openai | none")
+    .option("--model <model>", "AI model override")
+    .option("--json", "output JSON")
+    .action(async (opts) => {
+      const aiRequested = opts.ai === true || opts.transform !== undefined || opts.prompt !== undefined;
+      const options: CaptureOptions = {
+        target: opts.to,
+        machine: opts.machine,
+        lines: opts.lines,
+        ai: aiRequested
+          ? {
+              enabled: true,
+              transform: opts.transform as CaptureTransform | undefined,
+              prompt: opts.prompt,
+              provider: opts.provider,
+              model: opts.model,
+            }
+          : undefined,
+      };
+      const result = await withClient((c) => c.capture(options));
+      out(opts.json ? JSON.stringify(result, null, 2) : formatCapture(result));
+      if (result.status === "failed" || result.ai?.status === "failed") process.exitCode = 1;
     });
 
   program
@@ -157,6 +210,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .requiredOption("-t, --to <target>", "tmux target")
     .option("-p, --prompt <text>", "prompt text (or --file / stdin)")
     .option("-f, --file <path>", "read the prompt from a file")
+    .option("--goal", "prefix the delivered prompt with /goal unless it already starts with /goal")
     .option("-m, --machine <id>", "target machine")
     .option("--at <time>", "one-shot fire time (ISO 8601 or anything Date parses)")
     .option("--cron <expr>", "recurring 5-field cron expression")
@@ -166,7 +220,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
       const prompt = resolvePrompt(opts, stdin);
       const sched = await withClient((c) =>
         c.schedule({
-          options: { target: opts.to, prompt, machine: opts.machine },
+          options: { target: opts.to, prompt, goal: opts.goal === true, machine: opts.machine },
           at: opts.at,
           cron: opts.cron,
         }),

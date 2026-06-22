@@ -21,6 +21,8 @@ dispatch send --to work:agent --prompt "Refactor the parser and add tests"
 | Long / multi-line prompts get mangled or submit early | **Bracketed paste** via a tmux buffer — the whole prompt arrives as one paste, newlines and all, with no premature submit |
 | Prompt text accidentally lands in a shell | **Target-class checks** — `dispatch send` refuses detected shell panes; shell commands must use `dispatch exec` |
 | Shell command dispatch needs guardrails | **Exec security filter** — shell targets only, allowlisted command prefixes, destructive/exfiltration blockers, dry-run audit, and no `C-c` unless explicitly requested |
+| Need to press a special key deliberately | **Safe key dispatch** — `dispatch key` only allows named safe keys and still refuses shells / unproven wrapper panes |
+| Need to inspect what happened in a pane | **Bounded capture** — `dispatch capture` captures recent transcript lines, strips terminal controls, and redacts obvious secrets before output or optional AI transforms |
 | "Did it actually go through?" | **Smart delivery confirmation** — diffs the pane before/after and detects the agent's working/`esc to interrupt` state and the composer clearing |
 | Doesn't work across machines | **Cross-machine** routing through [`@hasna/machines`](https://github.com/hasna/machines) (Tailscale / LAN / SSH) |
 | Fire-and-forget / later | **Scheduled dispatches** (`--at` / `--cron`) owned by a **persistent daemon** that survives restarts |
@@ -39,6 +41,8 @@ bun install -g @hasna/dispatch
 ```text
 dispatch send       Dispatch a prompt to a tmux target and auto-submit it
 dispatch exec       Dispatch a filtered shell command to a shell tmux target
+dispatch key        Send an allowlisted special key to an agent composer
+dispatch capture    Capture a bounded, redacted pane transcript
 dispatch status     Show a recorded dispatch by id
 dispatch list       List recorded dispatches (newest first)
 dispatch targets    List dispatchable tmux targets (panes) on a machine
@@ -63,13 +67,71 @@ git diff | dispatch send --to work:agent --prompt "review this diff"
 # Type without submitting (leave it in the composer)
 dispatch send --to work:agent --prompt "draft" --no-submit
 
+# Create a Codewith goal from the delivered prompt
+dispatch send --goal --to open-browser:1.1 --prompt "Fix native chat..."
+
 # Target a pane explicitly, and another machine
 dispatch send --machine spark01 --to work:agent.1 --prompt "build it" --json
 ```
 
 Key flags: `--to <session:window[.pane]>`, `--prompt`/`--file`/stdin, `--machine`,
-`--no-submit`, `--no-confirm`, `--delay <ms>`, `--retries <n>`,
+`--goal`, `--no-submit`, `--no-confirm`, `--delay <ms>`, `--retries <n>`,
 `--mode auto|paste|literal`, `--json`.
+
+`--goal` prefixes the delivered prompt with `/goal ` unless it already starts with
+`/goal`. The prefix happens after `--prompt`/`--file`/stdin resolution and before
+delivery/recording, so multiline prompt contents are preserved.
+
+### Key
+
+`dispatch key` is for deliberate special keys, not arbitrary tmux key names. It reuses
+the same agent-composer safety checks as `dispatch send`, so shells and arbitrary
+`node`/`bun` panes are refused.
+
+```bash
+dispatch key --to open-browser:1.1 --key Tab
+dispatch key --to open-browser:1.1 --key Enter --json
+```
+
+Allowed keys: `Enter`, `Tab`, `Escape`, `Up`, `Down`, `Left`, `Right`, `Backspace`,
+`Delete`, `Home`, `End`, `PageUp`, `PageDown`. Control keys such as `C-c` are not
+accepted. Key dispatches are recorded in `dispatch list` / `dispatch status` as
+`kind: "key"` with a safe prompt like `<key:Tab>`.
+
+### Capture
+
+`dispatch capture` is read-only. It captures a bounded recent transcript from a tmux
+pane locally or through `--machine`, strips common terminal control sequences, returns
+only the requested tail lines, and redacts obvious secret-looking values before plain
+or JSON output.
+
+```bash
+dispatch capture --to open-browser:1.1 --lines 200
+dispatch capture --to open-browser:1.1 --lines 200 --json
+dispatch capture --to open-browser:1.1 --lines 200 --ai --transform summary
+dispatch capture --to open-browser:1.1 --lines 200 --ai \
+  --prompt "Summarize what the agent did and list blockers"
+```
+
+Default capture size is 200 lines; requests are capped at 2000 lines. Redaction covers
+common API-key/token/password shapes (`sk-*`, GitHub/GitLab/Slack tokens, AWS access
+keys, bearer tokens, and `token=`/`password=`-style values). It is a safety layer, not
+a guarantee that every possible secret format is removed.
+
+AI transforms are optional and run only over the redacted transcript. Configure them
+with environment variables:
+
+```bash
+DISPATCH_AI_PROVIDER=groq       # groq | cerebras | openai | none
+GROQ_API_KEY=...
+DISPATCH_AI_MODEL=llama-3.3-70b-versatile   # optional override
+DISPATCH_AI_BASE_URL=https://...             # optional OpenAI-compatible endpoint override
+```
+
+Provider-specific keys/models are also supported: `GROQ_API_KEY`/`GROQ_MODEL`,
+`CEREBRAS_API_KEY`/`CEREBRAS_MODEL`, and `OPENAI_API_KEY`/`OPENAI_MODEL`. If `--ai`
+is requested without credentials, capture still returns the raw redacted transcript
+and reports an actionable AI failure.
 
 ### Exec
 
@@ -177,7 +239,13 @@ const execRec = await dispatch.exec({
 console.log(execRec.commandHash, execRec.filter?.code);
 ```
 
-One-shot helpers: `import { dispatch, dispatchExec } from "@hasna/dispatch"`.
+```ts
+const keyRec = await dispatch.key({ target: "work:agent", key: "Tab" });
+const cap = await dispatch.capture({ target: "work:agent", lines: 120 });
+console.log(keyRec.status, cap.text);
+```
+
+One-shot helpers: `import { dispatch, dispatchExec, dispatchKey, dispatchCapture } from "@hasna/dispatch"`.
 
 ## MCP
 
@@ -186,7 +254,7 @@ Every CLI verb is also an MCP tool, so agents can dispatch over MCP:
 ```jsonc
 // register the server: dispatch-mcp  (stdio)
 // tools:
-//   dispatch_send, dispatch_exec, dispatch_status, dispatch_list, dispatch_targets,
+//   dispatch_send, dispatch_key, dispatch_capture, dispatch_exec, dispatch_status, dispatch_list, dispatch_targets,
 //   dispatch_schedule, dispatch_schedules, dispatch_cancel,
 //   dispatch_daemon_start, dispatch_daemon_stop, dispatch_daemon_status
 ```

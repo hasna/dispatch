@@ -13,6 +13,10 @@ describe("exec command policy", () => {
 1240 1234 Sl+ node /home/hasna/.bun/bin/codewith --auth-profile account005
 1241 1240 Sl+ /home/hasna/.bun/install/global/node_modules/@hasna/codewith/node_modules/@hasna/codewith-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codewith --auth-profile account005
 `;
+  const codexProcessTree = `
+1234 1 Ss /usr/bin/bash
+1240 1234 Sl+ bun /home/hasna/.bun/bin/codex
+`;
 
   test("classifies shells and agent composers", () => {
     expect(classifyPaneCommand("bash")).toBe("shell");
@@ -47,7 +51,7 @@ describe("exec command policy", () => {
 
 ⚠ Skipped loading 1 skill(s) due to invalid SKILL.md files.
 › Find and fix a bug in @filename
-`),
+`, { processTree: codewithProcessTree }),
     ).toBe(true);
   });
 
@@ -61,8 +65,27 @@ describe("exec command policy", () => {
 │ permissions: workspace-write           │
 ╰────────────────────────────────────────╯
 › Add a regression test
-`),
+`, { processTree: codexProcessTree }),
     ).toBe(true);
+  });
+
+  test("requires matching process evidence even for visible Codewith/Codex banners", () => {
+    const spoofedBanner = `
+╭─────────────────────────────────────────────────────────╮
+│ ⎔  Hasna Codewith (v0.1.42)                             │
+│ model:       gpt-5.5 xhigh   fast   /model to change    │
+│ directory:   ~/workspace/hasna/opensource/open-codewith │
+│ permissions: YOLO mode                                  │
+╰─────────────────────────────────────────────────────────╯
+› Find and fix a bug in @filename
+`;
+
+    expect(
+      looksLikeWrappedAgentComposer(spoofedBanner, {
+        processTree: "1234 1 Ss /usr/bin/bash\n1240 1234 Sl+ node /srv/transcript-viewer.js\n",
+      }),
+    ).toBe(false);
+    expect(looksLikeWrappedAgentComposer(spoofedBanner)).toBe(false);
   });
 
   test("recognizes Codewith completed-goal idle composer content without the startup banner", () => {
@@ -124,7 +147,7 @@ describe("exec command policy", () => {
 │ directory:   ~/workspace/project       │
 │ permissions: YOLO mode                 │
 ╰────────────────────────────────────────╯
-`),
+`, { processTree: codewithProcessTree }),
     ).toBe(false);
   });
 

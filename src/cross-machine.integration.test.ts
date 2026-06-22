@@ -41,7 +41,9 @@ const SESSION = `dispatch_xm_${process.pid}`;
 const cli = join(import.meta.dir, "cli", "index.ts");
 const agent = join(import.meta.dir, "test", "fake-agent.ts");
 const dataDir = mkdtempSync(join(tmpdir(), "dispatch_xm_"));
-const remoteAgent = `/tmp/dispatch_fake_agent_${process.pid}.ts`;
+const remoteDir = `/tmp/dispatch_agent_${process.pid}`;
+const remoteAgent = `${remoteDir}/fake-agent.ts`;
+const remoteLauncher = `${remoteDir}/codewith`;
 
 function ssh(host: string, cmd: string) {
   return spawnSync("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=6", host, cmd], {
@@ -54,18 +56,19 @@ d("cross-machine dispatch (real second host)", () => {
   beforeAll(async () => {
     const host = remote!.host;
     // Copy the fake agent over and start it in a remote tmux session.
+    ssh(host, `mkdir -p ${remoteDir} && ln -sf ${remote!.bun} ${remoteLauncher}`);
     const scp = spawnSync("scp", ["-o", "BatchMode=yes", agent, `${host}:${remoteAgent}`], {
       encoding: "utf8",
       timeout: 15000,
     });
     if (scp.status !== 0) throw new Error(`scp failed: ${scp.stderr}`);
-    ssh(host, `${remote!.tmux} kill-session -t ${SESSION} 2>/dev/null; ${remote!.tmux} new-session -d -s ${SESSION} -x 200 -y 50 ${remote!.bun} run ${remoteAgent}`);
+    ssh(host, `${remote!.tmux} kill-session -t ${SESSION} 2>/dev/null; ${remote!.tmux} new-session -d -s ${SESSION} -x 200 -y 50 ${remoteLauncher} run ${remoteAgent}`);
     await Bun.sleep(2000); // let the remote agent boot
   }, 30000);
 
   afterAll(() => {
     if (remote) {
-      ssh(remote.host, `${remote.tmux} kill-session -t ${SESSION} 2>/dev/null; rm -f ${remoteAgent}`);
+      ssh(remote.host, `${remote.tmux} kill-session -t ${SESSION} 2>/dev/null; rm -rf ${remoteDir}`);
     }
     rmSync(dataDir, { recursive: true, force: true });
   });

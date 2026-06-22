@@ -8,7 +8,7 @@ import { Store } from "../lib/store.js";
 import { Tmux } from "../lib/tmux.js";
 import { MockRunner } from "../test/mock-runner.js";
 import { buildProgram } from "../cli/index.js";
-import type { DispatchRecord, ExecOptions } from "../types.js";
+import type { CaptureOptions, DispatchOptions, DispatchRecord, ExecOptions, KeyOptions } from "../types.js";
 
 function deps(): ToolDeps {
   const store = new Store(":memory:");
@@ -107,6 +107,85 @@ describe("MCP tool handlers", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test("send forwards goal mode to the client", async () => {
+    const d = deps();
+    let received: DispatchOptions | undefined;
+    d.client.send = async (opts: DispatchOptions): Promise<DispatchRecord> => {
+      received = opts;
+      return {
+        id: "send1",
+        kind: "prompt",
+        target: opts.target,
+        machine: "local",
+        prompt: opts.prompt,
+        status: "delivered",
+        createdAt: "x",
+        updatedAt: "x",
+      };
+    };
+
+    await tool("dispatch_send").handler(d, { target: "work:agent", prompt: "Fix native chat", goal: true });
+
+    expect(received).toMatchObject({ target: "work:agent", prompt: "Fix native chat", goal: true });
+  });
+
+  test("key delegates allowlisted special-key options to the client", async () => {
+    const d = deps();
+    let received: KeyOptions | undefined;
+    d.client.key = async (opts: KeyOptions): Promise<DispatchRecord> => {
+      received = opts;
+      return {
+        id: "key1",
+        kind: "key",
+        target: opts.target,
+        machine: "local",
+        prompt: `<key:${opts.key}>`,
+        status: "delivered",
+        createdAt: "x",
+        updatedAt: "x",
+      };
+    };
+
+    const result = await tool("dispatch_key").handler(d, { target: "work:agent", key: "Tab" });
+
+    expect(result).toMatchObject({ id: "key1", kind: "key" });
+    expect(received).toEqual({ target: "work:agent", key: "Tab", machine: undefined });
+  });
+
+  test("capture delegates transcript and AI transform options to the client", async () => {
+    const d = deps();
+    let received: CaptureOptions | undefined;
+    d.client.capture = async (opts: CaptureOptions) => {
+      received = opts;
+      return {
+        status: "captured",
+        target: opts.target,
+        machine: "local",
+        requestedLines: opts.lines ?? 200,
+        lines: opts.lines ?? 200,
+        maxLines: 2000,
+        capturedAt: "x",
+        text: "transcript\n",
+        redacted: true,
+      };
+    };
+
+    const result = await tool("dispatch_capture").handler(d, {
+      target: "work:agent",
+      lines: 120,
+      ai: true,
+      transform: "blockers",
+      provider: "groq",
+    });
+
+    expect(result).toMatchObject({ status: "captured", text: "transcript\n" });
+    expect(received).toMatchObject({
+      target: "work:agent",
+      lines: 120,
+      ai: { enabled: true, transform: "blockers", provider: "groq" },
+    });
   });
 });
 

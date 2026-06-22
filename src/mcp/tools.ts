@@ -49,17 +49,70 @@ export const TOOLS: ToolDef[] = [
       delayMs: z.number().optional().describe("override the auto-computed pre-Enter delay"),
       retries: z.number().optional().describe("max Enter retries if not confirmed"),
       mode: z.enum(["auto", "paste", "literal"]).optional().describe("delivery mode"),
+      goal: z.boolean().optional().describe("prefix prompt with /goal unless it already starts with /goal"),
     },
     handler: (deps, a) =>
       deps.client.send({
         target: a.target as string,
         prompt: a.prompt as string,
+        goal: a.goal as boolean | undefined,
         machine: a.machine as string | undefined,
         submit: a.submit as boolean | undefined,
         confirm: a.confirm as boolean | undefined,
         submitDelayMs: a.delayMs as number | undefined,
         maxSubmitRetries: a.retries as number | undefined,
         mode: a.mode as "auto" | "paste" | "literal" | undefined,
+      }),
+  },
+  {
+    name: "dispatch_key",
+    verb: "key",
+    title: "Dispatch a special key",
+    description:
+      "Send one allowlisted special key (Enter, Tab, Escape, arrows, Backspace/Delete, Home/End, PageUp/PageDown) to a recognized agent composer. Refuses shells and arbitrary node/bun panes.",
+    inputSchema: {
+      target: z.string().describe("tmux target, e.g. session:window or session:window.pane"),
+      key: z.string().describe("allowlisted special key name"),
+      machine: z.string().optional().describe("target machine id (local when omitted)"),
+    },
+    handler: (deps, a) =>
+      deps.client.key({
+        target: a.target as string,
+        key: a.key as string,
+        machine: a.machine as string | undefined,
+      }),
+  },
+  {
+    name: "dispatch_capture",
+    verb: "capture",
+    title: "Capture a pane transcript",
+    description:
+      "Capture a bounded, redacted tmux pane transcript locally or on a remote machine. Optionally run a provider-configured AI transform over the redacted text.",
+    inputSchema: {
+      target: z.string().describe("tmux target, e.g. session:window or session:window.pane"),
+      machine: z.string().optional().describe("target machine id (local when omitted)"),
+      lines: z.number().optional().describe("recent line count (default 200, max 2000)"),
+      ai: z.boolean().optional().describe("run an AI transform"),
+      transform: z.enum(["summary", "blockers", "changes", "next-steps"]).optional(),
+      prompt: z.string().optional().describe("custom AI transform prompt"),
+      provider: z.enum(["groq", "cerebras", "openai", "none"]).optional(),
+      model: z.string().optional(),
+    },
+    handler: (deps, a) =>
+      deps.client.capture({
+        target: a.target as string,
+        machine: a.machine as string | undefined,
+        lines: a.lines as number | undefined,
+        ai:
+          a.ai || a.transform || a.prompt
+            ? {
+                enabled: true,
+                transform: a.transform as never,
+                prompt: a.prompt as string | undefined,
+                provider: a.provider as never,
+                model: a.model as string | undefined,
+              }
+            : undefined,
       }),
   },
   {
@@ -115,12 +168,18 @@ export const TOOLS: ToolDef[] = [
       target: z.string(),
       prompt: z.string(),
       machine: z.string().optional(),
+      goal: z.boolean().optional(),
       at: z.string().optional().describe("one-shot ISO 8601 time"),
       cron: z.string().optional().describe("5-field cron expression"),
     },
     handler: async (deps, a) =>
       deps.client.schedule({
-        options: { target: a.target as string, prompt: a.prompt as string, machine: a.machine as string | undefined },
+        options: {
+          target: a.target as string,
+          prompt: a.prompt as string,
+          goal: a.goal as boolean | undefined,
+          machine: a.machine as string | undefined,
+        },
         at: a.at as string | undefined,
         cron: a.cron as string | undefined,
       }),

@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { codewithFixtureLauncher } from "../test/agent-launcher.js";
 
 const tmuxAvailable = spawnSync("tmux", ["-V"], { encoding: "utf8" }).status === 0;
 const SESSION = `dispatch_daemon_it_${process.pid}`;
@@ -31,7 +32,7 @@ async function startAgent(): Promise<void> {
   spawnSync("tmux", ["kill-session", "-t", SESSION], { encoding: "utf8" });
   const res = spawnSync(
     "tmux",
-    ["new-session", "-d", "-s", SESSION, "-x", "200", "-y", "50", "bun", "run", agent],
+    ["new-session", "-d", "-s", SESSION, "-x", "200", "-y", "50", codewithFixtureLauncher(dataDir), "run", agent],
     { encoding: "utf8" },
   );
   if (res.status !== 0) throw new Error(`failed to start fake agent: ${res.stderr}`);

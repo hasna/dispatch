@@ -84,22 +84,27 @@ function hasNamedAgentComposer(text: string): boolean {
   return contextSignals >= 1 && (hasComposerPrompt || hasBusySignal);
 }
 
-function hasCodewithProcessEvidence(processTree = ""): boolean {
+function hasWrappedAgentProcessEvidence(processTree = ""): boolean {
   return processTree
     .split("\n")
     .map((line) => line.trim())
     .some(
       (line) =>
         /(?:^|\s)(?:node|bun)\s+\S*\/codewith(?:\s|$)/i.test(line) ||
+        /(?:^|\s)(?:node|bun)\s+\S*\/codex(?:\s|$)/i.test(line) ||
         /(?:^|\s)(?:bunx|npx|pnpm|yarn)\s+@hasna\/codewith(?:\s|$)/i.test(line) ||
+        /(?:^|\s)(?:bunx|npx|pnpm|yarn)\s+(?:@openai\/)?codex(?:\s|$)/i.test(line) ||
         /node_modules\/@hasna\/codewith(?:\/|\s|$)/i.test(line) ||
+        /node_modules\/(?:@openai\/)?codex(?:\/|\s|$)/i.test(line) ||
         /\/bin\/codewith(?:\s|$)/i.test(line) ||
-        /(?:^|\s)codewith(?:\s|$)/i.test(line),
+        /\/bin\/codex(?:\s|$)/i.test(line) ||
+        /(?:^|\s)codewith(?:\s|$)/i.test(line) ||
+        /(?:^|\s)codex(?:\s|$)/i.test(line),
     );
 }
 
 function hasCompletedCodewithComposer(text: string, processTree?: string): boolean {
-  if (!hasCodewithProcessEvidence(processTree)) return false;
+  if (!hasWrappedAgentProcessEvidence(processTree)) return false;
   const lines = text
     .split("\n")
     .map(stripTuiLineChrome)
@@ -125,13 +130,16 @@ function hasCompletedCodewithComposer(text: string, processTree?: string): boole
 }
 
 export interface WrappedAgentEvidence {
-  /** Process tree for the tmux pane, used only for bannerless completed Codewith views. */
+  /** Process tree for the tmux pane; required to trust wrapper-launched agent UI text. */
   processTree?: string;
 }
 
 /** Strict proof for Codewith/Codex panes launched through runtime wrappers like node/bun. */
 export function looksLikeWrappedAgentComposer(text: string, evidence: WrappedAgentEvidence = {}): boolean {
-  return hasNamedAgentComposer(text) || hasCompletedCodewithComposer(text, evidence.processTree);
+  return (
+    (hasWrappedAgentProcessEvidence(evidence.processTree) && hasNamedAgentComposer(text)) ||
+    hasCompletedCodewithComposer(text, evidence.processTree)
+  );
 }
 
 /** Best-effort content check for known agent TUIs and test fixtures. */

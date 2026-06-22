@@ -13,7 +13,7 @@ export type DispatchStatus =
   | "skipped";
 
 /** What kind of payload a dispatch record represents. */
-export type DispatchKind = "prompt" | "exec";
+export type DispatchKind = "prompt" | "exec" | "key";
 
 /** Runtime class of a target pane, based on tmux pane_current_command. */
 export type ExecTargetKind = "shell" | "agent" | "unknown";
@@ -102,6 +102,11 @@ export interface DispatchOptions {
   target: string;
   /** The prompt text to deliver. */
   prompt: string;
+  /**
+   * Prefix the delivered prompt with `/goal ` unless it already starts with
+   * `/goal`. Useful for making Codewith create a durable goal from the prompt.
+   */
+  goal?: boolean;
   /** Optional machine id (local when omitted). Resolved via @hasna/machines. */
   machine?: string;
   /**
@@ -120,6 +125,83 @@ export interface DispatchOptions {
    * literal send-keys for short single-line ones.
    */
   mode?: "auto" | "paste" | "literal";
+}
+
+/** Options controlling a single allowlisted special-key dispatch. */
+export interface KeyOptions {
+  /** Target tmux address, e.g. "session:window" or "session:window.pane". */
+  target: string;
+  /** Named key to send, e.g. Enter or Tab. Must be in the built-in allowlist. */
+  key: string;
+  /** Optional machine id (local when omitted). Resolved via @hasna/machines. */
+  machine?: string;
+}
+
+/** Safe special keys accepted by dispatch key. */
+export type AllowedSpecialKey =
+  | "Enter"
+  | "Tab"
+  | "Escape"
+  | "Up"
+  | "Down"
+  | "Left"
+  | "Right"
+  | "Backspace"
+  | "Delete"
+  | "Home"
+  | "End"
+  | "PageUp"
+  | "PageDown";
+
+export type CaptureTransform = "summary" | "blockers" | "changes" | "next-steps";
+
+export type CaptureAiProvider = "groq" | "cerebras" | "openai" | "none";
+
+export interface CaptureAiRequest {
+  /** Run an AI transform over the redacted capture. */
+  enabled?: boolean;
+  /** Provider selection. Defaults to DISPATCH_AI_PROVIDER or detected env keys. */
+  provider?: CaptureAiProvider;
+  /** Model override. Defaults to DISPATCH_AI_MODEL, provider-specific env, or a provider default. */
+  model?: string;
+  /** Built-in transform prompt. */
+  transform?: CaptureTransform;
+  /** Custom transform instruction. */
+  prompt?: string;
+}
+
+export interface CaptureAiResult {
+  status: "completed" | "skipped" | "failed";
+  provider: CaptureAiProvider;
+  model?: string;
+  transform?: CaptureTransform;
+  prompt?: string;
+  text?: string;
+  detail?: string;
+}
+
+/** Options for capturing recent target pane output. */
+export interface CaptureOptions {
+  target: string;
+  machine?: string;
+  /** Requested recent line count. Defaults and maximum are enforced by the library. */
+  lines?: number;
+  ai?: CaptureAiRequest;
+}
+
+/** Result of a bounded pane transcript capture. */
+export interface CaptureResult {
+  status: "captured" | "failed";
+  target: string;
+  machine: string;
+  requestedLines: number;
+  lines: number;
+  maxLines: number;
+  capturedAt: string;
+  text: string;
+  redacted: boolean;
+  detail?: string;
+  ai?: CaptureAiResult;
 }
 
 /** A persisted dispatch record. */

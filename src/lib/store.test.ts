@@ -72,6 +72,25 @@ describe("Store — dispatches", () => {
     s.close();
   });
 
+  test("key audit records round-trip for list/status output", () => {
+    const s = mem();
+    const rec = s.createDispatch({
+      kind: "key",
+      target: "work:agent",
+      prompt: "<key:Tab>",
+      status: "delivered",
+      detail: "sent key Tab to agent composer",
+    });
+
+    expect(s.getDispatch(rec.id)).toMatchObject({
+      kind: "key",
+      prompt: "<key:Tab>",
+      detail: "sent key Tab to agent composer",
+    });
+    expect(s.listDispatches({ limit: 1 })[0]).toMatchObject({ kind: "key", prompt: "<key:Tab>" });
+    s.close();
+  });
+
   test("update throws for unknown id", () => {
     const s = mem();
     expect(() => s.updateDispatch("nope", { status: "failed" })).toThrow(/not found/);

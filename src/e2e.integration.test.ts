@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { codewithFixtureLauncher } from "./test/agent-launcher.js";
 
 /**
  * End-to-end fidelity: dispatch a long multi-paragraph prompt through the real
@@ -41,7 +42,7 @@ d("end-to-end: long multi-paragraph prompt fidelity + delivery", () => {
     writeFileSync(recFile, "");
     const res = spawnSync(
       "tmux",
-      ["new-session", "-d", "-s", SESSION, "-x", "200", "-y", "50", "bun", "run", recorder, recFile],
+      ["new-session", "-d", "-s", SESSION, "-x", "200", "-y", "50", codewithFixtureLauncher(dataDir), "run", recorder, recFile],
       { encoding: "utf8" },
     );
     if (res.status !== 0) throw new Error(`failed to start recorder: ${res.stderr}`);

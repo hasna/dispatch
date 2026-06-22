@@ -6,7 +6,7 @@ import { buildProgram } from "./index.js";
 import { formatRecord, formatSchedule, resolvePrompt } from "./format.js";
 import { DispatchClient } from "../sdk/index.js";
 import { Store } from "../lib/store.js";
-import type { DispatchRecord, ExecOptions } from "../types.js";
+import type { CaptureOptions, DispatchOptions, DispatchRecord, ExecOptions, KeyOptions } from "../types.js";
 
 describe("resolvePrompt", () => {
   test("prefers --prompt", () => {
@@ -168,6 +168,127 @@ describe("CLI read/schedule commands (in-memory client)", () => {
     expect(received).toMatchObject({ target: "open-mailery:01", command: "mailery status", dryRun: true });
     expect(out.join("\n")).toContain("would paste: \"mailery status\"");
     expect(out.join("\n")).toContain("would send key: Enter");
+  });
+
+  test("send --goal delegates goal mode with inline prompts", async () => {
+    const out: string[] = [];
+    let received: DispatchOptions | undefined;
+    const fakeClient = {
+      send: async (opts: DispatchOptions): Promise<DispatchRecord> => {
+        received = opts;
+        return {
+          id: "send-goal",
+          kind: "prompt",
+          target: opts.target,
+          machine: "local",
+          prompt: "/goal Fix native chat",
+          status: "delivered",
+          createdAt: "x",
+          updatedAt: "x",
+        };
+      },
+    } as DispatchClient;
+    const program = buildProgram({ clientFactory: () => fakeClient, out: (s) => out.push(s) });
+
+    await program.parseAsync(["send", "--to", "open-browser:1.1", "--prompt", "Fix native chat", "--goal", "--json"], {
+      from: "user",
+    });
+
+    expect(received).toMatchObject({ target: "open-browser:1.1", prompt: "Fix native chat", goal: true });
+    expect(JSON.parse(out.join("\n")).prompt).toBe("/goal Fix native chat");
+  });
+
+  test("send --goal works with --file input", async () => {
+    const f = join(tmpdir(), `dispatch_goal_prompt_${process.pid}.txt`);
+    writeFileSync(f, "Line one\nLine two");
+    let received: DispatchOptions | undefined;
+    const fakeClient = {
+      send: async (opts: DispatchOptions): Promise<DispatchRecord> => {
+        received = opts;
+        return {
+          id: "send-goal-file",
+          kind: "prompt",
+          target: opts.target,
+          machine: "local",
+          prompt: `/goal ${opts.prompt}`,
+          status: "delivered",
+          createdAt: "x",
+          updatedAt: "x",
+        };
+      },
+    } as DispatchClient;
+    const program = buildProgram({ clientFactory: () => fakeClient, out: () => undefined });
+
+    try {
+      await program.parseAsync(["send", "--to", "open-browser:1.1", "--file", f, "--goal"], { from: "user" });
+      expect(received).toMatchObject({ prompt: "Line one\nLine two", goal: true });
+    } finally {
+      rmSync(f, { force: true });
+    }
+  });
+
+  test("key delegates allowlisted special-key dispatch", async () => {
+    const out: string[] = [];
+    let received: KeyOptions | undefined;
+    const fakeClient = {
+      key: async (opts: KeyOptions): Promise<DispatchRecord> => {
+        received = opts;
+        return {
+          id: "key1",
+          kind: "key",
+          target: opts.target,
+          machine: "local",
+          prompt: "<key:Tab>",
+          status: "delivered",
+          createdAt: "x",
+          updatedAt: "x",
+        };
+      },
+    } as DispatchClient;
+    const program = buildProgram({ clientFactory: () => fakeClient, out: (s) => out.push(s) });
+
+    await program.parseAsync(["key", "--to", "open-browser:1.1", "--key", "Tab", "--json"], { from: "user" });
+
+    expect(received).toEqual({ target: "open-browser:1.1", key: "Tab", machine: undefined });
+    expect(JSON.parse(out.join("\n"))).toMatchObject({ kind: "key", prompt: "<key:Tab>" });
+  });
+
+  test("capture --json delegates bounded capture and reports AI failure with exit code 1", async () => {
+    const out: string[] = [];
+    let received: CaptureOptions | undefined;
+    const fakeClient = {
+      capture: async (opts: CaptureOptions) => {
+        received = opts;
+        return {
+          status: "captured",
+          target: opts.target,
+          machine: "local",
+          requestedLines: opts.lines ?? 200,
+          lines: opts.lines ?? 200,
+          maxLines: 2000,
+          capturedAt: "x",
+          text: "safe transcript\n",
+          redacted: true,
+          ai: { status: "failed", provider: "groq", detail: "Missing AI credentials" },
+        };
+      },
+    } as DispatchClient;
+    const program = buildProgram({ clientFactory: () => fakeClient, out: (s) => out.push(s) });
+
+    process.exitCode = 0;
+    await program.parseAsync(
+      ["capture", "--to", "open-browser:1.1", "--lines", "120", "--ai", "--transform", "summary", "--json"],
+      { from: "user" },
+    );
+
+    expect(received).toMatchObject({
+      target: "open-browser:1.1",
+      lines: 120,
+      ai: { enabled: true, transform: "summary" },
+    });
+    expect(JSON.parse(out.join("\n"))).toMatchObject({ status: "captured", text: "safe transcript\n" });
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
   });
 
   test("blocked exec --dry-run does not print a send plan", async () => {
