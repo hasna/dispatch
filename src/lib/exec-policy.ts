@@ -106,13 +106,22 @@ function hasCompletedCodewithComposer(text: string, processTree?: string): boole
     .map((line) => line.replace(/[ \t]+/g, " ").trim())
     .filter(Boolean);
   const statusLine = lines.at(-1) ?? "";
-  const composerLine = lines.at(-2) ?? "";
-  const looksLikeCodewithStatus =
-    /^(?:gpt|o\d|codex|claude|glm|gemini|qwen|deepseek|llama|mistral|kimi|grok)[\w.+:-]*(?:\s+\w+){0,4}\s+·\s+account[\w-]+\s+·\s+\d+\s*[dhms]\s+(?:100|[1-9]?\d)%\s+left\s+·\s+[^·\[\]\s]+(?:\s+[^·\[\]\s]+){0,4}\s+\[[^\]\n]+\]\s+Goal achieved(?:\s*\([^)]+\))?$/i.test(
-      statusLine,
-    );
+  const inlineGoal = /\s+Goal achieved(?:\s*\([^)]+\))?$/i;
+  const goalOnly = /^Goal achieved(?:\s*\([^)]+\))?$/i;
+  const isWrappedGoal = goalOnly.test(statusLine);
+  const metadataLine = isWrappedGoal ? (lines.at(-2) ?? "") : statusLine.replace(inlineGoal, "").trim();
+  const composerLine = isWrappedGoal ? (lines.at(-3) ?? "") : (lines.at(-2) ?? "");
+  const model = String.raw`(?:gpt|o\d|codex|claude|glm|gemini|qwen|deepseek|llama|mistral|kimi|grok)[\w.+:-]*(?:\s+\w+){0,4}`;
+  const account = String.raw`account[\w-]+`;
+  const budget = String.raw`\d+\s*[dhms]\s+(?:100|[1-9]?\d)%\s+left`;
+  const branch = String.raw`[^·\[\]\s]+(?:\s+[^·\[\]\s]+){0,4}\s+\[[^\]\n]+\]`;
+  const metadataPattern = new RegExp(
+    String.raw`^${model}\s+·\s+(?:${account}\s+·\s+${budget}|${budget}\s+·\s+${account})\s+·\s+${branch}$`,
+    "i",
+  );
+  const hasGoal = isWrappedGoal || inlineGoal.test(statusLine);
 
-  return /^›(?:\s|$).+/.test(composerLine) && looksLikeCodewithStatus;
+  return hasGoal && /^›(?:\s|$).+/.test(composerLine) && metadataPattern.test(metadataLine);
 }
 
 export interface WrappedAgentEvidence {
