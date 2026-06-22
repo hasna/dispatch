@@ -23,6 +23,22 @@ export function detectWorking(text: string, patterns: RegExp[] = DEFAULT_WORKING
   return patterns.some((p) => p.test(text));
 }
 
+const LIVE_WORKING_PATTERNS: RegExp[] = [
+  /esc to interrupt/i,
+  /esc to cancel/i,
+  /ctrl\+c to (stop|interrupt|cancel)/i,
+  /\besc\b.*\binterrupt\b/i,
+  /\bPursuing goal\b/i,
+  /(^|\n)\s*(?:[•●]\s*)?(?:thinking|working|generating|processing|crunching|pondering|forming|cooking)\s*\(/i,
+  /(^|\n)\s*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/,
+  /[▰▱]/,
+  /✶|✻|✽/,
+];
+
+function detectLiveWorking(text: string): boolean {
+  return detectWorking(text, LIVE_WORKING_PATTERNS);
+}
+
 /**
  * Patterns a busy coding agent shows when it accepts a message but stages it for
  * later submission (e.g. Codewith/Claude Code while a tool call is running).
@@ -87,6 +103,32 @@ function handledOutputLineCount(text: string, patterns: RegExp[] = DEFAULT_HANDL
   return text.split("\n").filter((line) => detectHandledOutput(line, patterns)).length;
 }
 
+function livePaneRegion(text: string, maxLines = 14): string {
+  const lines = text.split("\n").map((line) => line.trimEnd()).filter((line) => line.trim().length > 0);
+  const tail = lines.slice(Math.max(0, lines.length - maxLines));
+  return tail.join("\n");
+}
+
+function promptParkedInComposer(text: string, tail: string): boolean {
+  if (tail.length === 0) return false;
+  const lines = text.split("\n").map((line) => line.trimEnd()).filter((line) => line.trim().length > 0);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (!/(?:^|[\s│┃║╎╏┆┇┊┋▏▎▌▐])[>›](?:\s|$)/.test(lines[i] ?? "")) continue;
+    return squish(lines.slice(i).join("\n")).includes(tail);
+  }
+  return false;
+}
+
+function queuedPromptVisible(text: string, tail: string, patterns: RegExp[] = DEFAULT_QUEUED_PATTERNS): boolean {
+  if (tail.length === 0) return false;
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (!detectQueued(lines[i] ?? "", patterns)) continue;
+    return squish(lines.slice(i).join("\n")).includes(tail);
+  }
+  return false;
+}
+
 export interface EvaluateDeliveryInput {
   /** Pane capture before dispatch. */
   before: string;
@@ -133,21 +175,29 @@ export function evaluateDelivery(input: EvaluateDeliveryInput): ConfirmResult {
   const promptVisible = (text: string): boolean => tail.length > 0 && squish(text).includes(tail);
   const visibleInBaseline = promptVisible(baseline);
   const visibleInAfter = promptVisible(input.after);
-  const composerCleared = visibleInBaseline && !visibleInAfter;
+  const parkedInBaseline = promptParkedInComposer(baseline, tail);
+  const parkedInAfter = promptParkedInComposer(input.after, tail);
+  const composerCleared = parkedInBaseline && !parkedInAfter;
 
-  const workingBefore = detectWorking(input.before, patterns);
-  const workingAfter = detectWorking(input.after, patterns);
+  const workingBefore = patterns === DEFAULT_WORKING_PATTERNS
+    ? detectLiveWorking(livePaneRegion(input.before))
+    : detectWorking(livePaneRegion(input.before), patterns);
+  const workingAfter = patterns === DEFAULT_WORKING_PATTERNS
+    ? detectLiveWorking(livePaneRegion(input.after))
+    : detectWorking(livePaneRegion(input.after), patterns);
   const workingDetected = workingAfter && !workingBefore && !visibleInAfter;
 
-  const queuedDetected = detectQueued(input.after, queuedPatterns) && !detectQueued(input.before, queuedPatterns);
+  const queuedDetected =
+    (detectQueued(input.after, queuedPatterns) && !detectQueued(input.before, queuedPatterns)) ||
+    (queuedPromptVisible(input.after, tail, queuedPatterns) && !queuedPromptVisible(input.before, tail, queuedPatterns));
 
   // Did pressing Enter change the pane at all (vs the just-typed state)?
   const paneAdvanced = normalize(input.after) !== normalize(baseline);
   const handledOutputDetected =
     handledOutputLineCount(input.after, handledOutputPatterns) > handledOutputLineCount(baseline, handledOutputPatterns);
 
-  const promptStillParkedInBusyPane = workingBefore && workingAfter && visibleInAfter && !composerCleared && !queuedDetected;
-  const actedOnVisiblePrompt = paneAdvanced && visibleInAfter && !promptStillParkedInBusyPane;
+  const promptStillParkedInBusyPane = parkedInAfter && !composerCleared && !queuedDetected;
+  const actedOnVisiblePrompt = paneAdvanced && visibleInAfter && !parkedInAfter && !promptStillParkedInBusyPane;
   const shellEchoedCommand = input.shellCommand === true && visibleInBaseline && visibleInAfter;
   const delivered =
     queuedDetected ||
