@@ -6,6 +6,29 @@ import { MockRunner } from "../test/mock-runner.js";
 
 const noSleep = async () => {};
 
+const codewithComposerCapture = `
+╭─────────────────────────────────────────────────────────╮
+│ ⎔  Hasna Codewith (v0.1.42)                             │
+│                                                         │
+│ model:       gpt-5.5 xhigh   fast   /model to change    │
+│ directory:   ~/workspace/hasna/opensource/open-codewith │
+│ permissions: YOLO mode                                  │
+╰─────────────────────────────────────────────────────────╯
+
+Tip: skipped skill/auth profile messages
+› Find and fix a bug in @filename
+`;
+
+const codexComposerCapture = `
+╭────────────────────────────────────────╮
+│ ✦ OpenAI Codex                         │
+│ model:       gpt-5.1-codex             │
+│ directory:   /home/hasna/workspace/app │
+│ permissions: workspace-write           │
+╰────────────────────────────────────────╯
+› Add a regression test
+`;
+
 describe("chooseMode", () => {
   test("multiline always pastes", () => {
     expect(chooseMode("a\nb")).toBe("paste");
@@ -47,6 +70,29 @@ function tuiRunner(): MockRunner {
   return r;
 }
 
+function composerRunner(command: string, idleCapture: string, afterSubmit = "✶ Working… (esc to interrupt)"): MockRunner {
+  const r = new MockRunner();
+  let submitted = false;
+  r.responder = (argv) => {
+    if (argv[1] === "list-panes") return { stdout: "%1\n", stderr: "", exitCode: 0, source: "local" };
+    if (argv[1] === "display-message" && argv.at(-1) === "#{pane_current_command}") {
+      return { stdout: `${command}\n`, stderr: "", exitCode: 0, source: "local" };
+    }
+    if (argv[1] === "display-message" && argv.at(-1) === "#{pane_in_mode}") {
+      return { stdout: "0\n", stderr: "", exitCode: 0, source: "local" };
+    }
+    if (argv[1] === "send-keys" && argv.includes("Enter")) {
+      submitted = true;
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    }
+    if (argv[1] === "capture-pane") {
+      return { stdout: submitted ? afterSubmit : idleCapture, stderr: "", exitCode: 0, source: "local" };
+    }
+    return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+  };
+  return r;
+}
+
 describe("performDispatch", () => {
   test("refuses prompt delivery to detected shell panes before text with parentheses can hit bash", async () => {
     const r = new MockRunner();
@@ -81,6 +127,162 @@ describe("performDispatch", () => {
 
     const rec = await performDispatch(
       { target: "work:editor", prompt: "Refactor parser (but do not interrupt)" },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("failed");
+    expect(rec.detail).toMatch(/not a recognized agent composer/i);
+    expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
+  });
+
+  test("refuses copied boxed composer transcripts in non-wrapper panes", async () => {
+    for (const command of ["vim", "less"]) {
+      const r = composerRunner(command, codewithComposerCapture);
+
+      const rec = await performDispatch(
+        { target: `work:${command}`, prompt: "Do not send this" },
+        { tmux: new Tmux(r), sleep: noSleep },
+      );
+
+      expect(rec.status, command).toBe("failed");
+      expect(rec.detail, command).toMatch(/not a recognized agent composer/i);
+      expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer"), command).toBe(false);
+    }
+  });
+
+  test("refuses node wrapper panes that only match legacy broad heuristics", async () => {
+    for (const idleCapture of ["✶ Working… (esc to interrupt)", "> idle composer"]) {
+      const r = composerRunner("node", idleCapture);
+
+      const rec = await performDispatch(
+        { target: "work:node", prompt: "Do not send this" },
+        { tmux: new Tmux(r), sleep: noSleep },
+      );
+
+      expect(rec.status, idleCapture).toBe("failed");
+      expect(rec.detail, idleCapture).toMatch(/not a recognized agent composer/i);
+      expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer"), idleCapture).toBe(false);
+    }
+  });
+
+  test("refuses node wrapper panes when only scrollback contains a boxed composer transcript", async () => {
+    const r = new MockRunner();
+    r.responder = (argv) => {
+      if (argv[1] === "list-panes") return { stdout: "%1\n", stderr: "", exitCode: 0, source: "local" };
+      if (argv[1] === "display-message" && argv.at(-1) === "#{pane_current_command}") {
+        return { stdout: "node\n", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "capture-pane" && argv.includes("-S")) {
+        return { stdout: codewithComposerCapture, stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "capture-pane") {
+        return { stdout: "> idle composer", stderr: "", exitCode: 0, source: "local" };
+      }
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    };
+
+    const rec = await performDispatch(
+      { target: "work:node", prompt: "Do not send this" },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("failed");
+    expect(rec.detail).toMatch(/not a recognized agent composer/i);
+    expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
+  });
+
+  test("refuses node wrapper panes when copy-mode viewport contains a stale boxed transcript", async () => {
+    const r = new MockRunner();
+    let inMode = true;
+    r.responder = (argv) => {
+      if (argv[1] === "list-panes") return { stdout: "%1\n", stderr: "", exitCode: 0, source: "local" };
+      if (argv[1] === "display-message" && argv.at(-1) === "#{pane_current_command}") {
+        return { stdout: "node\n", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "display-message" && argv.at(-1) === "#{pane_in_mode}") {
+        return { stdout: inMode ? "1\n" : "0\n", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "copy-mode" && argv.includes("-q")) {
+        inMode = false;
+        return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "capture-pane") {
+        return {
+          stdout: inMode ? codewithComposerCapture : "node server.js\nListening on http://127.0.0.1:3000\n",
+          stderr: "",
+          exitCode: 0,
+          source: "local",
+        };
+      }
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    };
+
+    const rec = await performDispatch(
+      { target: "work:node", prompt: "Do not send this" },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("failed");
+    expect(rec.detail).toMatch(/not a recognized agent composer/i);
+    expect(r.argvs().some((a) => a[1] === "copy-mode" && a.includes("-q"))).toBe(true);
+    expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
+  });
+
+  test("accepts a node-launched Codewith composer when pane content proves it", async () => {
+    const r = composerRunner("node", codewithComposerCapture);
+
+    const rec = await performDispatch(
+      { target: "open-codewith-04:1.1", prompt: "Fix the dispatch bug", submit: false },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("delivered");
+    expect(rec.detail).toMatch(/without submitting/);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("-l"))).toBe(true);
+    expect(r.argvs().some((a) => a.includes("Enter"))).toBe(false);
+  });
+
+  test("accepts a bun-launched Codex composer when pane content proves it", async () => {
+    const r = composerRunner("bun", codexComposerCapture);
+
+    const rec = await performDispatch(
+      { target: "work:codex", prompt: "Add regression coverage", submitDelayMs: 0 },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("delivered");
+    expect(rec.confirm?.workingDetected).toBe(true);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("-l"))).toBe(true);
+    expect(r.argvs().some((a) => a.includes("Enter"))).toBe(true);
+  });
+
+  test("accepts direct agent commands without wrapper content proof", async () => {
+    for (const command of ["codewith", "codex", "claude"]) {
+      const r = composerRunner(command, "> idle composer");
+
+      const rec = await performDispatch(
+        { target: `work:${command}`, prompt: "Draft this", submit: false },
+        { tmux: new Tmux(r), sleep: noSleep },
+      );
+
+      expect(rec.status, command).toBe("delivered");
+      expect(rec.detail, command).toMatch(/without submitting/);
+      expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("-l")), command).toBe(true);
+    }
+  });
+
+  test("refuses arbitrary node panes even though node is a common wrapper", async () => {
+    const r = composerRunner(
+      "node",
+      `
+node server.js
+Listening on http://127.0.0.1:3000
+GET /health 200
+`,
+    );
+
+    const rec = await performDispatch(
+      { target: "work:server", prompt: "Refactor parser (but do not interrupt)" },
       { tmux: new Tmux(r), sleep: noSleep },
     );
 

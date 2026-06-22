@@ -1,13 +1,92 @@
 import { describe, expect, test } from "bun:test";
-import { classifyPaneCommand, evaluateExecPolicy } from "./exec-policy.js";
+import {
+  classifyPaneCommand,
+  evaluateExecPolicy,
+  isAgentWrapperCommand,
+  looksLikeAgentPane,
+  looksLikeWrappedAgentComposer,
+} from "./exec-policy.js";
 
 describe("exec command policy", () => {
   test("classifies shells and agent composers", () => {
     expect(classifyPaneCommand("bash")).toBe("shell");
     expect(classifyPaneCommand("/usr/bin/zsh")).toBe("shell");
     expect(classifyPaneCommand("codewith")).toBe("agent");
+    expect(classifyPaneCommand("codex")).toBe("agent");
     expect(classifyPaneCommand("claude")).toBe("agent");
+    expect(classifyPaneCommand("node")).toBe("unknown");
+    expect(classifyPaneCommand("bun")).toBe("unknown");
     expect(classifyPaneCommand("vim")).toBe("unknown");
+  });
+
+  test("recognizes only node and bun as agent wrapper commands", () => {
+    expect(isAgentWrapperCommand("node")).toBe(true);
+    expect(isAgentWrapperCommand("/usr/bin/bun")).toBe(true);
+    expect(isAgentWrapperCommand("vim")).toBe(false);
+    expect(isAgentWrapperCommand("less")).toBe(false);
+  });
+
+  test("recognizes Codewith composer content from wrapper-launched panes", () => {
+    expect(
+      looksLikeWrappedAgentComposer(`
+╭─────────────────────────────────────────────────────────╮
+│ ⎔  Hasna Codewith (v0.1.42)                             │
+│                                                         │
+│ model:       gpt-5.5 xhigh   fast   /model to change    │
+│ directory:   ~/workspace/hasna/opensource/open-codewith │
+│ permissions: YOLO mode                                  │
+╰─────────────────────────────────────────────────────────╯
+
+  Tip: Use /skills to list available skills or ask Codewith to use one.
+
+⚠ Skipped loading 1 skill(s) due to invalid SKILL.md files.
+› Find and fix a bug in @filename
+`),
+    ).toBe(true);
+  });
+
+  test("recognizes Codex composer content from wrapper-launched panes", () => {
+    expect(
+      looksLikeWrappedAgentComposer(`
+╭────────────────────────────────────────╮
+│ ✦ OpenAI Codex                         │
+│ model:       gpt-5.1-codex             │
+│ directory:   /home/hasna/workspace/app │
+│ permissions: workspace-write           │
+╰────────────────────────────────────────╯
+› Add a regression test
+`),
+    ).toBe(true);
+  });
+
+  test("requires active composer or busy context for wrapped agent recognition", () => {
+    expect(
+      looksLikeWrappedAgentComposer(`
+╭────────────────────────────────────────╮
+│ ⎔  Hasna Codewith (v0.1.42)            │
+│ model:       gpt-5.5 xhigh             │
+│ directory:   ~/workspace/project       │
+│ permissions: YOLO mode                 │
+╰────────────────────────────────────────╯
+`),
+    ).toBe(false);
+  });
+
+  test("does not allow legacy broad heuristics for wrapped agent recognition", () => {
+    expect(looksLikeWrappedAgentComposer("✶ Working… (esc to interrupt)")).toBe(false);
+    expect(looksLikeWrappedAgentComposer("> idle composer")).toBe(false);
+    expect(looksLikeAgentPane("✶ Working… (esc to interrupt)")).toBe(true);
+    expect(looksLikeAgentPane("> idle composer")).toBe(true);
+  });
+
+  test("does not treat arbitrary node output as an agent composer", () => {
+    expect(
+      looksLikeWrappedAgentComposer(`
+node server.js
+Listening on http://127.0.0.1:3000
+GET /health 200
+`),
+    ).toBe(false);
   });
 
   test("allows builtin safe command prefixes on shell targets", () => {

@@ -2,8 +2,9 @@
 /**
  * Test fixture: a stand-in coding agent that BOTH records exactly what it
  * receives (to verify a long prompt arrives intact) AND enters a working state
- * on submit (so delivery confirmation has something to detect). It enables
- * bracketed-paste mode so tmux wraps pasted content in ESC[200~ … ESC[201~.
+ * on submit (so delivery confirmation has something to detect). It presents a
+ * Codex-like composer and enables bracketed-paste mode so tmux wraps pasted
+ * content in ESC[200~ … ESC[201~.
  *
  * Usage: bun run recorder-agent.ts <outfile>
  */
@@ -16,7 +17,15 @@ if (!file) {
 }
 
 writeFileSync(file, "");
-process.stdout.write("> idle — awaiting prompt\n");
+process.stdout.write(`╭─────────────────────────────────────────────────────────╮
+│ ✦ OpenAI Codex (test fixture)                           │
+│                                                         │
+│ model:       test-model                                 │
+│ directory:   ${process.cwd()} │
+│ permissions: workspace-write                            │
+╰─────────────────────────────────────────────────────────╯
+› idle — awaiting prompt
+`);
 process.stdout.write("\x1b[?2004h"); // enable bracketed paste
 
 if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {

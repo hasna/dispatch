@@ -1,11 +1,19 @@
 #!/usr/bin/env bun
 /**
- * Test fixture: a minimal stand-in for a coding-agent TUI. It shows an idle
- * composer, and when it receives a submitted line (Enter) it clears the
- * composer line and prints a "working / esc to interrupt" footer — exactly the
- * transition delivery-confirmation looks for.
+ * Test fixture: a minimal stand-in for a coding-agent TUI launched through bun.
+ * It shows a Codewith-like idle composer, and when it receives a submitted line
+ * (Enter) it clears the composer line and prints a "working / esc to interrupt"
+ * footer — exactly the transition delivery-confirmation looks for.
  */
-process.stdout.write("> awaiting prompt — idle\n");
+process.stdout.write(`╭─────────────────────────────────────────────────────────╮
+│ ⎔  Hasna Codewith (test fixture)                        │
+│                                                         │
+│ model:       test-model                                 │
+│ directory:   ${process.cwd()} │
+│ permissions: YOLO mode                                  │
+╰─────────────────────────────────────────────────────────╯
+› awaiting prompt — idle
+`);
 
 if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
   process.stdin.setRawMode(true);

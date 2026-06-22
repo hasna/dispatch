@@ -13,6 +13,7 @@ const AGENT_COMMANDS = new Set([
   "opencode",
   "takumi",
 ]);
+const AGENT_WRAPPER_COMMANDS = new Set(["bun", "node"]);
 
 const DEFAULT_ALLOW_PREFIXES = [
   "mailery status",
@@ -48,9 +49,50 @@ export function classifyPaneCommand(currentCommand: string): ExecTargetKind {
   return "unknown";
 }
 
-/** Best-effort content check for test fixtures and agent TUIs launched through wrappers like bun/node. */
+/** True when the pane command is a known JS runtime wrapper for agent CLIs. */
+export function isAgentWrapperCommand(currentCommand: string): boolean {
+  return AGENT_WRAPPER_COMMANDS.has(basename(currentCommand));
+}
+
+function stripTuiLineChrome(line: string): string {
+  return line
+    .trim()
+    .replace(/^[│┃║╎╏┆┇┊┋▏▎▌▐]\s*/, "")
+    .replace(/\s*[│┃║╎╏┆┇┊┋▏▎▌▐]$/, "")
+    .trim()
+    .replace(/^[⎔✦✧◆◇●○◉◎⦿]\s*/, "")
+    .trim();
+}
+
+function hasNamedAgentComposer(text: string): boolean {
+  const normalized = text.split("\n").map(stripTuiLineChrome).join("\n");
+  const hasKnownBanner =
+    /^[ \t]*(?:Hasna[ \t]+)?Codewith(?:[ \t]+(?:CLI|v?\d[\w.-]*)|[ \t]*\([^)]+\))?[ \t]*$/im.test(normalized) ||
+    /^[ \t]*(?:OpenAI[ \t]+)?Codex(?:[ \t]+(?:CLI|v?\d[\w.-]*)|[ \t]*\([^)]+\))?[ \t]*$/im.test(normalized);
+  if (!hasKnownBanner) return false;
+
+  const contextSignals = [
+    /^[ \t]*model:[^\n]+/im,
+    /^[ \t]*(?:directory|cwd|workspace):[^\n]+/im,
+    /^[ \t]*permissions:[^\n]+/im,
+  ].filter((pattern) => pattern.test(normalized)).length;
+  const hasComposerPrompt = /^[ \t]*›(?:\s|$).*/m.test(normalized);
+  const hasBusySignal =
+    /\b(?:esc to interrupt|esc to cancel|ctrl\+c to (?:stop|interrupt|cancel))\b/i.test(normalized) ||
+    /[✶✻●]\s*Working/i.test(normalized);
+
+  return contextSignals >= 1 && (hasComposerPrompt || hasBusySignal);
+}
+
+/** Strict proof for Codewith/Codex panes launched through runtime wrappers like node/bun. */
+export function looksLikeWrappedAgentComposer(text: string): boolean {
+  return hasNamedAgentComposer(text);
+}
+
+/** Best-effort content check for known agent TUIs and test fixtures. */
 export function looksLikeAgentPane(text: string): boolean {
   return (
+    looksLikeWrappedAgentComposer(text) ||
     /\b(?:esc to interrupt|working on the previous task|messages to be submitted after next tool call)\b/i.test(text) ||
     /^>\s+(?:awaiting prompt|idle|idle composer)\b/im.test(text) ||
     /[✶✻●]\s*Working/i.test(text)

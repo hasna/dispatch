@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 /**
  * Test fixture: a coding agent that is ALREADY BUSY (running a tool call) when a
- * prompt arrives, like Codewith/Claude Code mid-task. It shows a working footer
- * from the start and, on receiving input, stages it under a "Messages to be
- * submitted after next tool call" queue while staying busy — it never clears the
- * composer and never starts a fresh working indicator. This is the case that
- * used to be misreported as "not delivered".
+ * prompt arrives, like Codewith/Claude Code mid-task. It shows a Codewith-like
+ * banner plus working footer from the start and, on receiving input, stages it
+ * under a "Messages to be submitted after next tool call" queue while staying
+ * busy — it never clears the composer and never starts a fresh working
+ * indicator. This is the case that used to be misreported as "not delivered".
  */
 import { appendFileSync, writeFileSync } from "node:fs";
 
@@ -13,6 +13,14 @@ const file = process.argv[2]; // optional: record what was received
 if (file) writeFileSync(file, "");
 
 process.stdout.write("\x1b[?2004h"); // enable bracketed paste
+process.stdout.write(`╭─────────────────────────────────────────────────────────╮
+│ ⎔  Hasna Codewith (test fixture)                        │
+│                                                         │
+│ model:       test-model                                 │
+│ directory:   ${process.cwd()} │
+│ permissions: YOLO mode                                  │
+╰─────────────────────────────────────────────────────────╯
+`);
 process.stdout.write("● Working on the previous task… (esc to interrupt)\n");
 process.stdout.write("  running a tool call\n");
 
