@@ -42,6 +42,16 @@ const completedGoalCodewithCapture = `
   gpt-5.5 xhigh fast · account013 · 5h 9% left · Main [default]       Goal achieved (21s)
 `;
 
+const wrappedCompletedGoalCodewithCapture = `
+⚠ Heads up, you have less than 5% of your weekly limit left.
+
+
+› Use /skills to list available skills
+
+  gpt-5.5 xhigh fast · 5h 96% left · account003 · Main [default]
+                                                      Goal achieved (3h 52m)
+`;
+
 const codewithProcessTree = `
 1234 1 Ss /usr/bin/bash
 1240 1234 Sl+ node /home/hasna/.bun/bin/codewith --auth-profile account005
@@ -365,6 +375,20 @@ describe("performDispatch", () => {
 
     const rec = await performDispatch(
       { target: "open-codewith-04:1.1", prompt: "Follow up on the completed goal", submit: false },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("delivered");
+    expect(rec.detail).toMatch(/without submitting/);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("-l"))).toBe(true);
+    expect(r.argvs().some((a) => a.includes("Enter"))).toBe(false);
+  });
+
+  test("accepts a wrapped completed-goal Codewith composer with budget before account", async () => {
+    const r = composerRunner("node", wrappedCompletedGoalCodewithCapture, "✶ Working… (esc to interrupt)", codewithProcessTree);
+
+    const rec = await performDispatch(
+      { target: "open-codewith-glm:1.1", prompt: "Follow up on the completed goal", submit: false },
       { tmux: new Tmux(r), sleep: noSleep },
     );
 

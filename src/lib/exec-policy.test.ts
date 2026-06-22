@@ -92,6 +92,19 @@ describe("exec command policy", () => {
     ).toBe(true);
   });
 
+  test("recognizes wrapped Codewith completed-goal statuslines with budget before account", () => {
+    expect(
+      looksLikeWrappedAgentComposer(`
+⚠ Heads up, you have less than 5% of your weekly limit left.
+
+› Use /skills to list available skills
+
+  gpt-5.5 xhigh fast · 5h 96% left · account003 · Main [default]
+                                                      Goal achieved (3h 52m)
+`, { processTree: codewithProcessTree }),
+    ).toBe(true);
+  });
+
   test("requires Codewith process evidence for bannerless completed-goal composer content", () => {
     expect(
       looksLikeWrappedAgentComposer(`
