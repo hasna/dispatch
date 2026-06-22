@@ -51,8 +51,18 @@ describe("Tmux command construction", () => {
     // In a mode -> cancel issued.
     const inMode = new MockRunner();
     inMode.queue.push({ stdout: "1\n" }); // pane_in_mode
+    inMode.queue.push({ stdout: "", exitCode: 0 }); // copy-mode -q
+    inMode.queue.push({ stdout: "0\n" }); // pane_in_mode recheck
     expect(new Tmux(inMode).exitCopyMode("s:w")).toBe(true);
-    expect(inMode.lastArgv()).toEqual(["tmux", "copy-mode", "-q", "-t", "s:w"]);
+    expect(inMode.calls.some((call) => call.argv.join(" ") === "tmux copy-mode -q -t s:w")).toBe(true);
+    expect(inMode.lastArgv()).toEqual(["tmux", "display-message", "-p", "-t", "s:w", "#{pane_in_mode}"]);
+
+    // Still in a mode after cancel -> report failure.
+    const stillMode = new MockRunner();
+    stillMode.queue.push({ stdout: "1\n" });
+    stillMode.queue.push({ stdout: "", exitCode: 0 });
+    stillMode.queue.push({ stdout: "1\n" });
+    expect(new Tmux(stillMode).exitCopyMode("s:w")).toBe(false);
 
     // Not in a mode -> no cancel command issued.
     const notMode = new MockRunner();

@@ -84,9 +84,45 @@ function hasNamedAgentComposer(text: string): boolean {
   return contextSignals >= 1 && (hasComposerPrompt || hasBusySignal);
 }
 
+function hasCodewithProcessEvidence(processTree = ""): boolean {
+  return processTree
+    .split("\n")
+    .map((line) => line.trim())
+    .some(
+      (line) =>
+        /(?:^|\s)(?:node|bun)\s+\S*\/codewith(?:\s|$)/i.test(line) ||
+        /(?:^|\s)(?:bunx|npx|pnpm|yarn)\s+@hasna\/codewith(?:\s|$)/i.test(line) ||
+        /node_modules\/@hasna\/codewith(?:\/|\s|$)/i.test(line) ||
+        /\/bin\/codewith(?:\s|$)/i.test(line) ||
+        /(?:^|\s)codewith(?:\s|$)/i.test(line),
+    );
+}
+
+function hasCompletedCodewithComposer(text: string, processTree?: string): boolean {
+  if (!hasCodewithProcessEvidence(processTree)) return false;
+  const lines = text
+    .split("\n")
+    .map(stripTuiLineChrome)
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean);
+  const statusLine = lines.at(-1) ?? "";
+  const composerLine = lines.at(-2) ?? "";
+  const looksLikeCodewithStatus =
+    /^(?:gpt|o\d|codex|claude|glm|gemini|qwen|deepseek|llama|mistral|kimi|grok)[\w.+:-]*(?:\s+\w+){0,4}\s+·\s+account[\w-]+\s+·\s+\d+\s*[dhms]\s+(?:100|[1-9]?\d)%\s+left\s+·\s+[^·\[\]\s]+(?:\s+[^·\[\]\s]+){0,4}\s+\[[^\]\n]+\]\s+Goal achieved(?:\s*\([^)]+\))?$/i.test(
+      statusLine,
+    );
+
+  return /^›(?:\s|$).+/.test(composerLine) && looksLikeCodewithStatus;
+}
+
+export interface WrappedAgentEvidence {
+  /** Process tree for the tmux pane, used only for bannerless completed Codewith views. */
+  processTree?: string;
+}
+
 /** Strict proof for Codewith/Codex panes launched through runtime wrappers like node/bun. */
-export function looksLikeWrappedAgentComposer(text: string): boolean {
-  return hasNamedAgentComposer(text);
+export function looksLikeWrappedAgentComposer(text: string, evidence: WrappedAgentEvidence = {}): boolean {
+  return hasNamedAgentComposer(text) || hasCompletedCodewithComposer(text, evidence.processTree);
 }
 
 /** Best-effort content check for known agent TUIs and test fixtures. */

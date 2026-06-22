@@ -29,6 +29,25 @@ const codexComposerCapture = `
 › Add a regression test
 `;
 
+const completedGoalCodewithCapture = `
+• Implemented both scopes and closed the durable goal plan.
+
+  Durable goal plan completed: total 842,638 tokens, about 62m44s elapsed.
+
+─ Worked for 1h 03m 48s • Local tools: 392 calls (2180.7s) • Inference: 2 calls (111.1s) •
+
+
+› Find and fix a bug in @filename
+
+  gpt-5.5 xhigh fast · account013 · 5h 9% left · Main [default]       Goal achieved (21s)
+`;
+
+const codewithProcessTree = `
+1234 1 Ss /usr/bin/bash
+1240 1234 Sl+ node /home/hasna/.bun/bin/codewith --auth-profile account005
+1241 1240 Sl+ /home/hasna/.bun/install/global/node_modules/@hasna/codewith/node_modules/@hasna/codewith-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codewith --auth-profile account005
+`;
+
 describe("chooseMode", () => {
   test("multiline always pastes", () => {
     expect(chooseMode("a\nb")).toBe("paste");
@@ -70,7 +89,12 @@ function tuiRunner(): MockRunner {
   return r;
 }
 
-function composerRunner(command: string, idleCapture: string, afterSubmit = "✶ Working… (esc to interrupt)"): MockRunner {
+function composerRunner(
+  command: string,
+  idleCapture: string,
+  afterSubmit = "✶ Working… (esc to interrupt)",
+  processTree = "",
+): MockRunner {
   const r = new MockRunner();
   let submitted = false;
   r.responder = (argv) => {
@@ -78,8 +102,14 @@ function composerRunner(command: string, idleCapture: string, afterSubmit = "✶
     if (argv[1] === "display-message" && argv.at(-1) === "#{pane_current_command}") {
       return { stdout: `${command}\n`, stderr: "", exitCode: 0, source: "local" };
     }
+    if (argv[1] === "display-message" && argv.at(-1) === "#{pane_pid}") {
+      return { stdout: "1234\n", stderr: "", exitCode: 0, source: "local" };
+    }
     if (argv[1] === "display-message" && argv.at(-1) === "#{pane_in_mode}") {
       return { stdout: "0\n", stderr: "", exitCode: 0, source: "local" };
+    }
+    if (argv[0] === "ps") {
+      return { stdout: processTree, stderr: "", exitCode: processTree ? 0 : 1, source: "local" };
     }
     if (argv[1] === "send-keys" && argv.includes("Enter")) {
       submitted = true;
@@ -191,6 +221,50 @@ describe("performDispatch", () => {
     expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
   });
 
+  test("refuses node wrapper panes when only scrollback contains a completed-goal composer transcript", async () => {
+    const r = new MockRunner();
+    r.responder = (argv) => {
+      if (argv[1] === "list-panes") return { stdout: "%1\n", stderr: "", exitCode: 0, source: "local" };
+      if (argv[1] === "display-message" && argv.at(-1) === "#{pane_current_command}") {
+        return { stdout: "node\n", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "capture-pane" && argv.includes("-S")) {
+        return { stdout: completedGoalCodewithCapture, stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "capture-pane") {
+        return { stdout: "node server.js\nListening on http://127.0.0.1:3000\n", stderr: "", exitCode: 0, source: "local" };
+      }
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    };
+
+    const rec = await performDispatch(
+      { target: "work:node", prompt: "Do not send this" },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("failed");
+    expect(rec.detail).toMatch(/not a recognized agent composer/i);
+    expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
+  });
+
+  test("refuses visible copied completed-goal transcripts from non-Codewith node processes", async () => {
+    const r = composerRunner(
+      "node",
+      completedGoalCodewithCapture,
+      "✶ Working… (esc to interrupt)",
+      "1234 1 Ss /usr/bin/bash\n1240 1234 Sl+ node /srv/transcript-viewer.js\n",
+    );
+
+    const rec = await performDispatch(
+      { target: "work:node", prompt: "Do not send this", submit: false },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("failed");
+    expect(rec.detail).toMatch(/not a recognized agent composer/i);
+    expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
+  });
+
   test("refuses node wrapper panes when copy-mode viewport contains a stale boxed transcript", async () => {
     const r = new MockRunner();
     let inMode = true;
@@ -228,11 +302,69 @@ describe("performDispatch", () => {
     expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
   });
 
+  test("refuses node wrapper panes when copy-mode exit does not leave live mode", async () => {
+    const r = new MockRunner();
+    r.responder = (argv) => {
+      if (argv[1] === "list-panes") return { stdout: "%1\n", stderr: "", exitCode: 0, source: "local" };
+      if (argv[1] === "display-message" && argv.at(-1) === "#{pane_current_command}") {
+        return { stdout: "node\n", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "display-message" && argv.at(-1) === "#{pane_in_mode}") {
+        return { stdout: "1\n", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "copy-mode" && argv.includes("-q")) {
+        return { stdout: "", stderr: "copy-mode failed", exitCode: 1, source: "local" };
+      }
+      if (argv[1] === "capture-pane") {
+        return { stdout: completedGoalCodewithCapture, stderr: "", exitCode: 0, source: "local" };
+      }
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    };
+
+    const rec = await performDispatch(
+      { target: "work:node", prompt: "Do not send this", submit: false },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("failed");
+    expect(rec.detail).toMatch(/copy-mode|tmux mode/i);
+    expect(r.argvs().some((a) => a[1] === "copy-mode" && a.includes("-q"))).toBe(true);
+    expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
+  });
+
   test("accepts a node-launched Codewith composer when pane content proves it", async () => {
     const r = composerRunner("node", codewithComposerCapture);
 
     const rec = await performDispatch(
       { target: "open-codewith-04:1.1", prompt: "Fix the dispatch bug", submit: false },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("delivered");
+    expect(rec.detail).toMatch(/without submitting/);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("-l"))).toBe(true);
+    expect(r.argvs().some((a) => a.includes("Enter"))).toBe(false);
+  });
+
+  test("accepts a node-launched completed-goal Codewith composer when pane content proves it", async () => {
+    const r = composerRunner("node", completedGoalCodewithCapture, "✶ Working… (esc to interrupt)", codewithProcessTree);
+
+    const rec = await performDispatch(
+      { target: "open-codewith-04:1.1", prompt: "Follow up on the completed goal", submit: false },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("delivered");
+    expect(rec.detail).toMatch(/without submitting/);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("-l"))).toBe(true);
+    expect(r.argvs().some((a) => a.includes("Enter"))).toBe(false);
+  });
+
+  test("accepts a bun-launched completed-goal Codewith composer when pane content proves it", async () => {
+    const r = composerRunner("bun", completedGoalCodewithCapture, "✶ Working… (esc to interrupt)", codewithProcessTree);
+
+    const rec = await performDispatch(
+      { target: "open-codewith-04:1.1", prompt: "Follow up on the completed goal", submit: false },
       { tmux: new Tmux(r), sleep: noSleep },
     );
 

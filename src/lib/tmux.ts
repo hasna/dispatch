@@ -110,6 +110,16 @@ export class Tmux {
     return res.exitCode === 0 ? res.stdout.replace(/\n$/, "") : "";
   }
 
+  /** Best-effort process tree for the pane's process group. */
+  processTree(target: string): string {
+    const pid = this.paneProperty(target, "pane_pid");
+    if (!/^\d+$/.test(pid)) return "";
+    const group = this.runner.run(["ps", "-o", "pid=,ppid=,stat=,command=", "--forest", "-g", pid]);
+    if (group.exitCode === 0 && group.stdout.trim()) return group.stdout;
+    const single = this.runner.run(["ps", "-o", "pid=,ppid=,stat=,command=", "-p", pid]);
+    return single.exitCode === 0 ? single.stdout : "";
+  }
+
   /** Whether the pane is in a tmux mode (copy-mode, view-mode, …). */
   paneInMode(target: string): boolean {
     return this.paneProperty(target, "pane_in_mode") === "1";
@@ -123,8 +133,8 @@ export class Tmux {
    */
   exitCopyMode(target: string): boolean {
     if (!this.paneInMode(target)) return false;
-    this.tmux(["copy-mode", "-q", "-t", target]);
-    return true;
+    const res = this.tmux(["copy-mode", "-q", "-t", target]);
+    return res.exitCode === 0 && !this.paneInMode(target);
   }
 
   /**

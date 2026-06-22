@@ -84,9 +84,17 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
   // If the pane is scrolled into copy-mode, visible captures can show stale
   // scrollback. Exit first so wrapper safety checks inspect the live process.
   try {
-    tmux.exitCopyMode(options.target);
+    if (tmux.paneInMode(options.target) && !tmux.exitCopyMode(options.target)) {
+      return finish({
+        status: "failed",
+        detail: "target is in tmux copy-mode or another pane mode; refusing prompt delivery until mode exits",
+      });
+    }
   } catch {
-    // best-effort; a failed wrapper proof or delivery below will report normally
+    return finish({
+      status: "failed",
+      detail: "could not verify target left tmux copy-mode; refusing prompt delivery",
+    });
   }
 
   if (targetKind !== "agent") {
@@ -97,7 +105,8 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
       });
     }
     const visibleBefore = tmux.capturePane(options.target);
-    if (!looksLikeWrappedAgentComposer(visibleBefore)) {
+    const processTree = tmux.processTree(options.target);
+    if (!looksLikeWrappedAgentComposer(visibleBefore, { processTree })) {
       return finish({
         status: "failed",
         detail: `target is not a recognized agent composer (${paneCommand || "unknown"}); refusing prompt delivery`,
