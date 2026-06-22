@@ -8,6 +8,12 @@ import {
 } from "./exec-policy.js";
 
 describe("exec command policy", () => {
+  const codewithProcessTree = `
+1234 1 Ss /usr/bin/bash
+1240 1234 Sl+ node /home/hasna/.bun/bin/codewith --auth-profile account005
+1241 1240 Sl+ /home/hasna/.bun/install/global/node_modules/@hasna/codewith/node_modules/@hasna/codewith-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codewith --auth-profile account005
+`;
+
   test("classifies shells and agent composers", () => {
     expect(classifyPaneCommand("bash")).toBe("shell");
     expect(classifyPaneCommand("/usr/bin/zsh")).toBe("shell");
@@ -59,6 +65,43 @@ describe("exec command policy", () => {
     ).toBe(true);
   });
 
+  test("recognizes Codewith completed-goal idle composer content without the startup banner", () => {
+    expect(
+      looksLikeWrappedAgentComposer(`
+• Implemented both scopes and closed the durable goal plan.
+
+  Durable goal plan completed: total 842,638 tokens, about 62m44s elapsed.
+
+─ Worked for 1h 03m 48s • Local tools: 392 calls (2180.7s) • Inference: 2 calls (111.1s) •
+
+
+› Find and fix a bug in @filename
+
+  gpt-5.5 xhigh fast · account013 · 5h 9% left · Main [default]       Goal achieved (21s)
+`, { processTree: codewithProcessTree }),
+    ).toBe(true);
+  });
+
+  test("recognizes non-gpt Codewith completed-goal idle composer statuslines", () => {
+    expect(
+      looksLikeWrappedAgentComposer(`
+› Follow up on this completed goal
+
+  glm-5.2 xhigh fast · account013 · 5h 9% left · Main [default]       Goal achieved (21s)
+`, { processTree: codewithProcessTree }),
+    ).toBe(true);
+  });
+
+  test("requires Codewith process evidence for bannerless completed-goal composer content", () => {
+    expect(
+      looksLikeWrappedAgentComposer(`
+› Find and fix a bug in @filename
+
+  gpt-5.5 xhigh fast · account013 · 5h 9% left · Main [default]       Goal achieved (21s)
+`, { processTree: "1234 1 Ss /usr/bin/bash\n1240 1234 Sl+ node /srv/transcript-viewer.js\n" }),
+    ).toBe(false);
+  });
+
   test("requires active composer or busy context for wrapped agent recognition", () => {
     expect(
       looksLikeWrappedAgentComposer(`
@@ -77,6 +120,53 @@ describe("exec command policy", () => {
     expect(looksLikeWrappedAgentComposer("> idle composer")).toBe(false);
     expect(looksLikeAgentPane("✶ Working… (esc to interrupt)")).toBe(true);
     expect(looksLikeAgentPane("> idle composer")).toBe(true);
+  });
+
+  test("does not accept completed-goal status text without an active composer line", () => {
+    expect(
+      looksLikeWrappedAgentComposer(`
+server log: finished request
+gpt-5.5 xhigh fast · account013 · 5h 9% left · Main [default]       Goal achieved (21s)
+`),
+    ).toBe(false);
+  });
+
+  test("does not accept generic goal-completed node output as Codewith composer proof", () => {
+    expect(
+      looksLikeWrappedAgentComposer(`
+› choose an option
+Goal achieved in background worker
+`),
+    ).toBe(false);
+  });
+
+  test("does not accept copied completed-goal transcripts with extra log prefixes", () => {
+    const cases = [
+      `
+node transcript viewer
+› copied prompt
+INFO gpt-5.5 xhigh fast · account013 · 5h 9% left · Main [default]       Goal achieved (21s)
+`,
+      `
+node transcript viewer
+› copied prompt
+gpt-5.5 xhigh fast · account013 · 5h 9% left · [default]       Goal achieved (21s)
+`,
+      `
+node transcript viewer
+› copied prompt
+gpt-5.5 xhigh fast · account013 · 5h 999% left · Main [default]       Goal achieved (21s)
+`,
+      `
+node transcript viewer
+› copied prompt
+gpt-5.5 xhigh fast · account013 · 5h 9% left · Main default       Goal achieved (21s)
+`,
+    ];
+
+    for (const text of cases) {
+      expect(looksLikeWrappedAgentComposer(text, { processTree: codewithProcessTree }), text).toBe(false);
+    }
   });
 
   test("does not treat arbitrary node output as an agent composer", () => {
