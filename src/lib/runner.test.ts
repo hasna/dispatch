@@ -6,6 +6,7 @@ import {
   createRunner,
   isLocalMachine,
   quoteArgv,
+  remoteTimeoutMs,
   shellQuote,
 } from "./runner.js";
 
@@ -49,6 +50,22 @@ describe("LocalRunner", () => {
 });
 
 describe("RemoteRunner", () => {
+  test("uses a tolerant default timeout for cross-machine tmux operations", () => {
+    const previous = process.env.DISPATCH_REMOTE_TIMEOUT_MS;
+    delete process.env.DISPATCH_REMOTE_TIMEOUT_MS;
+    try {
+      expect(remoteTimeoutMs()).toBe(20000);
+      process.env.DISPATCH_REMOTE_TIMEOUT_MS = "42";
+      expect(remoteTimeoutMs()).toBe(42);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.DISPATCH_REMOTE_TIMEOUT_MS;
+      } else {
+        process.env.DISPATCH_REMOTE_TIMEOUT_MS = previous;
+      }
+    }
+  });
+
   test("wraps argv through the resolver and executes the resolved shell command", () => {
     // Stub the resolver so we exercise the wiring without real ssh.
     const calls: string[] = [];

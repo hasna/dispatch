@@ -81,6 +81,28 @@ describe("scheduler.tick", () => {
     store.close();
   });
 
+  test("an interval loop fires once per tick and reschedules after the attempt completes", async () => {
+    const store = new Store(":memory:");
+    const sched = store.createSchedule({
+      options: { target: "s:w", prompt: "loop" },
+      kind: "loop",
+      every: "5m",
+      intervalMs: 5 * 60_000,
+      nextRun: "2000-01-01T00:00:00.000Z",
+    });
+    const { calls, dispatch } = counter();
+    const fixedNow = new Date("2026-06-17T10:00:30.000Z");
+
+    const res = await tick({ store, dispatch, now: () => fixedNow });
+    expect(calls).toHaveLength(1);
+    expect(res.fired).toHaveLength(1);
+    const after = store.getSchedule(sched.id)!;
+    expect(after.status).toBe("scheduled");
+    expect(after.nextRun).toBe("2026-06-17T10:05:30.000Z");
+    expect(after.lastDispatchId).toBe("rec1");
+    store.close();
+  });
+
   test("a one-shot dispatch error stays scheduled at a retry time and is reported", async () => {
     const store = new Store(":memory:");
     const sched = store.createSchedule({
@@ -165,6 +187,29 @@ describe("scheduler.tick", () => {
     store.close();
   });
 
+  test("an interval loop keeps retrying at its interval on failure", async () => {
+    const store = new Store(":memory:");
+    const sched = store.createSchedule({
+      options: { target: "s:w", prompt: "loop-fail" },
+      kind: "loop",
+      every: "30s",
+      intervalMs: 30_000,
+      nextRun: "2000-01-01T00:00:00.000Z",
+    });
+    const res = await tick({
+      store,
+      dispatch: async () => fakeRecord("rec-loop-failed", "skipped"),
+      now: () => new Date("2026-06-17T10:00:30.000Z"),
+      maxRetryWindowMs: 0,
+    });
+    expect(res.failed).toHaveLength(1);
+    const after = store.getSchedule(sched.id)!;
+    expect(after.status).toBe("scheduled");
+    expect(after.nextRun).toBe("2026-06-17T10:01:00.000Z");
+    expect(after.lastDispatchId).toBe("rec-loop-failed");
+    store.close();
+  });
+
   test("a failed dispatch record does not consume a one-shot schedule", async () => {
     const store = new Store(":memory:");
     const sched = store.createSchedule({
@@ -221,6 +266,83 @@ describe("scheduler.tick", () => {
     const res = await tick({ store, dispatch });
     expect(calls).toHaveLength(0);
     expect(res.fired).toHaveLength(0);
+    store.close();
+  });
+
+  test("pause during an in-flight dispatch is preserved", async () => {
+    const store = new Store(":memory:");
+    const sched = store.createSchedule({
+      options: { target: "s:w", prompt: "pause-me" },
+      kind: "loop",
+      every: "5m",
+      intervalMs: 5 * 60_000,
+      nextRun: "2000-01-01T00:00:00.000Z",
+    });
+
+    const res = await tick({
+      store,
+      dispatch: async () => {
+        store.updateSchedule(sched.id, { status: "paused" });
+        return fakeRecord("rec-paused");
+      },
+      now: () => new Date("2026-06-17T10:00:00.000Z"),
+    });
+
+    expect(res.fired).toHaveLength(0);
+    expect(store.getSchedule(sched.id)).toMatchObject({ status: "paused", lastDispatchId: undefined });
+    store.close();
+  });
+
+  test("cancel during an in-flight dispatch is preserved", async () => {
+    const store = new Store(":memory:");
+    const sched = store.createSchedule({
+      options: { target: "s:w", prompt: "cancel-me" },
+      nextRun: "2000-01-01T00:00:00.000Z",
+    });
+
+    const res = await tick({
+      store,
+      dispatch: async () => {
+        store.updateSchedule(sched.id, { status: "cancelled" });
+        return fakeRecord("rec-cancelled");
+      },
+      now: () => new Date("2026-06-17T10:00:00.000Z"),
+    });
+
+    expect(res.fired).toHaveLength(0);
+    expect(store.getSchedule(sched.id)).toMatchObject({ status: "cancelled", lastDispatchId: undefined });
+    store.close();
+  });
+
+  test("clear during an in-flight dispatch does not abort later due schedules", async () => {
+    const store = new Store(":memory:");
+    const doomed = store.createSchedule({
+      options: { target: "s:w", prompt: "clear-me" },
+      nextRun: "2000-01-01T00:00:00.000Z",
+    });
+    const survivor = store.createSchedule({
+      options: { target: "s:w", prompt: "survivor" },
+      nextRun: "2000-01-01T00:00:00.000Z",
+    });
+    let calls = 0;
+
+    const res = await tick({
+      store,
+      dispatch: async () => {
+        calls += 1;
+        if (calls === 1) {
+          store.deleteSchedule(doomed.id);
+          return fakeRecord("rec-cleared");
+        }
+        return fakeRecord("rec-survivor");
+      },
+      now: () => new Date("2026-06-17T10:00:00.000Z"),
+    });
+
+    expect(calls).toBe(2);
+    expect(res.fired).toHaveLength(1);
+    expect(store.getSchedule(doomed.id)).toBeUndefined();
+    expect(store.getSchedule(survivor.id)).toMatchObject({ status: "fired", lastDispatchId: "rec-survivor" });
     store.close();
   });
 

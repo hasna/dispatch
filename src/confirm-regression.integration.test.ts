@@ -14,6 +14,7 @@ import { codewithFixtureLauncher } from "./test/agent-launcher.js";
 const tmuxAvailable = spawnSync("tmux", ["-V"], { encoding: "utf8" }).status === 0;
 const cli = join(import.meta.dir, "cli", "index.ts");
 const busyAgent = join(import.meta.dir, "test", "busy-agent.ts");
+const authSwitchAgent = join(import.meta.dir, "test", "auth-switch-agent.ts");
 const dataDir = mkdtempSync(join(tmpdir(), "dispatch_confirm_reg_"));
 const SESSION = `dispatch_reg_${process.pid}`;
 const policyFile = join(dataDir, "exec-policy.json");
@@ -70,7 +71,7 @@ d("confirmation regressions (real tmux)", () => {
     if (res.status !== 0) throw new Error(`failed to start busy agent: ${res.stderr}`);
     await Bun.sleep(900);
 
-    const send = runCli(["send", "--to", SESSION, "--prompt", "apply the lease-loss fix now", "--json"]);
+    const send = runCli(["send", "--to", SESSION, "--prompt", "apply the lease-loss fix now", "--queue", "--json"]);
     expect(send.status).toBe(0);
     const rec = JSON.parse(send.stdout);
     expect(rec.status).toBe("delivered");
@@ -80,6 +81,41 @@ d("confirmation regressions (real tmux)", () => {
     // The pane shows the staged message.
     const pane = spawnSync("tmux", ["capture-pane", "-t", SESSION, "-p"], { encoding: "utf8" }).stdout;
     expect(pane).toMatch(/to be submitted after next tool call/i);
+  }, 20000);
+
+  test("auth-switch queued follow-up is reported action-needed, not delivered", async () => {
+    const res = spawnSync(
+      "tmux",
+      [
+        "new-session",
+        "-d",
+        "-s",
+        SESSION,
+        "-x",
+        "200",
+        "-y",
+        "50",
+        codewithFixtureLauncher(dataDir),
+        "run",
+        authSwitchAgent,
+      ],
+      { encoding: "utf8" },
+    );
+    if (res.status !== 0) throw new Error(`failed to start auth-switch agent: ${res.stderr}`);
+    await Bun.sleep(900);
+
+    const send = runCli(["send", "--to", SESSION, "--prompt", "continue after account switch", "--queue", "--json"]);
+    expect(send.status).toBe(1);
+    const rec = JSON.parse(send.stdout);
+    expect(rec.status).toBe("failed");
+    expect(rec.detail).toMatch(/auth profile|action needed/i);
+    expect(rec.deliveredAt).toBeUndefined();
+    expect(rec.confirm).toMatchObject({
+      delivered: false,
+      queued: true,
+      actionNeeded: true,
+      authSwitchDetected: true,
+    });
   }, 20000);
 
   test("pane scrolled into copy-mode: dispatch exits the mode and still lands", async () => {

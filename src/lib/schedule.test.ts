@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { computeNextRun, nextCronRun, parseCron } from "./schedule.js";
+import { computeNextRun, nextCronRun, parseCron, parseDurationMs } from "./schedule.js";
 
 describe("parseCron", () => {
   test("rejects wrong field count", () => {
@@ -41,14 +41,41 @@ describe("nextCronRun", () => {
   });
 });
 
+describe("parseDurationMs", () => {
+  test("accepts compact and spaced practical durations", () => {
+    expect(parseDurationMs("30m")).toBe(30 * 60_000);
+    expect(parseDurationMs("30min")).toBe(30 * 60_000);
+    expect(parseDurationMs("5 minutes")).toBe(5 * 60_000);
+    expect(parseDurationMs("2h")).toBe(2 * 60 * 60_000);
+    expect(parseDurationMs("1d")).toBe(24 * 60 * 60_000);
+  });
+
+  test("rejects invalid durations", () => {
+    expect(() => parseDurationMs("soon")).toThrow(/invalid duration/);
+    expect(() => parseDurationMs("0m")).toThrow(/invalid duration/);
+    expect(() => parseDurationMs("5 parsecs")).toThrow(/invalid duration/);
+  });
+});
+
 describe("computeNextRun", () => {
   test("at returns the normalized ISO time", () => {
     expect(computeNextRun({ at: "2099-01-02T03:04:00Z" })).toBe("2099-01-02T03:04:00.000Z");
   });
+  test("in returns a relative one-shot time", () => {
+    expect(computeNextRun({ in: "30m" }, new Date("2026-06-17T10:00:00.000Z"))).toBe(
+      "2026-06-17T10:30:00.000Z",
+    );
+  });
+  test("every returns a recurring interval time", () => {
+    expect(computeNextRun({ every: "5 minutes" }, new Date("2026-06-17T10:00:00.000Z"))).toBe(
+      "2026-06-17T10:05:00.000Z",
+    );
+  });
   test("rejects invalid at", () => {
     expect(() => computeNextRun({ at: "not-a-date" })).toThrow(/invalid/);
   });
-  test("requires at or cron", () => {
+  test("requires exactly one timing mode", () => {
     expect(() => computeNextRun({})).toThrow(/requires/);
+    expect(() => computeNextRun({ at: "2099-01-01T00:00:00Z", every: "5m" })).toThrow(/exactly one/);
   });
 });

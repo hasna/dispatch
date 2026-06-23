@@ -6,6 +6,7 @@ import { submit } from "./submit.js";
 import { confirmDelivery, evaluateDelivery } from "./confirm.js";
 import { genId, nowIso } from "./ids.js";
 import { validateAgentComposerTarget } from "./agent-target.js";
+import { performCapture } from "./capture.js";
 
 /** Single-line prompts longer than this also go through paste, not send-keys. */
 export const PASTE_LENGTH_THRESHOLD = 1000;
@@ -34,6 +35,12 @@ export interface DispatchDeps {
   sleep?: (ms: number) => Promise<void>;
 }
 
+function resolveSubmitKey(options: DispatchOptions, targetState: string): "Enter" | "Tab" {
+  if (options.submitKey === "Enter" || options.submitKey === "Tab") return options.submitKey;
+  if (options.queue === true && targetState === "active") return "Tab";
+  return "Enter";
+}
+
 /**
  * Execute a single dispatch end-to-end: validate the target, deliver the prompt
  * (literal or bracketed paste), wait the auto-computed delay, submit with retry,
@@ -45,10 +52,11 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
   const submitEnabled = options.submit !== false;
   const confirmEnabled = options.confirm !== false;
   const prompt = applyGoalPrefix(options.prompt, options.goal === true);
+  const dryRun = options.dryRun === true;
 
   // Create (or synthesize) the record.
   let record: DispatchRecord = store
-    ? store.createDispatch({ target: options.target, machine, prompt, status: "sending" })
+    ? store.createDispatch({ target: options.target, machine, prompt, status: "sending", dryRun })
     : {
         id: genId(),
         kind: "prompt",
@@ -56,6 +64,7 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
         machine,
         prompt,
         status: "sending",
+        dryRun,
         createdAt: nowIso(),
         updatedAt: nowIso(),
       };
@@ -69,6 +78,10 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
         confirm: record.confirm,
         submitDelayMs: record.submitDelayMs,
         deliveredAt: record.deliveredAt,
+        dryRun: record.dryRun,
+        targetState: record.targetState,
+        detection: record.detection,
+        captureBefore: record.captureBefore,
       });
     }
     return record;
@@ -77,11 +90,86 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
   // 1. Validate target.
   const target = validateAgentComposerTarget(tmux, options.target);
   const shellCommand = target.targetKind === "shell";
-  if (!target.ok) return finish({ status: "failed", detail: target.detail });
+  if (!target.ok) {
+    return finish({
+      status: "failed",
+      detail: target.detail,
+      targetState: target.activity,
+      detection: target.detection,
+    });
+  }
+  const targetState = target.activity ?? "unknown";
+  const detection = target.detection;
+  const submitKey = resolveSubmitKey(options, targetState);
+  let captureBefore = target.visible && options.captureBeforeLines
+    ? await performCapture({ target: options.target, lines: options.captureBeforeLines }, { tmux })
+    : undefined;
+  if (!captureBefore && options.captureBeforeLines) {
+    captureBefore = await performCapture({ target: options.target, lines: options.captureBeforeLines }, { tmux });
+  }
   const before = tmux.capturePane(options.target, { start: 50 });
+  record = { ...record, targetState, detection, captureBefore };
+
+  if (submitKey === "Tab" && detection?.canQueuePrompt !== true) {
+    return finish({
+      status: "skipped",
+      detail: `target does not prove queued Tab prompt support (${detection?.reason ?? "no detection available"})`,
+      targetState,
+      detection,
+      captureBefore,
+      dryRun,
+    });
+  }
+
+  if (submitEnabled && submitKey === "Enter" && detection?.canReceivePrompt !== true && options.forceActive !== true) {
+    return finish({
+      status: "skipped",
+      detail: `target cannot receive an Enter prompt safely (${detection?.reason ?? "no detection available"}); pass --queue for supported active agents or --force-active to override`,
+      targetState,
+      detection,
+      captureBefore,
+      dryRun,
+    });
+  }
+
+  if (!submitEnabled && detection?.canReceivePrompt !== true && options.forceActive !== true) {
+    return finish({
+      status: "skipped",
+      detail: `target is not idle; refusing to type without submit (${detection?.reason ?? "no detection available"}); pass --force-active to override`,
+      targetState,
+      detection,
+      captureBefore,
+      dryRun,
+    });
+  }
+
+  if (options.ifIdle && targetState !== "idle" && submitKey !== "Tab" && options.forceActive !== true) {
+    return finish({
+      status: "skipped",
+      detail: `target is ${targetState}; refusing because --if-idle was requested (pass --queue to let the agent queue it, or --force-active to override)`,
+      targetState,
+      detection,
+      captureBefore,
+      dryRun,
+    });
+  }
 
   // 3. Deliver the prompt.
   const mode = chooseMode(prompt, options.mode);
+  const delayMs = options.submitDelayMs ?? computeSubmitDelay(prompt);
+
+  if (dryRun) {
+    return finish({
+      status: "skipped",
+      detail: `dry run: prompt would be ${submitEnabled ? `submitted with ${submitKey}` : "typed without submitting"} using ${mode} delivery`,
+      submitDelayMs: delayMs,
+      targetState,
+      detection,
+      captureBefore,
+      dryRun: true,
+    });
+  }
+
   try {
     if (mode === "paste") {
       tmux.paste(options.target, prompt, { bracketed: true });
@@ -100,8 +188,6 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
     afterTyped = undefined;
   }
 
-  const delayMs = options.submitDelayMs ?? computeSubmitDelay(prompt);
-
   // 5. Type-only mode: don't submit.
   if (!submitEnabled) {
     return finish({
@@ -109,6 +195,9 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
       detail: "typed into composer without submitting (submit disabled)",
       submitDelayMs: delayMs,
       deliveredAt: nowIso(),
+      targetState,
+      detection,
+      captureBefore,
     });
   }
 
@@ -116,13 +205,17 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
   const probe = confirmEnabled
     ? async (): Promise<boolean> => {
         const after = tmux.capturePane(options.target, { start: 50 });
-        return evaluateDelivery({ before, after, afterTyped, prompt, shellCommand }).delivered;
+        const verdict = evaluateDelivery({ before, after, afterTyped, prompt, shellCommand });
+        // Stop retrying submit keys once the target has entered a known
+        // operator-action-needed state. Final confirmation will record failure.
+        return verdict.delivered || verdict.actionNeeded === true;
       }
     : undefined;
 
   await submit(tmux, options.target, {
     delayMs,
-    maxRetries: options.maxSubmitRetries ?? 2,
+    maxRetries: submitKey === "Tab" ? 0 : options.maxSubmitRetries ?? 2,
+    submitKey,
     isSubmitted: probe,
     sleep,
   });
@@ -134,6 +227,9 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
       detail: "submitted (confirmation disabled)",
       submitDelayMs: delayMs,
       deliveredAt: nowIso(),
+      targetState,
+      detection,
+      captureBefore,
     });
   }
 
@@ -153,5 +249,8 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
     confirm,
     submitDelayMs: delayMs,
     deliveredAt: confirm.delivered ? nowIso() : undefined,
+    targetState,
+    detection,
+    captureBefore,
   });
 }

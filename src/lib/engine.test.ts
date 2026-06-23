@@ -52,6 +52,14 @@ const wrappedCompletedGoalCodewithCapture = `
                                                       Goal achieved (3h 52m)
 `;
 
+const activeCodewithCapture = `
+Goal active Objective: Add reliable session orchestration to dispatch
+
+› Follow-up implementation prompt
+
+  gpt-5.5 xhigh fast · account016 · 5h 9% left · Main [default]       Pursuing goal (3m)
+`;
+
 const codewithProcessTree = `
 1234 1 Ss /usr/bin/bash
 1240 1234 Sl+ node /home/hasna/.bun/bin/codewith --auth-profile account005
@@ -116,7 +124,7 @@ function tuiRunner(): MockRunner {
     if (argv[1] === "display-message" && argv.at(-1) === "#{pane_current_command}") {
       return { stdout: "codewith\n", stderr: "", exitCode: 0, source: "local" };
     }
-    if (argv[1] === "send-keys" && argv.includes("Enter")) {
+    if (argv[1] === "send-keys" && (argv.includes("Enter") || argv.includes("Tab"))) {
       submitted = true;
       return { stdout: "", stderr: "", exitCode: 0, source: "local" };
     }
@@ -151,7 +159,7 @@ function composerRunner(
     if (argv[0] === "ps") {
       return { stdout: processTree, stderr: "", exitCode: processTree ? 0 : 1, source: "local" };
     }
-    if (argv[1] === "send-keys" && argv.includes("Enter")) {
+    if (argv[1] === "send-keys" && (argv.includes("Enter") || argv.includes("Tab"))) {
       submitted = true;
       return { stdout: "", stderr: "", exitCode: 0, source: "local" };
     }
@@ -428,6 +436,122 @@ describe("performDispatch", () => {
     expect(r.argvs().some((a) => a.includes("Enter"))).toBe(false);
   });
 
+  test("refuses active wrapped Codewith panes before Enter delivery by default", async () => {
+    const r = composerRunner("node", activeCodewithCapture, "✶ Working… (esc to interrupt)", codewithProcessTree);
+
+    const rec = await performDispatch(
+      { target: "open-dispatch:1.1", prompt: "Do not send Enter to a busy pane" },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("skipped");
+    expect(rec.targetState).toBe("active");
+    expect(rec.detection).toMatchObject({ agentKind: "codewith", canReceivePrompt: false, canQueuePrompt: true });
+    expect(rec.detail).toMatch(/cannot receive an Enter prompt safely/);
+    expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
+  });
+
+  test("queues active wrapped Codewith panes with Tab when queue is explicitly requested", async () => {
+    const r = composerRunner(
+      "node",
+      activeCodewithCapture,
+      "Messages to be submitted after next tool call\nQueued: Queue this safely",
+      codewithProcessTree,
+    );
+
+    const rec = await performDispatch(
+      { target: "open-sessions:2.1", prompt: "Queue this safely", ifIdle: true, queue: true, submitDelayMs: 0 },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("delivered");
+    expect(rec.targetState).toBe("active");
+    expect(rec.confirm?.queued).toBe(true);
+    expect(rec.detection).toMatchObject({ recommendedSubmitKey: "Tab" });
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("-l"))).toBe(true);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("Tab"))).toBe(true);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("Enter"))).toBe(false);
+  });
+
+  test("reports Codewith auth-switch queued stalls as action-needed instead of delivered", async () => {
+    const r = composerRunner(
+      "node",
+      activeCodewithCapture,
+      `Auto-switching auth profile to account010...
+Your prompt will continue with that account
+Queued follow-up inputs:
+  Continue after profile switch`,
+      codewithProcessTree,
+    );
+
+    const rec = await performDispatch(
+      { target: "open-guardrails:1.1", prompt: "Continue after profile switch", queue: true, submitDelayMs: 0 },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("failed");
+    expect(rec.detail).toMatch(/auth profile|action needed/i);
+    expect(rec.deliveredAt).toBeUndefined();
+    expect(rec.confirm).toMatchObject({
+      delivered: false,
+      queued: true,
+      actionNeeded: true,
+      authSwitchDetected: true,
+    });
+    expect(r.argvs().filter((a) => a[1] === "send-keys" && a.includes("Tab"))).toHaveLength(1);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("Enter"))).toBe(false);
+  });
+
+  test("dry-run validates active wrapped Codewith panes without typing into them", async () => {
+    const r = composerRunner("node", activeCodewithCapture, "✶ Working… (esc to interrupt)", codewithProcessTree);
+
+    const rec = await performDispatch(
+      { target: "open-sessions:2.1", prompt: "Would send only", queue: true, dryRun: true },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("skipped");
+    expect(rec.dryRun).toBe(true);
+    expect(rec.targetState).toBe("active");
+    expect(rec.detail).toMatch(/dry run: prompt would be submitted with Tab/);
+    expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
+  });
+
+  test("refuses queued Tab delivery when the active agent does not prove queue support", async () => {
+    const r = composerRunner("codex", "✶ Working… (esc to interrupt)", "Messages to be submitted after next tool call");
+
+    const rec = await performDispatch(
+      { target: "work:codex", prompt: "Queue this", queue: true, submitDelayMs: 0 },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("skipped");
+    expect(rec.detection).toMatchObject({ agentKind: "codex", composerState: "active", canQueuePrompt: false });
+    expect(rec.detail).toMatch(/does not prove queued Tab prompt support/);
+    expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
+  });
+
+  test("capture-before records bounded transcript before delivery", async () => {
+    const r = composerRunner("node", completedGoalCodewithCapture, "✶ Working… (esc to interrupt)", codewithProcessTree);
+    const store = new Store(":memory:");
+
+    const rec = await performDispatch(
+      { target: "open-codewith-04:1.1", prompt: "Follow up", submit: false, captureBeforeLines: 20 },
+      { tmux: new Tmux(r), store, sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("delivered");
+    expect(rec.captureBefore).toMatchObject({
+      status: "captured",
+      target: "open-codewith-04:1.1",
+      requestedLines: 20,
+      lines: 20,
+      redacted: true,
+    });
+    expect(store.getDispatch(rec.id)!.captureBefore?.text).toContain("Goal achieved");
+    store.close();
+  });
+
   test("accepts a bun-launched Codex composer when pane content proves it", async () => {
     const r = composerRunner("bun", codexComposerCapture, "✶ Working… (esc to interrupt)", codexProcessTree);
 
@@ -571,11 +695,13 @@ GET /health 200
   test("confirm:false marks delivered without probing", async () => {
     const r = tuiRunner();
     const rec = await performDispatch(
-      { target: "work:agent", prompt: "go", confirm: false },
+      { target: "work:agent", prompt: "go", confirm: false, captureBeforeLines: 5 },
       { tmux: new Tmux(r), sleep: noSleep },
     );
     expect(rec.status).toBe("delivered");
     expect(rec.detail).toMatch(/confirmation disabled/);
+    expect(rec.targetState).toBe("idle");
+    expect(rec.captureBefore).toMatchObject({ status: "captured", requestedLines: 5 });
   });
 
   test("explicit submitDelayMs overrides the auto delay", async () => {
@@ -615,7 +741,7 @@ GET /health 200
     };
 
     const rec = await performDispatch(
-      { target: "work:agent", prompt: "/workflow", submitDelayMs: 0 },
+      { target: "work:agent", prompt: "/workflow", submitDelayMs: 0, forceActive: true },
       { tmux: new Tmux(r), sleep: noSleep },
     );
 

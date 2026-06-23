@@ -2,11 +2,19 @@ import { describe, expect, test } from "bun:test";
 import { writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildProgram } from "./index.js";
+import { buildProgram, parseIntegerOption } from "./index.js";
 import { formatRecord, formatSchedule, resolvePrompt } from "./format.js";
 import { DispatchClient } from "../sdk/index.js";
 import { Store } from "../lib/store.js";
-import type { CaptureOptions, DispatchOptions, DispatchRecord, ExecOptions, KeyOptions } from "../types.js";
+import type {
+  BulkDispatchOptions,
+  BulkDispatchResult,
+  CaptureOptions,
+  DispatchOptions,
+  DispatchRecord,
+  ExecOptions,
+  KeyOptions,
+} from "../types.js";
 
 describe("resolvePrompt", () => {
   test("prefers --prompt", () => {
@@ -60,6 +68,24 @@ describe("formatters", () => {
     });
     expect(line).toContain("cron(*/5 * * * *)");
     expect(line).toContain("2026-06-17T10:05:00.000Z");
+  });
+
+  test("formatSchedule shows named loops", () => {
+    const line = formatSchedule({
+      id: "loop1",
+      kind: "loop",
+      name: "poller",
+      options: { target: "work:agent", prompt: "poll" },
+      every: "5m",
+      intervalMs: 5 * 60_000,
+      nextRun: "2026-06-17T10:05:00.000Z",
+      status: "paused",
+      createdAt: "x",
+      updatedAt: "x",
+    });
+    expect(line).toContain("paused");
+    expect(line).toContain("loop:poller");
+    expect(line).toContain("every(5m)");
   });
 });
 
@@ -117,11 +143,59 @@ describe("CLI read/schedule commands (in-memory client)", () => {
     expect(out.join("\n")).toContain("cancelled");
   });
 
-  test("schedule rejects missing at/cron", async () => {
+  test("schedule --in creates a relative one-shot", async () => {
+    const { program, out } = runner();
+    await program.parseAsync(
+      ["schedule", "--to", "work:agent", "--prompt", "later", "--in", "30m", "--name", "reminder", "--json"],
+      { from: "user" },
+    );
+    const sched = JSON.parse(out.join("\n"));
+    expect(sched.status).toBe("scheduled");
+    expect(sched.name).toBe("reminder");
+    expect(sched.at).toBeDefined();
+    expect(sched.cron).toBeUndefined();
+  });
+
+  test("loop command creates, lists, inspects, pauses, resumes, and clears", async () => {
+    const { program, out } = runner();
+    await program.parseAsync(
+      ["loop", "--to", "work:agent", "--prompt", "check status", "--every", "5m", "--name", "status-loop", "--json"],
+      { from: "user" },
+    );
+    const loop = JSON.parse(out.join("\n"));
+    expect(loop).toMatchObject({ status: "scheduled", kind: "loop", name: "status-loop", every: "5m" });
+    out.length = 0;
+
+    await program.parseAsync(["loops", "--json"], { from: "user" });
+    expect(JSON.parse(out.join("\n"))).toHaveLength(1);
+    out.length = 0;
+
+    await program.parseAsync(["status", loop.id, "--json"], { from: "user" });
+    expect(JSON.parse(out.join("\n")).kind).toBe("loop");
+    out.length = 0;
+
+    await program.parseAsync(["pause", loop.id], { from: "user" });
+    expect(out.join("\n")).toContain("paused");
+    out.length = 0;
+
+    await program.parseAsync(["resume", loop.id], { from: "user" });
+    expect(out.join("\n")).toContain("resumed");
+    out.length = 0;
+
+    await program.parseAsync(["clear", loop.id], { from: "user" });
+    expect(out.join("\n")).toContain("cleared");
+  });
+
+  test("schedule rejects missing timing mode and invalid combinations", async () => {
     const { program } = runner();
     await expect(
       program.parseAsync(["schedule", "--to", "s:w", "--prompt", "x"], { from: "user" }),
-    ).rejects.toThrow(/at.*cron/);
+    ).rejects.toThrow(/exactly one/);
+    await expect(
+      program.parseAsync(["schedule", "--to", "s:w", "--prompt", "x", "--in", "30m", "--cron", "* * * * *"], {
+        from: "user",
+      }),
+    ).rejects.toThrow(/exactly one/);
   });
 
   test("exec --dry-run prints the exact paste plan", async () => {
@@ -225,6 +299,216 @@ describe("CLI read/schedule commands (in-memory client)", () => {
     } finally {
       rmSync(f, { force: true });
     }
+  });
+
+  test("send forwards idle guard, dry-run, and capture-before options", async () => {
+    let received: DispatchOptions | undefined;
+    const fakeClient = {
+      send: async (opts: DispatchOptions): Promise<DispatchRecord> => {
+        received = opts;
+        return {
+          id: "send-guard",
+          kind: "prompt",
+          target: opts.target,
+          machine: "local",
+          prompt: opts.prompt,
+          status: "skipped",
+          dryRun: opts.dryRun,
+          targetState: "active",
+          detail: "target is active; refusing because --if-idle was requested",
+          createdAt: "x",
+          updatedAt: "x",
+        };
+      },
+    } as DispatchClient;
+    const program = buildProgram({ clientFactory: () => fakeClient, out: () => undefined });
+
+    process.exitCode = 0;
+    await program.parseAsync(
+      [
+        "send",
+        "--to",
+        "open-sessions:2.1",
+        "--prompt",
+        "Inspect",
+        "--if-idle",
+        "--dry-run",
+        "--capture-before",
+        "80",
+        "--json",
+      ],
+      { from: "user" },
+    );
+
+    expect(received).toMatchObject({
+      target: "open-sessions:2.1",
+      prompt: "Inspect",
+      ifIdle: true,
+      dryRun: true,
+      captureBeforeLines: 80,
+    });
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+  });
+
+  test("send dry-run plans exit successfully when the target would be used", async () => {
+    let received: DispatchOptions | undefined;
+    const fakeClient = {
+      send: async (opts: DispatchOptions): Promise<DispatchRecord> => {
+        received = opts;
+        return {
+          id: "send-dry-plan",
+          kind: "prompt",
+          target: opts.target,
+          machine: "local",
+          prompt: opts.prompt,
+          status: "skipped",
+          dryRun: true,
+          detail: "dry run: prompt would be submitted using literal delivery",
+          createdAt: "x",
+          updatedAt: "x",
+        };
+      },
+    } as DispatchClient;
+    const program = buildProgram({ clientFactory: () => fakeClient, out: () => undefined });
+
+    process.exitCode = 0;
+    await program.parseAsync(["send", "--to", "work:agent", "--prompt", "Inspect", "--dry-run"], { from: "user" });
+
+    expect(received).toMatchObject({ target: "work:agent", dryRun: true });
+    expect(process.exitCode).toBe(0);
+  });
+
+  test("send --submit-key delegates Enter/Tab selection", async () => {
+    let received: DispatchOptions | undefined;
+    const fakeClient = {
+      send: async (opts: DispatchOptions): Promise<DispatchRecord> => {
+        received = opts;
+        return {
+          id: "send-tab",
+          kind: "prompt",
+          target: opts.target,
+          machine: "local",
+          prompt: opts.prompt,
+          status: "skipped",
+          dryRun: true,
+          detail: "dry run: prompt would be submitted with Tab using literal delivery",
+          createdAt: "x",
+          updatedAt: "x",
+        };
+      },
+    } as DispatchClient;
+    const program = buildProgram({ clientFactory: () => fakeClient, out: () => undefined });
+
+    await program.parseAsync(
+      ["send", "--to", "work:agent", "--prompt", "Queue me", "--submit-key", "Tab", "--dry-run"],
+      { from: "user" },
+    );
+
+    expect(received).toMatchObject({ target: "work:agent", submitKey: "Tab", dryRun: true });
+  });
+
+  test("send --from sessions-query delegates bulk-safe defaults", async () => {
+    const out: string[] = [];
+    let received: BulkDispatchOptions | undefined;
+    const fakeClient = {
+      bulkSend: async (opts: BulkDispatchOptions): Promise<BulkDispatchResult> => {
+        received = opts;
+        return {
+          status: "completed",
+          source: "sessions-query",
+          requested: 1,
+          planned: 1,
+          delivered: 0,
+          skipped: 1,
+          failed: 0,
+          dryRun: true,
+          maxConcurrency: 3,
+          jitterMs: 25,
+          perMachineLimit: 1,
+          records: [],
+        };
+      },
+    } as DispatchClient;
+    const program = buildProgram({ clientFactory: () => fakeClient, out: (s) => out.push(s) });
+
+    await program.parseAsync(
+      [
+        "send",
+        "--from",
+        "sessions-query",
+        "--sessions-query",
+        "open-router",
+        "--prompt",
+        "Fix native chat",
+        "--goal",
+        "--dry-run",
+        "--max-concurrency",
+        "3",
+        "--jitter",
+        "25",
+        "--per-machine-limit",
+        "1",
+        "--json",
+      ],
+      { from: "user" },
+    );
+
+    expect(received).toMatchObject({
+      source: "sessions-query",
+      sessionsQuery: "open-router",
+      prompt: "Fix native chat",
+      goal: true,
+      ifIdle: true,
+      submitKey: undefined,
+      dryRun: true,
+      maxConcurrency: 3,
+      jitterMs: 25,
+      perMachineLimit: 1,
+    });
+    expect(JSON.parse(out.join("\n"))).toMatchObject({ source: "sessions-query", dryRun: true });
+  });
+
+  test("comma-separated --to targets use explicit bulk dispatch", async () => {
+    let received: BulkDispatchOptions | undefined;
+    const fakeClient = {
+      bulkSend: async (opts: BulkDispatchOptions): Promise<BulkDispatchResult> => {
+        received = opts;
+        return {
+          status: "completed",
+          source: "explicit",
+          requested: 2,
+          planned: 2,
+          delivered: 2,
+          skipped: 0,
+          failed: 0,
+          dryRun: false,
+          maxConcurrency: 1,
+          jitterMs: 0,
+          perMachineLimit: 1,
+          records: [],
+        };
+      },
+    } as DispatchClient;
+    const program = buildProgram({ clientFactory: () => fakeClient, out: () => undefined });
+
+    await program.parseAsync(["send", "--to", "open-a:1.1,open-b:1.1", "--prompt", "Bulk"], { from: "user" });
+
+    expect(received).toMatchObject({
+      source: "explicit",
+      targets: [
+        { target: "open-a:1.1", machine: undefined },
+        { target: "open-b:1.1", machine: undefined },
+      ],
+      prompt: "Bulk",
+      ifIdle: true,
+    });
+  });
+
+  test("send rejects invalid capture-before values", async () => {
+    expect(() => parseIntegerOption("capture-before", 1)("abc")).toThrow(/capture-before.*integer/i);
+    expect(() => parseIntegerOption("capture-before", 1)("0")).toThrow(/capture-before.*integer/i);
+    expect(parseIntegerOption("capture-before", 1)("120")).toBe(120);
   });
 
   test("key delegates allowlisted special-key dispatch", async () => {

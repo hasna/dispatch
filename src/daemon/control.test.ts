@@ -104,11 +104,14 @@ describe("daemonStatus", () => {
   test("combines process + store counts", () => {
     const store = new Store(":memory:");
     store.createSchedule({ options: { target: "s:w", prompt: "x" }, nextRun: "2099-01-01T00:00:00Z" });
+    const paused = store.createSchedule({ options: { target: "s:w", prompt: "paused" }, nextRun: "2099-01-01T00:00:00Z" });
+    store.updateSchedule(paused.id, { status: "paused" });
     store.createDispatch({ target: "s:w", prompt: "a" });
     writePid(process.pid, pidPath);
     const st = daemonStatus(store, pidPath);
     expect(st.running).toBe(true);
     expect(st.scheduled).toBe(1);
+    expect(st.paused).toBe(1);
     expect(st.recentDispatches).toBe(1);
     store.close();
   });

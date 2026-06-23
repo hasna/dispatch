@@ -5,6 +5,7 @@ import { Store } from "../lib/store.js";
 import { Tmux } from "../lib/tmux.js";
 import { createRunner } from "../lib/runner.js";
 import { loadExecPolicy } from "../lib/exec-policy.js";
+import { inspectAgentTarget } from "../lib/agent-target.js";
 import { daemonStatus, stopDaemon } from "../daemon/control.js";
 import { startDaemon } from "../daemon/daemon.js";
 
@@ -41,28 +42,74 @@ export const TOOLS: ToolDef[] = [
     description:
       "Type a prompt into a tmux target and reliably auto-submit it (auto-delay + Enter with retry), then confirm delivery. Supports long/multiline prompts and remote machines.",
     inputSchema: {
-      target: z.string().describe("tmux target, e.g. session:window or session:window.pane"),
+      target: z.string().optional().describe("tmux target, e.g. session:window or session:window.pane"),
       prompt: z.string().describe("the prompt text to deliver"),
       machine: z.string().optional().describe("target machine id (local when omitted)"),
+      source: z.enum(["sessions-query"]).optional().describe("target source; sessions-query probes sessions live/status JSON"),
+      sessionsQuery: z.string().optional().describe("filter sessions-query target JSON by text"),
+      targets: z.array(z.object({ target: z.string(), machine: z.string().optional() })).optional(),
+      ifIdle: z.boolean().optional().describe("refuse delivery unless target looks idle"),
+      queue: z.boolean().optional().describe("allow active targets and rely on the agent queue"),
+      forceActive: z.boolean().optional().describe("explicitly override active/unknown target refusal"),
+      submitKey: z.enum(["Enter", "Tab"]).optional().describe("prompt submit key"),
+      dryRun: z.boolean().optional().describe("validate target/guards without typing"),
+      captureBeforeLines: z.number().optional().describe("capture redacted transcript lines before delivery"),
+      maxConcurrency: z.number().optional().describe("bulk max concurrent dispatches"),
+      jitterMs: z.number().optional().describe("bulk random delay before each dispatch"),
+      perMachineLimit: z.number().optional().describe("bulk max concurrent dispatches per machine"),
       submit: z.boolean().optional().describe("press Enter to submit (default true)"),
       confirm: z.boolean().optional().describe("verify delivery (default true)"),
       delayMs: z.number().optional().describe("override the auto-computed pre-Enter delay"),
-      retries: z.number().optional().describe("max Enter retries if not confirmed"),
+      retries: z.number().optional().describe("max Enter retries if not confirmed; queued Tab delivery is single-shot"),
       mode: z.enum(["auto", "paste", "literal"]).optional().describe("delivery mode"),
       goal: z.boolean().optional().describe("prefix prompt with /goal unless it already starts with /goal"),
     },
-    handler: (deps, a) =>
-      deps.client.send({
+    handler: (deps, a) => {
+      if (a.source || a.targets) {
+        return deps.client.bulkSend({
+          source: a.source as never,
+          targets: a.targets as never,
+          sessionsQuery: a.sessionsQuery as string | undefined,
+          prompt: a.prompt as string,
+          goal: a.goal as boolean | undefined,
+          machine: a.machine as string | undefined,
+          submit: a.submit as boolean | undefined,
+          submitKey: a.submitKey as "Enter" | "Tab" | undefined,
+          confirm: a.confirm as boolean | undefined,
+          submitDelayMs: a.delayMs as number | undefined,
+          maxSubmitRetries: a.retries as number | undefined,
+          mode: a.mode as "auto" | "paste" | "literal" | undefined,
+          ifIdle: (a.ifIdle as boolean | undefined) ?? (a.queue !== true && a.forceActive !== true),
+          queue: a.queue as boolean | undefined,
+          forceActive: a.forceActive as boolean | undefined,
+          dryRun: a.dryRun as boolean | undefined,
+          captureBeforeLines: a.captureBeforeLines as number | undefined,
+          maxConcurrency: a.maxConcurrency as number | undefined,
+          jitterMs: a.jitterMs as number | undefined,
+          perMachineLimit: a.perMachineLimit as number | undefined,
+        });
+      }
+      if (typeof a.target !== "string" || a.target.trim().length === 0) {
+        throw new Error("dispatch_send requires target, targets, or source=sessions-query");
+      }
+      return deps.client.send({
         target: a.target as string,
         prompt: a.prompt as string,
         goal: a.goal as boolean | undefined,
         machine: a.machine as string | undefined,
+        submitKey: a.submitKey as "Enter" | "Tab" | undefined,
+        ifIdle: a.ifIdle as boolean | undefined,
+        queue: a.queue as boolean | undefined,
+        forceActive: a.forceActive as boolean | undefined,
+        dryRun: a.dryRun as boolean | undefined,
+        captureBeforeLines: a.captureBeforeLines as number | undefined,
         submit: a.submit as boolean | undefined,
         confirm: a.confirm as boolean | undefined,
         submitDelayMs: a.delayMs as number | undefined,
         maxSubmitRetries: a.retries as number | undefined,
         mode: a.mode as "auto" | "paste" | "literal" | undefined,
-      }),
+      });
+    },
   },
   {
     name: "dispatch_key",
@@ -143,9 +190,10 @@ export const TOOLS: ToolDef[] = [
     name: "dispatch_status",
     verb: "status",
     title: "Get a dispatch",
-    description: "Look up a previously-recorded dispatch by id.",
+    description: "Look up a previously-recorded dispatch or scheduled dispatch/loop by id.",
     inputSchema: { id: z.string().describe("dispatch id") },
-    handler: async (deps, a) => deps.client.status(a.id as string) ?? { error: "not found", id: a.id },
+    handler: async (deps, a) =>
+      deps.client.status(a.id as string) ?? deps.client.scheduleStatus(a.id as string) ?? { error: "not found", id: a.id },
   },
   {
     name: "dispatch_list",
@@ -163,14 +211,20 @@ export const TOOLS: ToolDef[] = [
     name: "dispatch_schedule",
     verb: "schedule",
     title: "Schedule a dispatch",
-    description: "Queue a dispatch to fire later: one-shot `at` (ISO time) or recurring `cron` (5-field).",
+    description: "Queue a dispatch to fire later: one-shot `at`/`in`, recurring `cron`, or interval `every`.",
     inputSchema: {
       target: z.string(),
       prompt: z.string(),
       machine: z.string().optional(),
       goal: z.boolean().optional(),
+      name: z.string().optional(),
       at: z.string().optional().describe("one-shot ISO 8601 time"),
+      in: z.string().optional().describe("one-shot relative delay, e.g. 30m or 5 minutes"),
       cron: z.string().optional().describe("5-field cron expression"),
+      every: z.string().optional().describe("recurring interval, e.g. 5m or 1 hour"),
+      ifIdle: z.boolean().optional().describe("refuse delivery unless target looks idle when fired"),
+      queue: z.boolean().optional().describe("queue on active agents that prove Tab queued-message support when fired"),
+      forceActive: z.boolean().optional().describe("explicitly override active/unknown target refusal when fired"),
     },
     handler: async (deps, a) =>
       deps.client.schedule({
@@ -179,9 +233,46 @@ export const TOOLS: ToolDef[] = [
           prompt: a.prompt as string,
           goal: a.goal as boolean | undefined,
           machine: a.machine as string | undefined,
+          ifIdle: a.ifIdle as boolean | undefined,
+          queue: a.queue as boolean | undefined,
+          forceActive: a.forceActive as boolean | undefined,
         },
+        name: a.name as string | undefined,
         at: a.at as string | undefined,
+        in: a.in as string | undefined,
         cron: a.cron as string | undefined,
+        every: a.every as string | undefined,
+      }),
+  },
+  {
+    name: "dispatch_loop",
+    verb: "loop",
+    title: "Create a dispatch loop",
+    description: "Create a recurring interval dispatch loop such as every 5 minutes.",
+    inputSchema: {
+      target: z.string(),
+      prompt: z.string(),
+      every: z.string().describe("recurring interval, e.g. 5m or 1 hour"),
+      machine: z.string().optional(),
+      goal: z.boolean().optional(),
+      name: z.string().optional(),
+      ifIdle: z.boolean().optional(),
+      queue: z.boolean().optional(),
+      forceActive: z.boolean().optional(),
+    },
+    handler: async (deps, a) =>
+      deps.client.loop({
+        options: {
+          target: a.target as string,
+          prompt: a.prompt as string,
+          goal: a.goal as boolean | undefined,
+          machine: a.machine as string | undefined,
+          ifIdle: a.ifIdle as boolean | undefined,
+          queue: a.queue as boolean | undefined,
+          forceActive: a.forceActive as boolean | undefined,
+        },
+        every: a.every as string,
+        name: a.name as string | undefined,
       }),
   },
   {
@@ -189,8 +280,19 @@ export const TOOLS: ToolDef[] = [
     verb: "schedules",
     title: "List scheduled dispatches",
     description: "List scheduled dispatches (optionally filter by status).",
-    inputSchema: { status: z.enum(["scheduled", "fired", "cancelled", "failed"]).optional() },
-    handler: async (deps, a) => deps.client.listSchedules({ status: a.status as never }),
+    inputSchema: {
+      status: z.enum(["scheduled", "paused", "fired", "cancelled", "failed"]).optional(),
+      kind: z.enum(["schedule", "loop"]).optional(),
+    },
+    handler: async (deps, a) => deps.client.listSchedules({ status: a.status as never, kind: a.kind as never }),
+  },
+  {
+    name: "dispatch_loops",
+    verb: "loops",
+    title: "List dispatch loops",
+    description: "List recurring interval dispatch loops.",
+    inputSchema: { status: z.enum(["scheduled", "paused", "cancelled", "failed"]).optional() },
+    handler: async (deps, a) => deps.client.listLoops({ status: a.status as never }),
   },
   {
     name: "dispatch_cancel",
@@ -201,6 +303,30 @@ export const TOOLS: ToolDef[] = [
     handler: async (deps, a) => ({ cancelled: deps.client.cancelSchedule(a.id as string) }),
   },
   {
+    name: "dispatch_pause",
+    verb: "pause",
+    title: "Pause a scheduled dispatch or loop",
+    description: "Pause a scheduled dispatch or loop so it will not fire until resumed.",
+    inputSchema: { id: z.string() },
+    handler: async (deps, a) => ({ paused: deps.client.pauseSchedule(a.id as string) }),
+  },
+  {
+    name: "dispatch_resume",
+    verb: "resume",
+    title: "Resume a scheduled dispatch or loop",
+    description: "Resume a paused scheduled dispatch or loop.",
+    inputSchema: { id: z.string() },
+    handler: async (deps, a) => ({ resumed: deps.client.resumeSchedule(a.id as string) }),
+  },
+  {
+    name: "dispatch_clear",
+    verb: "clear",
+    title: "Clear a scheduled dispatch or loop",
+    description: "Delete a scheduled dispatch or loop from the store.",
+    inputSchema: { id: z.string() },
+    handler: async (deps, a) => ({ cleared: deps.client.clearSchedule(a.id as string) }),
+  },
+  {
     name: "dispatch_targets",
     verb: "targets",
     title: "List tmux targets",
@@ -208,7 +334,15 @@ export const TOOLS: ToolDef[] = [
     inputSchema: { machine: z.string().optional() },
     handler: async (deps, a) => {
       const tmux = await tmuxFor(deps, a.machine as string | undefined);
-      return tmux.listTargets();
+      return tmux.listTargets().map((target) => ({
+        ...target,
+        detection: inspectAgentTarget(tmux, target.target, {
+          assumeExists: true,
+          paneCommand: target.paneCommand,
+          cwd: target.cwd,
+          panePid: target.panePid,
+        }).detection,
+      }));
     },
   },
   {

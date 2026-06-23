@@ -74,5 +74,5 @@ d("MCP server (in-memory transport, real tmux)", () => {
     const res = await client.callTool({ name: "dispatch_targets", arguments: {} });
     const targets = textOf(res) as Array<{ target: string }>;
     expect(targets.some((t) => t.target.startsWith(SESSION))).toBe(true);
-  });
+  }, 10000);
 });

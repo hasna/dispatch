@@ -8,7 +8,15 @@ import { Store } from "../lib/store.js";
 import { Tmux } from "../lib/tmux.js";
 import { MockRunner } from "../test/mock-runner.js";
 import { buildProgram } from "../cli/index.js";
-import type { CaptureOptions, DispatchOptions, DispatchRecord, ExecOptions, KeyOptions } from "../types.js";
+import type {
+  BulkDispatchOptions,
+  BulkDispatchResult,
+  CaptureOptions,
+  DispatchOptions,
+  DispatchRecord,
+  ExecOptions,
+  KeyOptions,
+} from "../types.js";
 
 function deps(): ToolDeps {
   const store = new Store(":memory:");
@@ -41,11 +49,30 @@ describe("MCP tool handlers", () => {
     const sched = (await tool("dispatch_schedule").handler(d, {
       target: "s:w",
       prompt: "later",
-      cron: "*/5 * * * *",
-    })) as { id: string; status: string };
+      in: "30m",
+      name: "reminder",
+    })) as { id: string; status: string; name: string };
     expect(sched.status).toBe("scheduled");
+    expect(sched.name).toBe("reminder");
     expect(await tool("dispatch_schedules").handler(d, {})).toHaveLength(1);
     expect(await tool("dispatch_cancel").handler(d, { id: sched.id })).toEqual({ cancelled: true });
+  });
+
+  test("loop + status + pause + resume + clear round-trip", async () => {
+    const d = deps();
+    const loop = (await tool("dispatch_loop").handler(d, {
+      target: "s:w",
+      prompt: "poll",
+      every: "5m",
+      name: "poller",
+    })) as { id: string; kind: string; every: string };
+    expect(loop).toMatchObject({ kind: "loop", every: "5m" });
+    expect(await tool("dispatch_loops").handler(d, {})).toHaveLength(1);
+    expect(await tool("dispatch_status").handler(d, { id: loop.id })).toMatchObject({ id: loop.id, kind: "loop" });
+    expect(await tool("dispatch_pause").handler(d, { id: loop.id })).toEqual({ paused: true });
+    expect(await tool("dispatch_resume").handler(d, { id: loop.id })).toEqual({ resumed: true });
+    expect(await tool("dispatch_clear").handler(d, { id: loop.id })).toEqual({ cleared: true });
+    expect(await tool("dispatch_loops").handler(d, {})).toHaveLength(0);
   });
 
   test("targets enumerates tmux panes via the injected runner", async () => {
@@ -55,7 +82,7 @@ describe("MCP tool handlers", () => {
     d.makeTmux = async () => new Tmux(r);
     const targets = (await tool("dispatch_targets").handler(d, {})) as Array<{ target: string; active: boolean }>;
     expect(targets).toHaveLength(2);
-    expect(targets[0]).toEqual({ target: "work:1.0", window: "agent", active: true } as never);
+    expect(targets[0]).toMatchObject({ target: "work:1.0", window: "agent", active: true } as never);
     expect(targets[1]!.active).toBe(false);
   });
 
@@ -129,6 +156,91 @@ describe("MCP tool handlers", () => {
     await tool("dispatch_send").handler(d, { target: "work:agent", prompt: "Fix native chat", goal: true });
 
     expect(received).toMatchObject({ target: "work:agent", prompt: "Fix native chat", goal: true });
+  });
+
+  test("send forwards submit-key selection to the client", async () => {
+    const d = deps();
+    let received: DispatchOptions | undefined;
+    d.client.send = async (opts: DispatchOptions): Promise<DispatchRecord> => {
+      received = opts;
+      return {
+        id: "send-tab",
+        kind: "prompt",
+        target: opts.target,
+        machine: "local",
+        prompt: opts.prompt,
+        status: "skipped",
+        detail: "dry run",
+        createdAt: "x",
+        updatedAt: "x",
+      };
+    };
+
+    await tool("dispatch_send").handler(d, {
+      target: "work:agent",
+      prompt: "Queue me",
+      submitKey: "Tab",
+      dryRun: true,
+    });
+
+    expect(received).toMatchObject({ target: "work:agent", submitKey: "Tab", dryRun: true });
+  });
+
+  test("send delegates sessions-query bulk orchestration options to the client", async () => {
+    const d = deps();
+    let received: BulkDispatchOptions | undefined;
+    d.client.bulkSend = async (opts: BulkDispatchOptions): Promise<BulkDispatchResult> => {
+      received = opts;
+      return {
+        status: "completed",
+        source: "sessions-query",
+        requested: 1,
+        planned: 1,
+        delivered: 0,
+        skipped: 1,
+        failed: 0,
+        dryRun: true,
+        maxConcurrency: 2,
+        jitterMs: 50,
+        perMachineLimit: 1,
+        records: [],
+      };
+    };
+
+    const result = await tool("dispatch_send").handler(d, {
+      source: "sessions-query",
+      sessionsQuery: "open-router",
+      prompt: "Fix native chat",
+      goal: true,
+      ifIdle: true,
+      submitKey: undefined,
+      dryRun: true,
+      captureBeforeLines: 120,
+      maxConcurrency: 2,
+      jitterMs: 50,
+      perMachineLimit: 1,
+    });
+
+    expect(result).toMatchObject({ source: "sessions-query", dryRun: true });
+    expect(received).toMatchObject({
+      source: "sessions-query",
+      sessionsQuery: "open-router",
+      prompt: "Fix native chat",
+      goal: true,
+      ifIdle: true,
+      dryRun: true,
+      captureBeforeLines: 120,
+      maxConcurrency: 2,
+      jitterMs: 50,
+      perMachineLimit: 1,
+    });
+  });
+
+  test("send rejects missing target when no bulk source is provided", async () => {
+    const d = deps();
+    await expect(Promise.resolve().then(() => tool("dispatch_send").handler(d, { prompt: "Fix native chat" }))).rejects.toThrow(
+      /requires target, targets, or source=sessions-query/,
+    );
   });
 
   test("key delegates allowlisted special-key options to the client", async () => {

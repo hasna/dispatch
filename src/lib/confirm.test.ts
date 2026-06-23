@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   confirmDelivery,
+  detectActionNeeded,
   detectHandledOutput,
   detectQueued,
   detectWorking,
@@ -32,6 +33,19 @@ describe("detectQueued", () => {
   test("does not match ordinary content", () => {
     expect(detectQueued("> type your prompt")).toBe(false);
     expect(detectQueued("running the test suite")).toBe(false);
+  });
+});
+
+describe("detectActionNeeded", () => {
+  test("matches Codewith auth profile auto-switch/account limit states", () => {
+    expect(detectActionNeeded("Auto-switching auth profile to account010...")).toBe(true);
+    expect(detectActionNeeded("Your prompt will continue with that account")).toBe(true);
+    expect(detectActionNeeded("account005 exhausted; switching profiles")).toBe(true);
+  });
+
+  test("does not match ordinary queued follow-up wording by itself", () => {
+    expect(detectActionNeeded("Queued follow-up inputs")).toBe(false);
+    expect(detectActionNeeded("Messages to be submitted after next tool call")).toBe(false);
   });
 });
 
@@ -158,6 +172,81 @@ describe("evaluateDelivery", () => {
     expect(res.delivered).toBe(true);
     expect(res.queued).toBe(true);
     expect(res.reason).toMatch(/queued/i);
+  });
+
+  test("auth auto-switch with queued follow-up input is action-needed, not delivered", () => {
+    const prompt = "retry after account switch";
+    const before = "● Working on previous task… (esc to interrupt)\n  checking account limits";
+    const res = evaluateDelivery({
+      before,
+      afterTyped: `${before}\n› ${prompt}`,
+      after: `Auto-switching auth profile to account010...
+Your prompt will continue with that account
+Queued follow-up inputs:
+  ${prompt}`,
+      prompt,
+    });
+
+    expect(res.delivered).toBe(false);
+    expect(res.queued).toBe(true);
+    expect(res.actionNeeded).toBe(true);
+    expect(res.authSwitchDetected).toBe(true);
+    expect(res.reason).toMatch(/auth profile|action needed/i);
+  });
+
+  test("auth-switch words inside the queued prompt body do not trigger action-needed", () => {
+    const prompt = "Document the text: Auto-switching auth profile to account010";
+    const before = "● Working on previous task… (esc to interrupt)\n  normal tool call";
+    const res = evaluateDelivery({
+      before,
+      afterTyped: `${before}\n› ${prompt}`,
+      after: `● Working on previous task… (esc to interrupt)
+Messages to be submitted after next tool call:
+  ${prompt}`,
+      prompt,
+    });
+
+    expect(res.delivered).toBe(true);
+    expect(res.queued).toBe(true);
+    expect(res.actionNeeded).toBe(false);
+    expect(res.authSwitchDetected).toBe(false);
+  });
+
+  test("ordinary task output about auth profile limits does not block a normal queue", () => {
+    const prompt = "continue the normal queued task";
+    const before = "● Working… (esc to interrupt)\n  Investigating auth profile limit handling";
+    const res = evaluateDelivery({
+      before,
+      afterTyped: `${before}\n› ${prompt}`,
+      after: `● Working… (esc to interrupt)
+  Investigating auth profile limit handling
+Messages to be submitted after next tool call:
+  ${prompt}`,
+      prompt,
+    });
+
+    expect(res.delivered).toBe(true);
+    expect(res.queued).toBe(true);
+    expect(res.actionNeeded).toBe(false);
+  });
+
+  test("auth-switch text after the queue label still marks action-needed", () => {
+    const prompt = "retry after profile switch";
+    const before = "● Working on previous task… (esc to interrupt)\n  checking account limits";
+    const res = evaluateDelivery({
+      before,
+      afterTyped: `${before}\n› ${prompt}`,
+      after: `Queued follow-up inputs:
+Auto-switching auth profile to account010...
+Your prompt will continue with that account
+  ${prompt}`,
+      prompt,
+    });
+
+    expect(res.delivered).toBe(false);
+    expect(res.queued).toBe(true);
+    expect(res.actionNeeded).toBe(true);
+    expect(res.authSwitchDetected).toBe(true);
   });
 
   test("busy agent disabled slash-command output => delivered, not retried", () => {

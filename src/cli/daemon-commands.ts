@@ -65,7 +65,7 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
             ? `daemon not running (stale pidfile, pid ${st.pid})`
             : "daemon not running";
         deps.out(head);
-        deps.out(`  scheduled: ${st.scheduled}  fired: ${st.fired}  cancelled: ${st.cancelled}  failed: ${st.failed}`);
+        deps.out(`  scheduled: ${st.scheduled}  paused: ${st.paused}  fired: ${st.fired}  cancelled: ${st.cancelled}  failed: ${st.failed}`);
         deps.out(`  dispatches recorded: ${st.recentDispatches}`);
         deps.out(`  log: ${st.logPath}`);
       } finally {

@@ -1,19 +1,39 @@
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { posix as path } from "node:path";
-import type { ExecFilterResult, ExecPolicy, ExecTargetKind } from "../types.js";
+import type {
+  AgentActivityState,
+  AgentKind,
+  AgentTargetInfo,
+  ComposerState,
+  ExecFilterResult,
+  ExecPolicy,
+  ExecTargetKind,
+  SubmitKey,
+} from "../types.js";
 
 const SHELL_COMMANDS = new Set(["bash", "csh", "dash", "fish", "ksh", "nu", "sh", "tcsh", "zsh"]);
 const AGENT_COMMANDS = new Set([
   "aider",
   "claude",
+  "claude-code",
   "codewith",
   "codex",
   "gemini",
   "opencode",
   "takumi",
 ]);
-const AGENT_WRAPPER_COMMANDS = new Set(["bun", "node"]);
+const AGENT_WRAPPER_COMMANDS = new Set(["bun", "bunx", "node", "npx", "npm", "pnpm", "yarn"]);
+
+const DIRECT_AGENT_KINDS: Record<string, AgentKind> = {
+  claude: "claude",
+  "claude-code": "claude",
+  codewith: "codewith",
+  codex: "codex",
+  opencode: "opencode",
+};
+
+const QUEUE_CAPABLE_AGENTS = new Set<AgentKind>(["codewith", "claude"]);
 
 const DEFAULT_ALLOW_PREFIXES = [
   "mailery status",
@@ -41,6 +61,27 @@ function basename(command: string): string {
   return part.trim().toLowerCase();
 }
 
+function tokenBasename(token: string | undefined): string {
+  if (!token) return "";
+  return basename(token.replace(/^["']|["']$/g, ""));
+}
+
+function commandPartFromPsLine(line: string): string {
+  return line
+    .trim()
+    .replace(/^\d+\s+\d+\s+\S+\s+/, "")
+    .replace(/^\\_\s*/, "")
+    .trim();
+}
+
+function commandTokens(line: string): string[] {
+  return commandPartFromPsLine(line).split(/\s+/).filter(Boolean);
+}
+
+function agentKindForName(name: string): AgentKind {
+  return DIRECT_AGENT_KINDS[name.toLowerCase()] ?? "unknown";
+}
+
 /** Classify a tmux pane by its current command. */
 export function classifyPaneCommand(currentCommand: string): ExecTargetKind {
   const name = basename(currentCommand);
@@ -52,6 +93,59 @@ export function classifyPaneCommand(currentCommand: string): ExecTargetKind {
 /** True when the pane command is a known JS runtime wrapper for agent CLIs. */
 export function isAgentWrapperCommand(currentCommand: string): boolean {
   return AGENT_WRAPPER_COMMANDS.has(basename(currentCommand));
+}
+
+export function detectAgentKindFromCommand(currentCommand: string): AgentKind {
+  return agentKindForName(basename(currentCommand));
+}
+
+function agentKindFromPackageToken(token: string | undefined): AgentKind {
+  const value = token?.replace(/^["']|["']$/g, "").toLowerCase() ?? "";
+  if (!value) return "unknown";
+  const baseKind = agentKindForName(basename(value));
+  if (baseKind !== "unknown") return baseKind;
+  if (/(?:^|\/)@hasna\/codewith(?:@[^/]+)?(?:\/|$)/.test(value)) return "codewith";
+  if (/(?:^|\/)(?:@openai\/)?codex(?:@[^/]+)?(?:\/|$)/.test(value)) return "codex";
+  if (/(?:^|\/)(?:@anthropic-ai\/claude-code|claude-code)(?:@[^/]+)?(?:\/|$)/.test(value)) return "claude";
+  if (/(?:^|\/)(?:opencode|opencode-ai|@opencode\/opencode)(?:@[^/]+)?(?:\/|$)/.test(value)) return "opencode";
+  return "unknown";
+}
+
+function detectAgentKindFromProcessLine(line: string): AgentKind {
+  const tokens = commandTokens(line);
+  const firstBase = tokenBasename(tokens[0]);
+  const direct = agentKindForName(firstBase);
+  if (direct !== "unknown") return direct;
+
+  if (firstBase === "node" || firstBase === "bun") {
+    return agentKindFromPackageToken(tokens[1]);
+  }
+
+  if (firstBase === "bunx" || firstBase === "npx") {
+    for (const token of tokens.slice(1, 5).filter((t) => !t.startsWith("-"))) {
+      const kind = agentKindFromPackageToken(token);
+      if (kind !== "unknown") return kind;
+    }
+  }
+
+  if (firstBase === "npm" || firstBase === "pnpm" || firstBase === "yarn") {
+    const execIndex = tokens.findIndex((t) => /^(?:exec|dlx|x|create)$/.test(t));
+    const start = execIndex >= 0 ? execIndex + 1 : 1;
+    for (const token of tokens.slice(start, start + 6).filter((t) => t !== "--" && !t.startsWith("-"))) {
+      const kind = agentKindFromPackageToken(token);
+      if (kind !== "unknown") return kind;
+    }
+  }
+
+  return "unknown";
+}
+
+export function detectAgentKindFromProcessTree(processTree = ""): AgentKind {
+  for (const line of processTree.split("\n")) {
+    const kind = detectAgentKindFromProcessLine(line);
+    if (kind !== "unknown") return kind;
+  }
+  return "unknown";
 }
 
 function stripTuiLineChrome(line: string): string {
@@ -68,7 +162,9 @@ function hasNamedAgentComposer(text: string): boolean {
   const normalized = text.split("\n").map(stripTuiLineChrome).join("\n");
   const hasKnownBanner =
     /^[ \t]*(?:Hasna[ \t]+)?Codewith(?:[ \t]+(?:CLI|v?\d[\w.-]*)|[ \t]*\([^)]+\))?[ \t]*$/im.test(normalized) ||
-    /^[ \t]*(?:OpenAI[ \t]+)?Codex(?:[ \t]+(?:CLI|v?\d[\w.-]*)|[ \t]*\([^)]+\))?[ \t]*$/im.test(normalized);
+    /^[ \t]*(?:OpenAI[ \t]+)?Codex(?:[ \t]+(?:CLI|v?\d[\w.-]*)|[ \t]*\([^)]+\))?[ \t]*$/im.test(normalized) ||
+    /^[ \t]*(?:Anthropic[ \t]+)?Claude(?:[ \t]+Code)?(?:[ \t]+(?:CLI|v?\d[\w.-]*)|[ \t]*\([^)]+\))?[ \t]*$/im.test(normalized) ||
+    /^[ \t]*(?:OpenCode|opencode)(?:[ \t]+(?:CLI|v?\d[\w.-]*)|[ \t]*\([^)]+\))?[ \t]*$/im.test(normalized);
   if (!hasKnownBanner) return false;
 
   const contextSignals = [
@@ -76,7 +172,7 @@ function hasNamedAgentComposer(text: string): boolean {
     /^[ \t]*(?:directory|cwd|workspace):[^\n]+/im,
     /^[ \t]*permissions:[^\n]+/im,
   ].filter((pattern) => pattern.test(normalized)).length;
-  const hasComposerPrompt = /^[ \t]*›(?:\s|$).*/m.test(normalized);
+  const hasComposerPrompt = /^[ \t]*(?:›|>)(?:\s|$).*/m.test(normalized);
   const hasBusySignal =
     /\b(?:esc to interrupt|esc to cancel|ctrl\+c to (?:stop|interrupt|cancel))\b/i.test(normalized) ||
     /[✶✻●]\s*Working/i.test(normalized);
@@ -84,23 +180,29 @@ function hasNamedAgentComposer(text: string): boolean {
   return contextSignals >= 1 && (hasComposerPrompt || hasBusySignal);
 }
 
+export function detectAgentKindFromText(text: string): AgentKind {
+  const normalized = text.split("\n").map(stripTuiLineChrome).join("\n");
+  if (
+    /^[ \t]*(?:Hasna[ \t]+)?Codewith(?:[ \t]+(?:CLI|v?\d[\w.-]*)|[ \t]*\([^)]+\))?[ \t]*$/im.test(normalized) ||
+    /\bGoal achieved\b.*\bMain\s+\[[^\]]+\]/i.test(normalized) ||
+    /\bMain\s+\[[^\]]+\].*\b(?:Pursuing goal|Goal achieved|Goal blocked|Goal failed|Goal cancelled)\b/i.test(normalized)
+  ) {
+    return "codewith";
+  }
+  if (/^[ \t]*(?:OpenAI[ \t]+)?Codex(?:[ \t]+(?:CLI|v?\d[\w.-]*)|[ \t]*\([^)]+\))?[ \t]*$/im.test(normalized)) {
+    return "codex";
+  }
+  if (/^[ \t]*(?:Anthropic[ \t]+)?Claude(?:[ \t]+Code)?(?:[ \t]+(?:CLI|v?\d[\w.-]*)|[ \t]*\([^)]+\))?[ \t]*$/im.test(normalized)) {
+    return "claude";
+  }
+  if (/^[ \t]*(?:OpenCode|opencode)(?:[ \t]+(?:CLI|v?\d[\w.-]*)|[ \t]*\([^)]+\))?[ \t]*$/im.test(normalized)) {
+    return "opencode";
+  }
+  return "unknown";
+}
+
 function hasWrappedAgentProcessEvidence(processTree = ""): boolean {
-  return processTree
-    .split("\n")
-    .map((line) => line.trim())
-    .some(
-      (line) =>
-        /(?:^|\s)(?:node|bun)\s+\S*\/codewith(?:\s|$)/i.test(line) ||
-        /(?:^|\s)(?:node|bun)\s+\S*\/codex(?:\s|$)/i.test(line) ||
-        /(?:^|\s)(?:bunx|npx|pnpm|yarn)\s+@hasna\/codewith(?:\s|$)/i.test(line) ||
-        /(?:^|\s)(?:bunx|npx|pnpm|yarn)\s+(?:@openai\/)?codex(?:\s|$)/i.test(line) ||
-        /node_modules\/@hasna\/codewith(?:\/|\s|$)/i.test(line) ||
-        /node_modules\/(?:@openai\/)?codex(?:\/|\s|$)/i.test(line) ||
-        /\/bin\/codewith(?:\s|$)/i.test(line) ||
-        /\/bin\/codex(?:\s|$)/i.test(line) ||
-        /(?:^|\s)codewith(?:\s|$)/i.test(line) ||
-        /(?:^|\s)codex(?:\s|$)/i.test(line),
-    );
+  return detectAgentKindFromProcessTree(processTree) !== "unknown";
 }
 
 function hasCompletedCodewithComposer(text: string, processTree?: string): boolean {
@@ -129,6 +231,147 @@ function hasCompletedCodewithComposer(text: string, processTree?: string): boole
   return hasGoal && /^›(?:\s|$).+/.test(composerLine) && metadataPattern.test(metadataLine);
 }
 
+function hasWrappedAgentLiveUi(text: string, processTree?: string): boolean {
+  if (!hasWrappedAgentProcessEvidence(processTree)) return false;
+  const normalized = text
+    .split("\n")
+    .map(stripTuiLineChrome)
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .join("\n");
+  const hasModelStatus =
+    /\b(?:gpt|o\d|codex|claude|glm|gemini|qwen|deepseek|llama|mistral|kimi|grok)[\w.+:-]*(?:\s+\w+){0,4}\s+·\s+.*\b(?:Pursuing goal|Working|Goal blocked|Goal failed|Goal cancelled)\b/i.test(
+      normalized,
+    );
+  const hasGoalActivity = /\bGoal active Objective:|\bPursuing goal\b|\bWorking \(\d|\besc to interrupt\b/i.test(normalized);
+  const hasComposer = /^›(?:\s|$).*/m.test(normalized);
+  return hasGoalActivity && (hasComposer || hasModelStatus);
+}
+
+/** Best-effort visible-state classifier for agent panes. */
+export function detectAgentActivity(text: string): AgentActivityState {
+  const normalized = text
+    .split("\n")
+    .map(stripTuiLineChrome)
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .join("\n");
+  if (
+    /\b(?:Pursuing goal|Working \(|esc to interrupt|background terminal running|Messages to be submitted after next tool call|Goal active Objective:)\b/i.test(
+      normalized,
+    )
+  ) {
+    return "active";
+  }
+  if (/\bGoal achieved(?:\s*\([^)]+\))?\b/i.test(normalized) && /^›(?:\s|$).*/m.test(normalized)) {
+    return "idle";
+  }
+  if (hasNamedAgentComposer(text) || /^›(?:\s|$).*/m.test(normalized) || /^>\s+(?:awaiting prompt|idle|idle composer)\b/im.test(normalized)) {
+    return "idle";
+  }
+  return "unknown";
+}
+
+function submitKeysFor(agentKind: AgentKind): SubmitKey[] {
+  if (agentKind === "unknown") return [];
+  const keys: SubmitKey[] = ["Enter"];
+  if (QUEUE_CAPABLE_AGENTS.has(agentKind)) keys.push("Tab");
+  return keys;
+}
+
+function liveUiProofForKind(kind: AgentKind, text: string, processTree?: string): boolean {
+  if (kind === "unknown") return false;
+  const textKind = detectAgentKindFromText(text);
+  if (textKind === kind && hasNamedAgentComposer(text)) return true;
+  if (kind === "codewith" && (hasCompletedCodewithComposer(text, processTree) || hasWrappedAgentLiveUi(text, processTree))) {
+    return true;
+  }
+  return false;
+}
+
+export function detectAgentTargetFromSignals(input: {
+  paneCommand: string;
+  visible?: string;
+  processTree?: string;
+  cwd?: string;
+}): AgentTargetInfo {
+  const paneCommand = input.paneCommand;
+  const visible = input.visible ?? "";
+  const cwd = input.cwd?.trim() || undefined;
+  const targetKind = classifyPaneCommand(paneCommand);
+  const paneBase = basename(paneCommand);
+
+  if (targetKind === "shell") {
+    return {
+      targetKind,
+      agentKind: "unknown",
+      composerState: "unknown",
+      canReceivePrompt: false,
+      canQueuePrompt: false,
+      submitKeys: [],
+      paneCommand,
+      cwd,
+      reason: `target appears to be a shell (${paneCommand || "unknown"}); use dispatch exec for shell commands`,
+    };
+  }
+
+  const commandKind = detectAgentKindFromCommand(paneCommand);
+  const processKind = detectAgentKindFromProcessTree(input.processTree);
+  const wrapper = isAgentWrapperCommand(paneCommand);
+  let agentKind: AgentKind = "unknown";
+  let proven = false;
+  let reason = `target is not a recognized agent composer (${paneCommand || "unknown"}); refusing prompt delivery`;
+
+  if (targetKind === "agent" && commandKind !== "unknown") {
+    agentKind = commandKind;
+    proven = true;
+    reason = `recognized ${agentKind} from pane command ${paneBase}`;
+  } else if (wrapper && processKind !== "unknown" && liveUiProofForKind(processKind, visible, input.processTree)) {
+    agentKind = processKind;
+    proven = true;
+    reason = `recognized ${agentKind} wrapper from process tree and live composer UI`;
+  }
+
+  if (!proven) {
+    return {
+      targetKind: "unknown",
+      agentKind: "unknown",
+      composerState: "unknown",
+      canReceivePrompt: false,
+      canQueuePrompt: false,
+      submitKeys: [],
+      paneCommand,
+      cwd,
+      reason,
+    };
+  }
+
+  const composerState = detectAgentActivity(visible) as ComposerState;
+  const submitKeys = submitKeysFor(agentKind);
+  const canReceivePrompt = composerState === "idle";
+  const canQueuePrompt = composerState === "active" && QUEUE_CAPABLE_AGENTS.has(agentKind);
+  const recommendedSubmitKey = canReceivePrompt ? "Enter" : canQueuePrompt ? "Tab" : undefined;
+  const stateReason =
+    composerState === "idle"
+      ? "idle composer can receive Enter prompt delivery"
+      : canQueuePrompt
+        ? "active composer supports queued Tab prompt delivery"
+        : composerState === "active"
+          ? "active composer does not prove queued prompt support"
+          : "composer state is unknown";
+
+  return {
+    targetKind: "agent",
+    agentKind,
+    composerState,
+    canReceivePrompt,
+    canQueuePrompt,
+    submitKeys,
+    recommendedSubmitKey,
+    paneCommand,
+    cwd,
+    reason: `${reason}; ${stateReason}`,
+  };
+}
+
 export interface WrappedAgentEvidence {
   /** Process tree for the tmux pane; required to trust wrapper-launched agent UI text. */
   processTree?: string;
@@ -136,10 +379,8 @@ export interface WrappedAgentEvidence {
 
 /** Strict proof for Codewith/Codex panes launched through runtime wrappers like node/bun. */
 export function looksLikeWrappedAgentComposer(text: string, evidence: WrappedAgentEvidence = {}): boolean {
-  return (
-    (hasWrappedAgentProcessEvidence(evidence.processTree) && hasNamedAgentComposer(text)) ||
-    hasCompletedCodewithComposer(text, evidence.processTree)
-  );
+  const kind = detectAgentKindFromProcessTree(evidence.processTree);
+  return kind !== "unknown" && liveUiProofForKind(kind, text, evidence.processTree);
 }
 
 /** Best-effort content check for known agent TUIs and test fixtures. */

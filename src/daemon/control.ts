@@ -109,6 +109,7 @@ export function isDaemonRunning(path: string = pidFilePath()): DaemonRunning {
 
 export interface DaemonStatus extends DaemonRunning {
   scheduled: number;
+  paused: number;
   fired: number;
   cancelled: number;
   failed: number;
@@ -121,10 +122,11 @@ export function daemonStatus(store: Store, path: string = pidFilePath()): Daemon
   const run = isDaemonRunning(path);
   return {
     ...run,
-    scheduled: store.listSchedules({ status: "scheduled" }).length,
-    fired: store.listSchedules({ status: "fired" }).length,
-    cancelled: store.listSchedules({ status: "cancelled" }).length,
-    failed: store.listSchedules({ status: "failed" }).length,
+    scheduled: store.countSchedules({ status: "scheduled" }),
+    paused: store.countSchedules({ status: "paused" }),
+    fired: store.countSchedules({ status: "fired" }),
+    cancelled: store.countSchedules({ status: "cancelled" }),
+    failed: store.countSchedules({ status: "failed" }),
     recentDispatches: store.listDispatches({ limit: 1000 }).length,
     logPath: daemonLogPath(),
   };

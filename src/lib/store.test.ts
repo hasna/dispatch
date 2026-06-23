@@ -91,6 +91,57 @@ describe("Store — dispatches", () => {
     s.close();
   });
 
+  test("prompt orchestration audit fields round-trip", () => {
+    const s = mem();
+    const rec = s.createDispatch({
+      target: "open-sessions:2.1",
+      prompt: "Inspect this",
+      status: "skipped",
+      dryRun: true,
+      targetState: "active",
+      detection: {
+        targetKind: "agent",
+        agentKind: "codewith",
+        composerState: "active",
+        canReceivePrompt: false,
+        canQueuePrompt: true,
+        submitKeys: ["Enter", "Tab"],
+        recommendedSubmitKey: "Tab",
+        reason: "active composer supports queued Tab prompt delivery",
+        paneCommand: "node",
+        cwd: "/repo",
+      },
+      captureBefore: {
+        status: "captured",
+        target: "open-sessions:2.1",
+        machine: "local",
+        requestedLines: 50,
+        lines: 50,
+        maxLines: 2000,
+        capturedAt: "2026-06-23T00:00:00.000Z",
+        text: "Goal active Objective: test\n",
+        redacted: true,
+      },
+    });
+
+    expect(s.getDispatch(rec.id)).toMatchObject({
+      dryRun: true,
+      targetState: "active",
+      detection: {
+        agentKind: "codewith",
+        composerState: "active",
+        canQueuePrompt: true,
+        recommendedSubmitKey: "Tab",
+      },
+      captureBefore: {
+        status: "captured",
+        lines: 50,
+        text: "Goal active Objective: test\n",
+      },
+    });
+    s.close();
+  });
+
   test("update throws for unknown id", () => {
     const s = mem();
     expect(() => s.updateDispatch("nope", { status: "failed" })).toThrow(/not found/);
@@ -148,6 +199,42 @@ describe("Store — schedules", () => {
     expect(s.listSchedules({ status: "scheduled" })).toHaveLength(1);
     expect(s.deleteSchedule(sched.id)).toBe(true);
     expect(s.getSchedule(sched.id)).toBeUndefined();
+    s.close();
+  });
+
+  test("loop metadata round-trips and can be filtered by kind/status", () => {
+    const s = mem();
+    const loop = s.createSchedule({
+      options: { target: "s:w", prompt: "loop" },
+      kind: "loop",
+      name: "heartbeat",
+      every: "5m",
+      intervalMs: 5 * 60_000,
+      nextRun: "2099-01-01T00:05:00.000Z",
+    });
+
+    expect(s.getSchedule(loop.id)).toMatchObject({
+      kind: "loop",
+      name: "heartbeat",
+      every: "5m",
+      intervalMs: 5 * 60_000,
+    });
+    expect(s.listSchedules({ kind: "loop" })).toHaveLength(1);
+    expect(s.listSchedules({ kind: "schedule" })).toHaveLength(0);
+    s.updateSchedule(loop.id, { status: "paused" });
+    expect(s.listSchedules({ status: "paused", kind: "loop" })).toHaveLength(1);
+    expect(s.dueSchedules(Date.parse("2100-01-01T00:00:00.000Z"))).toHaveLength(0);
+    s.close();
+  });
+
+  test("countSchedules is not capped by list page size", () => {
+    const s = mem();
+    for (let i = 0; i < 250; i += 1) {
+      s.createSchedule({ options: { target: "s:w", prompt: `task ${i}` }, nextRun: "2099-01-01T00:00:00.000Z" });
+    }
+    expect(s.listSchedules({ status: "scheduled" })).toHaveLength(200);
+    expect(s.countSchedules({ status: "scheduled" })).toBe(250);
+    expect(s.dueSchedules(Date.parse("2100-01-01T00:00:00.000Z"))).toHaveLength(250);
     s.close();
   });
 

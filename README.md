@@ -23,9 +23,11 @@ dispatch send --to work:agent --prompt "Refactor the parser and add tests"
 | Shell command dispatch needs guardrails | **Exec security filter** — shell targets only, allowlisted command prefixes, destructive/exfiltration blockers, dry-run audit, and no `C-c` unless explicitly requested |
 | Need to press a special key deliberately | **Safe key dispatch** — `dispatch key` only allows named safe keys and still refuses shells / unproven wrapper panes |
 | Need to inspect what happened in a pane | **Bounded capture** — `dispatch capture` captures recent transcript lines, strips terminal controls, and redacts obvious secrets before output or optional AI transforms |
+| Need to fan out prompts across live agent sessions | **Bulk/session orchestration** — `dispatch send` supports idle guards, dry-run, jitter/concurrency caps, pre-capture, and fixed `sessions live/status --json` registry probes |
+| Need to know what a pane actually is | **Native agent detection** — Codewith, Codex, Claude Code/Claude, and OpenCode panes are classified from command, process tree, cwd, and live UI proof |
 | "Did it actually go through?" | **Smart delivery confirmation** — diffs the pane before/after and detects the agent's working/`esc to interrupt` state and the composer clearing |
 | Doesn't work across machines | **Cross-machine** routing through [`@hasna/machines`](https://github.com/hasna/machines) (Tailscale / LAN / SSH) |
-| Fire-and-forget / later | **Scheduled dispatches** (`--at` / `--cron`) owned by a **persistent daemon** that survives restarts |
+| Fire-and-forget / later | **Scheduled dispatches and loops** (`--at` / `--in` / `--cron` / `--every`) owned by a **persistent daemon** that survives restarts |
 
 See [docs/reliability.md](docs/reliability.md) for the full mechanism.
 
@@ -46,8 +48,13 @@ dispatch capture    Capture a bounded, redacted pane transcript
 dispatch status     Show a recorded dispatch by id
 dispatch list       List recorded dispatches (newest first)
 dispatch targets    List dispatchable tmux targets (panes) on a machine
-dispatch schedule   Queue a dispatch to fire later (--at or --cron)
+dispatch schedule   Queue a dispatch to fire later (--at, --in, --cron, or --every)
+dispatch loop       Create a recurring interval loop (--every)
 dispatch schedules  List scheduled dispatches
+dispatch loops      List recurring interval loops
+dispatch pause      Pause a schedule/loop
+dispatch resume     Resume a paused schedule/loop
+dispatch clear      Delete a schedule/loop
 dispatch cancel     Cancel a scheduled dispatch
 dispatch daemon     start | stop | status | run  (scheduled-dispatch queue)
 ```
@@ -67,20 +74,70 @@ git diff | dispatch send --to work:agent --prompt "review this diff"
 # Type without submitting (leave it in the composer)
 dispatch send --to work:agent --prompt "draft" --no-submit
 
+# Queue to an active Codewith/Claude pane that proves Tab queued-message support
+dispatch send --to open-dispatch:1.1 --prompt "Follow up safely" --queue --dry-run
+
+# Explicit submit key. Tab is accepted only when detection proves queue support.
+dispatch send --to open-dispatch:1.1 --prompt "Follow up safely" --submit-key Tab
+
 # Create a Codewith goal from the delivered prompt
 dispatch send --goal --to open-browser:1.1 --prompt "Fix native chat..."
+
+# Bulk-send to explicit targets with safety guards and pre-capture
+dispatch send --to open-a:1.1,open-b:1.1 --prompt "Run smoke tests" \
+  --if-idle --dry-run --capture-before 120 --max-concurrency 2 --jitter 500
+
+# Resolve targets from an open-sessions registry when available
+dispatch send --from sessions-query --sessions-query open-router \
+  --prompt "Fix native chat..." --goal --dry-run
 
 # Target a pane explicitly, and another machine
 dispatch send --machine spark01 --to work:agent.1 --prompt "build it" --json
 ```
 
 Key flags: `--to <session:window[.pane]>`, `--prompt`/`--file`/stdin, `--machine`,
-`--goal`, `--no-submit`, `--no-confirm`, `--delay <ms>`, `--retries <n>`,
+`--goal`, `--submit-key Enter|Tab`, `--queue`, `--no-submit`, `--no-confirm`, `--delay <ms>`, `--retries <n>`,
 `--mode auto|paste|literal`, `--json`.
 
 `--goal` prefixes the delivered prompt with `/goal ` unless it already starts with
 `/goal`. The prefix happens after `--prompt`/`--file`/stdin resolution and before
 delivery/recording, so multiline prompt contents are preserved.
+
+Bulk/session orchestration flags: `--if-idle`, `--queue`, `--force-active`,
+`--capture-before <lines>`, `--dry-run`, `--max-concurrency <n>`, `--jitter <ms>`,
+and `--per-machine-limit <n>`. A comma-separated `--to` list uses explicit bulk
+dispatch. `--from sessions-query` asks the `sessions` CLI for fixed JSON commands
+only (`sessions live --json --once`, then `sessions status --json`) and filters with
+`--sessions-query`; it does not execute arbitrary shell text. Bulk sends default to
+`--if-idle`, so active targets are skipped unless `--queue` or
+`--force-active` is passed. `--capture-before` stores a bounded redacted transcript
+on each dispatch record for later `dispatch status` / `dispatch list` audit context.
+
+Prompt sends now use native terminal-agent detection before typing. JSON outputs from
+`dispatch targets --json`, `dispatch status --json`, `dispatch capture --json`, and
+bulk send results include detection metadata when available:
+
+```jsonc
+{
+  "agentKind": "codewith",          // codewith | codex | claude | opencode | unknown
+  "targetKind": "agent",            // agent | shell | unknown
+  "composerState": "active",        // idle | active | unknown
+  "canReceivePrompt": false,
+  "canQueuePrompt": true,
+  "submitKeys": ["Enter", "Tab"],
+  "recommendedSubmitKey": "Tab",
+  "reason": "recognized codewith wrapper from process tree and live composer UI; active composer supports queued Tab prompt delivery"
+}
+```
+
+Normal prompt delivery uses `Enter` and refuses active agents unless `--force-active`
+is explicitly passed. `--queue` is the safe active-agent path: when detection proves
+the target supports queued-message behavior, dispatch types the prompt and presses
+`Tab`; otherwise it refuses. Queued Tab delivery is single-shot to avoid duplicate
+queued follow-up inputs; `--retries` applies to Enter submission. Detection supports
+direct binaries and compatible `node`/`bun`/`npx`/`bunx`/`pnpm`/`yarn`/`npm exec`
+launchers, but wrapper panes still need live composer UI proof so arbitrary `node`
+output and copied transcripts stay fail-closed.
 
 ### Key
 
@@ -96,7 +153,9 @@ dispatch key --to open-browser:1.1 --key Enter --json
 Allowed keys: `Enter`, `Tab`, `Escape`, `Up`, `Down`, `Left`, `Right`, `Backspace`,
 `Delete`, `Home`, `End`, `PageUp`, `PageDown`. Control keys such as `C-c` are not
 accepted. Key dispatches are recorded in `dispatch list` / `dispatch status` as
-`kind: "key"` with a safe prompt like `<key:Tab>`.
+`kind: "key"` with a safe prompt like `<key:Tab>`. `Enter` is refused when the
+detected composer is active. `Tab` is refused for agents that do not advertise Tab
+support, and active Tab is allowed only when detection proves queued-message support.
 
 ### Capture
 
@@ -188,11 +247,23 @@ dispatch targets --machine spark01 --json
 # One-shot at a specific time
 dispatch schedule --to work:agent --prompt "deploy" --at 2026-06-18T09:00:00Z
 
+# One-shot relative to now
+dispatch schedule --to work:agent --prompt "check the deploy" --in 30m
+dispatch schedule --machine spark01 --to work:agent --prompt "remote follow-up" --in "5 minutes"
+
 # Recurring (5-field cron)
 dispatch schedule --to work:agent --prompt "run nightly suite" --cron "0 2 * * *"
 
-dispatch schedules            # list
-dispatch cancel <id>          # cancel
+# Recurring interval loop
+dispatch loop --to work:agent --prompt "capture status and report blockers" --every 5m --name status-loop
+
+dispatch schedules            # list schedules and loops
+dispatch loops                # list interval loops
+dispatch status <id>          # inspect a dispatch, schedule, or loop
+dispatch pause <id>           # pause a schedule/loop
+dispatch resume <id>          # resume a paused schedule/loop
+dispatch cancel <id>          # mark cancelled
+dispatch clear <id>           # delete
 ```
 
 Scheduled dispatches are fired by the **daemon**:
@@ -205,6 +276,10 @@ dispatch daemon stop
 
 The queue is persisted (sqlite under `~/.hasna/dispatch`), so it **survives a daemon
 restart** — a schedule created while the daemon was down still fires once it's back up.
+The daemon processes due schedules serially; interval loops compute their next run only
+after the previous dispatch attempt completes, so runs do not overlap by default. If a
+target is busy or unsafe, the dispatch attempt is recorded as skipped/failed and a loop
+waits until its next interval.
 
 ## SDK
 
@@ -225,7 +300,19 @@ const sched = dispatch.schedule({
   options: { target: "work:agent", prompt: "nightly" },
   cron: "0 2 * * *",
 });
+const later = dispatch.schedule({
+  options: { target: "work:agent", prompt: "follow up" },
+  in: "30m",
+});
+const loop = dispatch.loop({
+  options: { target: "work:agent", prompt: "summarize current status" },
+  every: "5m",
+  name: "status-loop",
+});
 dispatch.listSchedules();
+dispatch.listLoops();
+dispatch.pauseSchedule(loop.id);
+dispatch.resumeSchedule(loop.id);
 dispatch.status(rec.id);
 dispatch.close();
 ```
@@ -245,7 +332,21 @@ const cap = await dispatch.capture({ target: "work:agent", lines: 120 });
 console.log(keyRec.status, cap.text);
 ```
 
-One-shot helpers: `import { dispatch, dispatchExec, dispatchKey, dispatchCapture } from "@hasna/dispatch"`.
+```ts
+const bulk = await dispatch.bulkSend({
+  source: "sessions-query",
+  sessionsQuery: "open-router",
+  prompt: "Fix native chat...",
+  goal: true,
+  dryRun: true,
+  maxConcurrency: 2,
+  jitterMs: 500,
+  captureBeforeLines: 120,
+});
+console.log(bulk.planned, bulk.skipped, bulk.failed);
+```
+
+One-shot helpers: `import { dispatch, dispatchBulk, dispatchExec, dispatchKey, dispatchCapture } from "@hasna/dispatch"`.
 
 ## MCP
 
@@ -255,7 +356,8 @@ Every CLI verb is also an MCP tool, so agents can dispatch over MCP:
 // register the server: dispatch-mcp  (stdio)
 // tools:
 //   dispatch_send, dispatch_key, dispatch_capture, dispatch_exec, dispatch_status, dispatch_list, dispatch_targets,
-//   dispatch_schedule, dispatch_schedules, dispatch_cancel,
+//   dispatch_schedule, dispatch_loop, dispatch_schedules, dispatch_loops,
+//   dispatch_cancel, dispatch_pause, dispatch_resume, dispatch_clear,
 //   dispatch_daemon_start, dispatch_daemon_stop, dispatch_daemon_status
 ```
 
@@ -278,7 +380,11 @@ CLI `--allow`; it does not accept inline allowlists from the caller.
    `DISPATCH_MS_PER_CHAR`.
 4. Press **Enter**, then re-press until the **delivery probe** confirms submission
    (working indicator appeared / composer cleared) or retries are exhausted.
-5. Record a **delivered / not-delivered** verdict with a reason.
+   Queued Tab delivery is not retried because duplicate Tabs can create duplicate
+   queued follow-up inputs.
+5. Record a **delivered / not-delivered** verdict with a reason. If a Codewith
+   pane queues input while an auth profile/account switch is visible, the verdict
+   is **not delivered** with `actionNeeded=true` rather than a false success.
 
 ## Environment
 

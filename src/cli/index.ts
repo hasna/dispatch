@@ -1,13 +1,14 @@
 #!/usr/bin/env bun
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 import { getPackageVersion } from "../lib/version.js";
 import { DispatchClient } from "../sdk/index.js";
-import type { CaptureOptions, CaptureTransform, DispatchOptions, ExecOptions, KeyOptions } from "../types.js";
-import { formatCapture, formatRecord, formatSchedule, resolvePrompt } from "./format.js";
+import type { BulkDispatchOptions, CaptureOptions, CaptureTransform, DispatchOptions, ExecOptions, KeyOptions } from "../types.js";
+import { formatBulk, formatCapture, formatRecord, formatSchedule, resolvePrompt } from "./format.js";
 import { registerDaemonCommands } from "./daemon-commands.js";
 import { Tmux } from "../lib/tmux.js";
 import { createRunner } from "../lib/runner.js";
 import { loadExecPolicy } from "../lib/exec-policy.js";
+import { inspectAgentTarget } from "../lib/agent-target.js";
 
 export interface CliDeps {
   /** Factory for the client; when provided, the CLI will NOT close it (tests own it). */
@@ -16,6 +17,24 @@ export interface CliDeps {
   err?: (s: string) => void;
   /** Pre-read stdin content (piped prompt). */
   stdin?: string;
+}
+
+export function parseIntegerOption(label: string, min: number) {
+  return (value: string): number => {
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < min) {
+      throw new InvalidArgumentError(`${label} must be an integer >= ${min}`);
+    }
+    return parsed;
+  };
+}
+
+function normalizeSubmitKeyOption(value: string | undefined): "Enter" | "Tab" | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "enter" || normalized === "return") return "Enter";
+  if (normalized === "tab") return "Tab";
+  throw new InvalidArgumentError("submit-key must be Enter or Tab");
 }
 
 export function buildProgram(deps: CliDeps = {}): Command {
@@ -42,25 +61,82 @@ export function buildProgram(deps: CliDeps = {}): Command {
   program
     .command("send")
     .description("Dispatch a prompt to a tmux target and auto-submit it")
-    .requiredOption("-t, --to <target>", "tmux target, e.g. session:window or session:window.pane")
+    .option("-t, --to <target>", "tmux target, e.g. session:window or session:window.pane. Comma-separate for bulk.")
     .option("-p, --prompt <text>", "prompt text (or use --file / stdin)")
     .option("-f, --file <path>", "read the prompt from a file")
     .option("--goal", "prefix the delivered prompt with /goal unless it already starts with /goal")
+    .option("--from <source>", "target source: sessions-query")
+    .option("--sessions-query <query>", "filter sessions-query target JSON by text")
+    .option("--if-idle", "refuse delivery unless the target looks idle")
+    .option("--queue", "allow active targets and rely on the agent queue")
+    .option("--submit-key <key>", "prompt submit key: Enter | Tab")
+    .option("--force-active", "explicitly override active/unknown target refusal")
+    .option("--capture-before <lines>", "capture redacted transcript lines before delivery", parseIntegerOption("capture-before", 1))
+    .option("--dry-run", "validate targets/guards and show what would be sent without typing")
+    .option("--max-concurrency <n>", "bulk max concurrent dispatches", parseIntegerOption("max-concurrency", 1), 1)
+    .option("--jitter <ms>", "bulk random delay before each dispatch", parseIntegerOption("jitter", 0), 0)
+    .option("--per-machine-limit <n>", "bulk max concurrent dispatches per machine", parseIntegerOption("per-machine-limit", 1))
     .option("-m, --machine <id>", "target machine (via @hasna/machines); local when omitted")
     .option("--no-submit", "type into the composer but do not press Enter")
     .option("--no-confirm", "skip delivery confirmation")
     .option("--delay <ms>", "override the auto-computed pre-Enter delay", (v) => parseInt(v, 10))
-    .option("--retries <n>", "max Enter retries if not confirmed", (v) => parseInt(v, 10))
+    .option("--retries <n>", "max Enter retries if not confirmed; queued Tab delivery is single-shot", (v) => parseInt(v, 10))
     .option("--mode <mode>", "delivery mode: auto | paste | literal", "auto")
     .option("--json", "output JSON")
     .action(async (opts) => {
       const stdin = opts.prompt || opts.file ? deps.stdin : deps.stdin ?? (await readStdinIfPiped());
       const prompt = resolvePrompt(opts, stdin);
+      const targets = String(opts.to ?? "")
+        .split(",")
+        .map((target) => target.trim())
+        .filter(Boolean)
+        .map((target) => ({ target, machine: opts.machine }));
+      if (opts.from && opts.from !== "sessions-query") {
+        throw new Error(`unsupported target source: ${opts.from}`);
+      }
+      if (opts.from === "sessions-query" || targets.length > 1) {
+        const submitKey = normalizeSubmitKeyOption(opts.submitKey);
+        const options: BulkDispatchOptions = {
+          source: opts.from === "sessions-query" ? "sessions-query" : "explicit",
+          targets: opts.from === "sessions-query" ? undefined : targets,
+          sessionsQuery: opts.sessionsQuery,
+          prompt,
+          goal: opts.goal === true,
+          machine: opts.machine,
+          submit: opts.submit,
+          submitKey,
+          confirm: opts.confirm,
+          submitDelayMs: opts.delay,
+          maxSubmitRetries: opts.retries,
+          mode: opts.mode,
+          ifIdle: opts.ifIdle === true || (opts.queue !== true && opts.forceActive !== true),
+          queue: opts.queue === true,
+          forceActive: opts.forceActive === true,
+          dryRun: opts.dryRun === true,
+          captureBeforeLines: opts.captureBefore,
+          maxConcurrency: opts.maxConcurrency,
+          jitterMs: opts.jitter,
+          perMachineLimit: opts.perMachineLimit,
+        };
+        const result = await withClient((c) => c.bulkSend(options));
+        out(opts.json ? JSON.stringify(result, null, 2) : formatBulk(result));
+        if (result.status === "failed") process.exitCode = 1;
+        return;
+      }
+      if (targets.length === 0) {
+        throw new Error("no target: pass --to <target> or --from sessions-query");
+      }
       const options: DispatchOptions = {
-        target: opts.to,
+        target: targets[0]!.target,
         prompt,
         goal: opts.goal === true,
         machine: opts.machine,
+        submitKey: normalizeSubmitKeyOption(opts.submitKey),
+        ifIdle: opts.ifIdle === true,
+        queue: opts.queue === true,
+        forceActive: opts.forceActive === true,
+        dryRun: opts.dryRun === true,
+        captureBeforeLines: opts.captureBefore,
         submit: opts.submit,
         confirm: opts.confirm,
         submitDelayMs: opts.delay,
@@ -69,7 +145,8 @@ export function buildProgram(deps: CliDeps = {}): Command {
       };
       const rec = await withClient((c) => c.send(options));
       out(opts.json ? JSON.stringify(rec, null, 2) : formatRecord(rec));
-      if (rec.status === "failed") process.exitCode = 1;
+      const plannedDryRun = rec.status === "skipped" && rec.dryRun === true && /^dry run:/i.test(rec.detail ?? "");
+      if (rec.status === "failed" || (rec.status === "skipped" && !plannedDryRun)) process.exitCode = 1;
     });
 
   program
@@ -158,16 +235,21 @@ export function buildProgram(deps: CliDeps = {}): Command {
 
   program
     .command("status <id>")
-    .description("Show a recorded dispatch by id")
+    .description("Show a recorded dispatch or scheduled dispatch/loop by id")
     .option("--json", "output JSON")
     .action(async (id, opts) => {
       const rec = await withClient((c) => c.status(id));
-      if (!rec) {
-        err(`dispatch not found: ${id}`);
+      if (rec) {
+        out(opts.json ? JSON.stringify(rec, null, 2) : formatRecord(rec));
+        return;
+      }
+      const sched = await withClient((c) => c.scheduleStatus(id));
+      if (!sched) {
+        err(`dispatch or schedule not found: ${id}`);
         process.exitCode = 1;
         return;
       }
-      out(opts.json ? JSON.stringify(rec, null, 2) : formatRecord(rec));
+      out(opts.json ? JSON.stringify(sched, null, 2) : formatSchedule(sched));
     });
 
   program
@@ -194,7 +276,15 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .option("--json", "output JSON")
     .action(async (opts) => {
       const tmux = new Tmux(await createRunner(opts.machine));
-      const targets = tmux.listTargets();
+      const targets = tmux.listTargets().map((target) => ({
+        ...target,
+        detection: inspectAgentTarget(tmux, target.target, {
+          assumeExists: true,
+          paneCommand: target.paneCommand,
+          cwd: target.cwd,
+          panePid: target.panePid,
+        }).detection,
+      }));
       if (opts.json) {
         out(JSON.stringify(targets, null, 2));
       } else if (targets.length === 0) {
@@ -206,23 +296,75 @@ export function buildProgram(deps: CliDeps = {}): Command {
 
   program
     .command("schedule")
-    .description("Queue a dispatch to fire later (one-shot --at or recurring --cron)")
+    .description("Queue a dispatch to fire later (--at, --in, --cron, or --every)")
     .requiredOption("-t, --to <target>", "tmux target")
     .option("-p, --prompt <text>", "prompt text (or --file / stdin)")
     .option("-f, --file <path>", "read the prompt from a file")
     .option("--goal", "prefix the delivered prompt with /goal unless it already starts with /goal")
+    .option("--name <name>", "optional schedule/loop name")
     .option("-m, --machine <id>", "target machine")
     .option("--at <time>", "one-shot fire time (ISO 8601 or anything Date parses)")
+    .option("--in <duration>", "one-shot relative delay, e.g. 30m, 5 minutes, 2h, 1d")
     .option("--cron <expr>", "recurring 5-field cron expression")
+    .option("--every <duration>", "recurring interval loop, e.g. 5m or 1 hour")
+    .option("--if-idle", "refuse delivery unless the target looks idle when fired")
+    .option("--queue", "queue on active agents that prove Tab queued-message support when fired")
+    .option("--force-active", "explicitly override active/unknown target refusal when fired")
     .option("--json", "output JSON")
     .action(async (opts) => {
       const stdin = opts.prompt || opts.file ? deps.stdin : deps.stdin ?? (await readStdinIfPiped());
       const prompt = resolvePrompt(opts, stdin);
       const sched = await withClient((c) =>
         c.schedule({
-          options: { target: opts.to, prompt, goal: opts.goal === true, machine: opts.machine },
+          options: {
+            target: opts.to,
+            prompt,
+            goal: opts.goal === true,
+            machine: opts.machine,
+            ifIdle: opts.ifIdle === true,
+            queue: opts.queue === true,
+            forceActive: opts.forceActive === true,
+          },
           at: opts.at,
+          in: opts.in,
           cron: opts.cron,
+          every: opts.every,
+          name: opts.name,
+        }),
+      );
+      out(opts.json ? JSON.stringify(sched, null, 2) : formatSchedule(sched));
+    });
+
+  program
+    .command("loop")
+    .description("Create a recurring interval dispatch loop")
+    .requiredOption("-t, --to <target>", "tmux target")
+    .requiredOption("--every <duration>", "recurring interval, e.g. 5m, 30min, 1 hour")
+    .option("-p, --prompt <text>", "prompt text (or --file / stdin)")
+    .option("-f, --file <path>", "read the prompt from a file")
+    .option("--goal", "prefix the delivered prompt with /goal unless it already starts with /goal")
+    .option("--name <name>", "optional loop name")
+    .option("-m, --machine <id>", "target machine")
+    .option("--if-idle", "refuse delivery unless the target looks idle when fired")
+    .option("--queue", "queue on active agents that prove Tab queued-message support when fired")
+    .option("--force-active", "explicitly override active/unknown target refusal when fired")
+    .option("--json", "output JSON")
+    .action(async (opts) => {
+      const stdin = opts.prompt || opts.file ? deps.stdin : deps.stdin ?? (await readStdinIfPiped());
+      const prompt = resolvePrompt(opts, stdin);
+      const sched = await withClient((c) =>
+        c.loop({
+          options: {
+            target: opts.to,
+            prompt,
+            goal: opts.goal === true,
+            machine: opts.machine,
+            ifIdle: opts.ifIdle === true,
+            queue: opts.queue === true,
+            forceActive: opts.forceActive === true,
+          },
+          every: opts.every,
+          name: opts.name,
         }),
       );
       out(opts.json ? JSON.stringify(sched, null, 2) : formatSchedule(sched));
@@ -231,14 +373,31 @@ export function buildProgram(deps: CliDeps = {}): Command {
   program
     .command("schedules")
     .description("List scheduled dispatches")
-    .option("-s, --status <status>", "filter by status (scheduled | fired | cancelled)")
+    .option("-s, --status <status>", "filter by status (scheduled | paused | fired | cancelled | failed)")
+    .option("--kind <kind>", "filter by kind (schedule | loop)")
     .option("--json", "output JSON")
     .action(async (opts) => {
-      const rows = await withClient((c) => c.listSchedules({ status: opts.status }));
+      const rows = await withClient((c) => c.listSchedules({ status: opts.status, kind: opts.kind }));
       if (opts.json) {
         out(JSON.stringify(rows, null, 2));
       } else if (rows.length === 0) {
         out("no scheduled dispatches");
+      } else {
+        for (const s of rows) out(formatSchedule(s));
+      }
+    });
+
+  program
+    .command("loops")
+    .description("List recurring interval loops")
+    .option("-s, --status <status>", "filter by status (scheduled | paused | cancelled | failed)")
+    .option("--json", "output JSON")
+    .action(async (opts) => {
+      const rows = await withClient((c) => c.listLoops({ status: opts.status }));
+      if (opts.json) {
+        out(JSON.stringify(rows, null, 2));
+      } else if (rows.length === 0) {
+        out("no dispatch loops");
       } else {
         for (const s of rows) out(formatSchedule(s));
       }
@@ -253,6 +412,45 @@ export function buildProgram(deps: CliDeps = {}): Command {
         out(`cancelled ${id}`);
       } else {
         err(`could not cancel ${id} (not found or not scheduled)`);
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command("pause <id>")
+    .description("Pause a scheduled dispatch or loop")
+    .action(async (id) => {
+      const ok = await withClient((c) => c.pauseSchedule(id));
+      if (ok) {
+        out(`paused ${id}`);
+      } else {
+        err(`could not pause ${id} (not found or not scheduled)`);
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command("resume <id>")
+    .description("Resume a paused scheduled dispatch or loop")
+    .action(async (id) => {
+      const ok = await withClient((c) => c.resumeSchedule(id));
+      if (ok) {
+        out(`resumed ${id}`);
+      } else {
+        err(`could not resume ${id} (not found or not paused)`);
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command("clear <id>")
+    .description("Delete a scheduled dispatch or loop")
+    .action(async (id) => {
+      const ok = await withClient((c) => c.clearSchedule(id));
+      if (ok) {
+        out(`cleared ${id}`);
+      } else {
+        err(`could not clear ${id} (not found)`);
         process.exitCode = 1;
       }
     });

@@ -101,6 +101,8 @@ export async function performKeyDispatch(options: KeyOptions, deps: KeyDeps): Pr
         status: record.status,
         detail: record.detail,
         deliveredAt: record.deliveredAt,
+        targetState: record.targetState,
+        detection: record.detection,
       });
     }
     return record;
@@ -114,7 +116,42 @@ export async function performKeyDispatch(options: KeyOptions, deps: KeyDeps): Pr
   }
 
   const target = validateAgentComposerTarget(tmux, options.target);
-  if (!target.ok) return finish({ status: "failed", detail: target.detail });
+  if (!target.ok) {
+    return finish({
+      status: "failed",
+      detail: target.detail,
+      targetState: target.activity,
+      detection: target.detection,
+    });
+  }
+  record = { ...record, targetState: target.activity, detection: target.detection };
+
+  if (normalizedKey === "Enter" && target.detection?.canReceivePrompt !== true) {
+    return finish({
+      status: "skipped",
+      detail: `refusing Enter key because target cannot receive a prompt safely (${target.detection?.reason ?? "no detection available"})`,
+      targetState: target.activity,
+      detection: target.detection,
+    });
+  }
+  if (normalizedKey === "Tab") {
+    if (!target.detection?.submitKeys.includes("Tab")) {
+      return finish({
+        status: "skipped",
+        detail: `refusing Tab key because target does not advertise Tab support (${target.detection?.reason ?? "no detection available"})`,
+        targetState: target.activity,
+        detection: target.detection,
+      });
+    }
+    if (target.activity === "active" && target.detection.canQueuePrompt !== true) {
+      return finish({
+        status: "skipped",
+        detail: `refusing Tab key because active target does not prove queued prompt support (${target.detection.reason})`,
+        targetState: target.activity,
+        detection: target.detection,
+      });
+    }
+  }
 
   try {
     tmux.sendKey(options.target, normalizedKey);
@@ -125,6 +162,8 @@ export async function performKeyDispatch(options: KeyOptions, deps: KeyDeps): Pr
   return finish({
     status: "delivered",
     detail: `sent key ${normalizedKey} to agent composer`,
+    targetState: target.activity,
+    detection: target.detection,
     deliveredAt: nowIso(),
   });
 }

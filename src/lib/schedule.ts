@@ -10,8 +10,61 @@
 export interface ScheduleSpec {
   /** One-shot absolute time (anything Date can parse, e.g. ISO 8601). */
   at?: string;
+  /** One-shot relative delay, e.g. 30m, 2h, or 5 minutes. */
+  in?: string;
   /** Recurring 5-field cron expression. */
   cron?: string;
+  /** Recurring interval, e.g. 5m or 1 hour. */
+  every?: string;
+  /** Recurring interval in milliseconds, for already-parsed SDK callers. */
+  intervalMs?: number;
+}
+
+const DURATION_UNITS: Record<string, number> = {
+  ms: 1,
+  millisecond: 1,
+  milliseconds: 1,
+  s: 1000,
+  sec: 1000,
+  secs: 1000,
+  second: 1000,
+  seconds: 1000,
+  m: 60_000,
+  min: 60_000,
+  mins: 60_000,
+  minute: 60_000,
+  minutes: 60_000,
+  h: 60 * 60_000,
+  hr: 60 * 60_000,
+  hrs: 60 * 60_000,
+  hour: 60 * 60_000,
+  hours: 60 * 60_000,
+  d: 24 * 60 * 60_000,
+  day: 24 * 60 * 60_000,
+  days: 24 * 60 * 60_000,
+};
+
+/** Parse a practical duration such as `30m`, `30min`, `5 minutes`, `2h`, or `1d`. */
+export function parseDurationMs(input: string): number {
+  const match = input.trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*([a-z]+)$/);
+  if (!match) throw new Error(`invalid duration "${input}" (expected examples: 30m, 30min, 5 minutes, 2h, 1d)`);
+  const amount = Number(match[1]);
+  const unit = match[2]!;
+  const mult = DURATION_UNITS[unit];
+  if (!Number.isFinite(amount) || amount <= 0 || !mult) {
+    throw new Error(`invalid duration "${input}" (expected a positive duration with unit m, h, or d)`);
+  }
+  const ms = Math.round(amount * mult);
+  if (!Number.isSafeInteger(ms) || ms <= 0) throw new Error(`invalid duration "${input}"`);
+  return ms;
+}
+
+function assertExactlyOne(spec: ScheduleSpec): void {
+  const interval = spec.every !== undefined || spec.intervalMs !== undefined;
+  const count = [spec.at !== undefined, spec.in !== undefined, spec.cron !== undefined, interval].filter(Boolean).length;
+  if (count !== 1) {
+    throw new Error("schedule spec requires exactly one of `at`, `in`, `cron`, or `every`");
+  }
 }
 
 function parseField(expr: string, min: number, max: number): Set<number> {
@@ -102,13 +155,19 @@ export function nextCronRun(expr: string, from: Date): Date {
 
 /** Compute the next fire time for a spec as an ISO string. */
 export function computeNextRun(spec: ScheduleSpec, from: Date = new Date()): string {
+  assertExactlyOne(spec);
   if (spec.at) {
     const t = new Date(spec.at);
     if (Number.isNaN(t.getTime())) throw new Error(`invalid \`at\` time: ${spec.at}`);
     return t.toISOString();
   }
+  if (spec.in) {
+    return new Date(from.getTime() + parseDurationMs(spec.in)).toISOString();
+  }
   if (spec.cron) {
     return nextCronRun(spec.cron, from).toISOString();
   }
-  throw new Error("schedule spec requires `at` or `cron`");
+  const intervalMs = spec.intervalMs ?? parseDurationMs(spec.every ?? "");
+  if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) throw new Error("interval must be a positive duration");
+  return new Date(from.getTime() + intervalMs).toISOString();
 }

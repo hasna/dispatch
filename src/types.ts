@@ -18,6 +18,29 @@ export type DispatchKind = "prompt" | "exec" | "key";
 /** Runtime class of a target pane, based on tmux pane_current_command. */
 export type ExecTargetKind = "shell" | "agent" | "unknown";
 
+/** Specific terminal AI agent family detected in a tmux pane. */
+export type AgentKind = "codewith" | "codex" | "claude" | "opencode" | "unknown";
+
+/** Visible composer/activity state inferred from the live pane viewport. */
+export type ComposerState = "idle" | "active" | "unknown";
+
+/** Prompt submit key supported by send-level delivery. */
+export type SubmitKey = "Enter" | "Tab";
+
+/** Structured target detection/capability record exposed in JSON outputs. */
+export interface AgentTargetInfo {
+  targetKind: ExecTargetKind;
+  agentKind: AgentKind;
+  composerState: ComposerState;
+  canReceivePrompt: boolean;
+  canQueuePrompt: boolean;
+  submitKeys: SubmitKey[];
+  recommendedSubmitKey?: SubmitKey;
+  reason: string;
+  paneCommand?: string;
+  cwd?: string;
+}
+
 /** Command filter result recorded before any exec delivery is attempted. */
 export interface ExecFilterResult {
   allowed: boolean;
@@ -85,9 +108,17 @@ export interface ConfirmResult {
   /**
    * True when the prompt was accepted but staged for later submission (the
    * target agent was busy, e.g. "Messages to be submitted after next tool
-   * call"). Still counts as delivered.
+   * call"). Usually counts as delivered unless actionNeeded is also true.
    */
   queued?: boolean;
+  /**
+   * True when the prompt reached a state that requires human/operator action
+   * before it can be trusted as submitted, for example a Codewith auth-profile
+   * auto-switch that leaves follow-up input queued but not draining.
+   */
+  actionNeeded?: boolean;
+  /** True when actionNeeded was caused by an auth/account switch or limit state. */
+  authSwitchDetected?: boolean;
   /**
    * True when the target app handled the prompt by rendering an immediate
    * rejection/disabled/unavailable message. Still counts as delivered because
@@ -109,6 +140,18 @@ export interface DispatchOptions {
   goal?: boolean;
   /** Optional machine id (local when omitted). Resolved via @hasna/machines. */
   machine?: string;
+  /** Submit key for prompt sends. Enter is default; Tab is only for proven queue support. */
+  submitKey?: SubmitKey;
+  /** Refuse delivery unless the target looks idle. */
+  ifIdle?: boolean;
+  /** Queue on active agents that prove Tab queued-message support. */
+  queue?: boolean;
+  /** Explicit override for active/unknown target state. Use sparingly. */
+  forceActive?: boolean;
+  /** Validate target, guards, and delivery plan without sending text or Enter. */
+  dryRun?: boolean;
+  /** Capture this many redacted lines before delivery and attach them to the record. */
+  captureBeforeLines?: number;
   /**
    * Override the auto-calculated pre-Enter delay (ms). When omitted, the delay
    * is derived from the prompt's word/char count.
@@ -125,6 +168,49 @@ export interface DispatchOptions {
    * literal send-keys for short single-line ones.
    */
   mode?: "auto" | "paste" | "literal";
+}
+
+export type AgentActivityState = ComposerState;
+
+export interface DispatchTargetRef {
+  target: string;
+  machine?: string;
+  source?: string;
+  state?: AgentActivityState;
+}
+
+export type DispatchTargetSource = "explicit" | "sessions-query";
+
+export interface BulkDispatchOptions extends Omit<DispatchOptions, "target" | "machine"> {
+  targets?: DispatchTargetRef[];
+  /** Fixed target source. `sessions-query` probes `sessions live/status --json` when available. */
+  source?: DispatchTargetSource;
+  /** Machine on which to resolve a target source such as sessions-query. */
+  machine?: string;
+  /** Optional text filter for sessions-query target results. */
+  sessionsQuery?: string;
+  /** Max concurrent dispatches. Default 1. */
+  maxConcurrency?: number;
+  /** Sleep up to this many ms before each dispatch. Default 0. */
+  jitterMs?: number;
+  /** Max concurrent dispatches per machine. Default equals maxConcurrency. */
+  perMachineLimit?: number;
+}
+
+export interface BulkDispatchResult {
+  status: "completed" | "failed";
+  source: DispatchTargetSource;
+  requested: number;
+  planned: number;
+  delivered: number;
+  skipped: number;
+  failed: number;
+  dryRun: boolean;
+  maxConcurrency: number;
+  jitterMs: number;
+  perMachineLimit: number;
+  records: DispatchRecord[];
+  detail?: string;
 }
 
 /** Options controlling a single allowlisted special-key dispatch. */
@@ -200,9 +286,16 @@ export interface CaptureResult {
   capturedAt: string;
   text: string;
   redacted: boolean;
+  detection?: AgentTargetInfo;
   detail?: string;
   ai?: CaptureAiResult;
 }
+
+/** User-facing kind of a persisted scheduled prompt. */
+export type ScheduleKind = "schedule" | "loop";
+
+/** Lifecycle status of a scheduled prompt or loop. */
+export type ScheduleStatus = "scheduled" | "paused" | "fired" | "cancelled" | "failed";
 
 /** A persisted dispatch record. */
 export interface DispatchRecord {
@@ -227,6 +320,12 @@ export interface DispatchRecord {
   targetKind?: ExecTargetKind;
   /** True when exec only validated and recorded the delivery plan. */
   dryRun?: boolean;
+  /** Detected agent activity before prompt delivery. */
+  targetState?: AgentActivityState;
+  /** Structured target detection/capability metadata before delivery. */
+  detection?: AgentTargetInfo;
+  /** Optional pre-delivery transcript capture requested by `captureBeforeLines`. */
+  captureBefore?: CaptureResult;
   /** Exact tmux input that would be or was sent for exec records. */
   execPlan?: ExecDeliveryPlan;
   createdAt: string;
@@ -238,18 +337,26 @@ export interface DispatchRecord {
 export interface ScheduledDispatch {
   id: string;
   options: DispatchOptions;
+  /** User-facing kind. `loop` means recurring interval/loop workflow. */
+  kind?: ScheduleKind;
+  /** Optional human label for list/status output. */
+  name?: string;
   /** One-shot fire time (ISO 8601). Mutually used with `cron`. */
   at?: string;
   /** Recurring cron expression (5-field). */
   cron?: string;
+  /** Recurring interval duration as provided by the user, e.g. `5m`. */
+  every?: string;
+  /** Recurring interval duration in milliseconds. */
+  intervalMs?: number;
   /** Next computed fire time (ISO 8601). */
   nextRun: string;
   /**
-   * `scheduled` — waiting to fire (or retrying). `fired` — a one-shot completed
-   * (or last cron run succeeded). `cancelled` — cancelled by a user. `failed` —
-   * a one-shot gave up after exhausting its retry window.
+   * `scheduled` — waiting to fire (or retrying). `paused` — stopped until
+   * resumed. `fired` — a one-shot completed. `cancelled` — cancelled by a user.
+   * `failed` — a one-shot gave up after exhausting its retry window.
    */
-  status: "scheduled" | "fired" | "cancelled" | "failed";
+  status: ScheduleStatus;
   /** Id of the last dispatch this schedule produced. */
   lastDispatchId?: string;
   lastFiredAt?: string;

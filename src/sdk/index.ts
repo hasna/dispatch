@@ -7,6 +7,8 @@
  *   console.log(rec.status, rec.confirm?.reason);
  */
 import type {
+  BulkDispatchOptions,
+  BulkDispatchResult,
   CaptureOptions,
   CaptureResult,
   DispatchOptions,
@@ -15,6 +17,8 @@ import type {
   ExecOptions,
   KeyOptions,
   ScheduledDispatch,
+  ScheduleKind,
+  ScheduleStatus,
 } from "../types.js";
 import { Store } from "../lib/store.js";
 import { Tmux } from "../lib/tmux.js";
@@ -23,7 +27,9 @@ import { performDispatch } from "../lib/engine.js";
 import { performExec } from "../lib/exec.js";
 import { performKeyDispatch } from "../lib/key.js";
 import { performCapture } from "../lib/capture.js";
-import { computeNextRun } from "../lib/schedule.js";
+import { computeNextRun, parseDurationMs } from "../lib/schedule.js";
+import { performBulkDispatch } from "../lib/bulk.js";
+import { resolveSessionsTargets } from "../lib/sessions-source.js";
 
 export interface DispatchClientOptions {
   /** Use an explicit store; otherwise the default sqlite store is opened. */
@@ -80,6 +86,22 @@ export class DispatchClient {
     return performCapture(options, { tmux });
   }
 
+  /** Dispatch one prompt to multiple targets with idle guards/concurrency controls. */
+  async bulkSend(options: BulkDispatchOptions): Promise<BulkDispatchResult> {
+    let targets = options.targets ?? [];
+    if (options.source === "sessions-query") {
+      const runner = await createRunner(options.machine);
+      targets = await resolveSessionsTargets({ runner, machine: options.machine, query: options.sessionsQuery });
+    }
+    return performBulkDispatch(
+      { ...options, targets },
+      {
+        store: this.store,
+        makeTmux: async (machine?: string) => new Tmux(await createRunner(machine)),
+      },
+    );
+  }
+
   /** Look up a previously-recorded dispatch by id. */
   status(id: string): DispatchRecord | undefined {
     return this.store?.getDispatch(id);
@@ -91,25 +113,94 @@ export class DispatchClient {
   }
 
   /** Queue a dispatch to fire later (one-shot `at` or recurring `cron`). */
-  schedule(input: { options: DispatchOptions; at?: string; cron?: string; from?: Date }): ScheduledDispatch {
+  schedule(input: {
+    options: DispatchOptions;
+    at?: string;
+    in?: string;
+    cron?: string;
+    every?: string;
+    intervalMs?: number;
+    name?: string;
+    from?: Date;
+  }): ScheduledDispatch {
     if (!this.store) throw new Error("scheduling requires a persistent store");
-    if (!input.at && !input.cron) throw new Error("schedule requires `at` or `cron`");
-    const nextRun = computeNextRun({ at: input.at, cron: input.cron }, input.from ?? new Date());
-    return this.store.createSchedule({ options: input.options, at: input.at, cron: input.cron, nextRun });
+    const intervalMs = input.intervalMs ?? (input.every ? parseDurationMs(input.every) : undefined);
+    const nextRun = computeNextRun(
+      { at: input.at, in: input.in, cron: input.cron, every: input.every, intervalMs },
+      input.from ?? new Date(),
+    );
+    const at = input.at ?? (input.in ? nextRun : undefined);
+    const kind = intervalMs ? "loop" : "schedule";
+    return this.store.createSchedule({
+      options: input.options,
+      kind,
+      name: input.name,
+      at,
+      cron: input.cron,
+      every: input.every,
+      intervalMs,
+      nextRun,
+    });
+  }
+
+  /** Create a recurring interval loop. */
+  loop(input: { options: DispatchOptions; every: string; name?: string; from?: Date }): ScheduledDispatch {
+    return this.schedule(input);
+  }
+
+  /** Look up a scheduled dispatch or loop by id. */
+  scheduleStatus(id: string): ScheduledDispatch | undefined {
+    return this.store?.getSchedule(id);
   }
 
   /** List scheduled dispatches. */
-  listSchedules(opts: { status?: ScheduledDispatch["status"]; limit?: number } = {}): ScheduledDispatch[] {
+  listSchedules(opts: { status?: ScheduleStatus; kind?: ScheduleKind; limit?: number } = {}): ScheduledDispatch[] {
     return this.store?.listSchedules(opts) ?? [];
+  }
+
+  /** List recurring interval loops. */
+  listLoops(opts: { status?: ScheduleStatus; limit?: number } = {}): ScheduledDispatch[] {
+    return this.listSchedules({ ...opts, kind: "loop" });
   }
 
   /** Cancel a scheduled dispatch. */
   cancelSchedule(id: string): boolean {
     if (!this.store) return false;
     const sched = this.store.getSchedule(id);
-    if (!sched || sched.status !== "scheduled") return false;
+    if (!sched || !["scheduled", "paused"].includes(sched.status)) return false;
     this.store.updateSchedule(id, { status: "cancelled" });
     return true;
+  }
+
+  /** Pause a scheduled dispatch or loop so it will not fire until resumed. */
+  pauseSchedule(id: string): boolean {
+    if (!this.store) return false;
+    const sched = this.store.getSchedule(id);
+    if (!sched || sched.status !== "scheduled") return false;
+    this.store.updateSchedule(id, { status: "paused" });
+    return true;
+  }
+
+  /** Resume a paused scheduled dispatch or loop. */
+  resumeSchedule(id: string, from: Date = new Date()): boolean {
+    if (!this.store) return false;
+    const sched = this.store.getSchedule(id);
+    if (!sched || sched.status !== "paused") return false;
+    let nextRun = sched.nextRun;
+    if (sched.intervalMs) {
+      nextRun = computeNextRun({ intervalMs: sched.intervalMs }, from);
+    } else if (sched.cron) {
+      nextRun = computeNextRun({ cron: sched.cron }, from);
+    } else if (new Date(nextRun).getTime() <= from.getTime()) {
+      nextRun = from.toISOString();
+    }
+    this.store.updateSchedule(id, { status: "scheduled", nextRun });
+    return true;
+  }
+
+  /** Delete a scheduled dispatch or loop from the store. */
+  clearSchedule(id: string): boolean {
+    return this.store?.deleteSchedule(id) ?? false;
   }
 
   close(): void {
@@ -152,6 +243,16 @@ export async function dispatchCapture(options: CaptureOptions): Promise<CaptureR
   const client = new DispatchClient({ persist: false });
   try {
     return await client.capture(options);
+  } finally {
+    client.close();
+  }
+}
+
+/** One-shot convenience: bulk dispatch without managing a client. */
+export async function dispatchBulk(options: BulkDispatchOptions): Promise<BulkDispatchResult> {
+  const client = new DispatchClient({ persist: false });
+  try {
+    return await client.bulkSend(options);
   } finally {
     client.close();
   }

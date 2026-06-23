@@ -36,6 +36,10 @@ all env- and flag-overridable). Then it presses **Enter**, and — if confirmati
 **re-presses Enter** until the delivery probe says it submitted, up to `--retries` (default
 2). Submission becomes deterministic regardless of prompt length.
 
+Queued active-agent delivery uses **Tab** only when target detection proves queue
+support. Tab delivery is single-shot: dispatch does not retry Tab because repeated
+Tabs can create duplicate queued follow-up inputs.
+
 ## 3. Smart delivery confirmation
 
 `dispatch` doesn't assume success — it **verifies** by diffing the pane:
@@ -51,12 +55,18 @@ Either signal ⇒ **delivered**, with a human-readable `reason`. Prompt still si
 composer ⇒ **not delivered**. `confirmDelivery` polls a few times so a slightly-delayed
 indicator is still caught. Disable with `--no-confirm` for fire-and-forget.
 
+Queued-message confirmation is fail-closed for known account/auth transition states.
+If a Codewith pane shows auth-profile auto-switch/account-limit text while the prompt
+is queued, dispatch records `delivered=false`, `actionNeeded=true`, and a reason that
+the prompt is queued behind an auth profile/account switch. This avoids reporting
+success when follow-up input is parked during a profile switch and may never drain.
+
 ## Tuning
 
 | Variable / flag | Effect |
 |---|---|
 | `--delay <ms>` / `DISPATCH_MIN_DELAY_MS` / `DISPATCH_MAX_DELAY_MS` | Pre-Enter delay |
 | `DISPATCH_MS_PER_WORD` / `DISPATCH_MS_PER_CHAR` | Auto-delay growth |
-| `--retries <n>` | Enter retries before giving up |
+| `--retries <n>` | Enter retries before giving up; queued Tab delivery is single-shot |
 | `--no-confirm` | Skip the confirmation probe |
 | `--mode auto\|paste\|literal` | Force the delivery method |

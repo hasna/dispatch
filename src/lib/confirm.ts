@@ -59,6 +59,30 @@ export function detectQueued(text: string, patterns: RegExp[] = DEFAULT_QUEUED_P
 }
 
 /**
+ * Live-pane patterns indicating a queued prompt cannot yet be trusted as
+ * delivered. Codewith can auto-switch auth profiles after an account limit is
+ * hit; during that transition it may display queued follow-up input that never
+ * drains. These patterns are only used as a delivery blocker when a queued
+ * prompt is also detected.
+ */
+export const DEFAULT_ACTION_NEEDED_PATTERNS: RegExp[] = [
+  /auto-?switching\s+auth\s+profile/i,
+  /your prompt will continue with that account/i,
+  /\bauth\s+profile\b.*\b(switching|switched|exhausted|limit reached|quota|rate limit|usage limit)\b/i,
+  /\baccount\w*\b.*\b(exhausted|limit reached|quota|rate limit|usage limit|switching profiles?)\b/i,
+  /\b(account|profile)\b.*\b(exhausted|limit reached|quota|rate limit|usage limit)\b/i,
+  /\b(exhausted|limit reached|quota|rate limit|usage limit)\b.*\b(account|profile)\b/i,
+];
+
+/** True if any operator-action-needed pattern matches the live pane text. */
+export function detectActionNeeded(
+  text: string,
+  patterns: RegExp[] = DEFAULT_ACTION_NEEDED_PATTERNS,
+): boolean {
+  return patterns.some((p) => p.test(text));
+}
+
+/**
  * Patterns indicating the target app handled the prompt immediately by
  * rejecting it, for example a disabled slash command while another turn is
  * streaming. This is delivery evidence: retrying would repeat the side effect.
@@ -129,6 +153,26 @@ function queuedPromptVisible(text: string, tail: string, patterns: RegExp[] = DE
   return false;
 }
 
+function actionNeededRegion(text: string, queuedPatterns: RegExp[], tail: string): string {
+  const lines = text.split("\n").map((line) => line.trimEnd()).filter((line) => line.trim().length > 0);
+  const regions: string[] = [];
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (!detectQueued(lines[i] ?? "", queuedPatterns)) continue;
+    const start = Math.max(0, i - 8);
+    const end = Math.min(lines.length, i + 9);
+    for (let j = start; j < end; j += 1) {
+      const line = lines[j] ?? "";
+      if (j > i) {
+        const trimmed = line.trim();
+        if (tail.length > 0 && squish(line).includes(tail)) continue;
+        if (/^\s+/.test(line) || /^(?:[>›]\s*)/.test(trimmed)) continue;
+      }
+      regions.push(line);
+    }
+  }
+  return regions.length > 0 ? regions.join("\n") : livePaneRegion(text, 20);
+}
+
 export interface EvaluateDeliveryInput {
   /** Pane capture before dispatch. */
   before: string;
@@ -142,6 +186,8 @@ export interface EvaluateDeliveryInput {
   workingPatterns?: RegExp[];
   /** Override queued/staged patterns. */
   queuedPatterns?: RegExp[];
+  /** Override action-needed patterns. */
+  actionNeededPatterns?: RegExp[];
   /** Override handled rejection/disabled-output patterns. */
   handledOutputPatterns?: RegExp[];
   /** True when the target pane is a shell rather than an agent composer. */
@@ -165,6 +211,7 @@ export interface EvaluateDeliveryInput {
 export function evaluateDelivery(input: EvaluateDeliveryInput): ConfirmResult {
   const patterns = input.workingPatterns ?? DEFAULT_WORKING_PATTERNS;
   const queuedPatterns = input.queuedPatterns ?? DEFAULT_QUEUED_PATTERNS;
+  const actionNeededPatterns = input.actionNeededPatterns ?? DEFAULT_ACTION_NEEDED_PATTERNS;
   const handledOutputPatterns = input.handledOutputPatterns ?? DEFAULT_HANDLED_OUTPUT_PATTERNS;
   const tail = squish(promptTail(input.prompt));
 
@@ -190,6 +237,8 @@ export function evaluateDelivery(input: EvaluateDeliveryInput): ConfirmResult {
   const queuedDetected =
     (detectQueued(input.after, queuedPatterns) && !detectQueued(input.before, queuedPatterns)) ||
     (queuedPromptVisible(input.after, tail, queuedPatterns) && !queuedPromptVisible(input.before, tail, queuedPatterns));
+  const authSwitchDetected = queuedDetected &&
+    detectActionNeeded(actionNeededRegion(input.after, queuedPatterns, tail), actionNeededPatterns);
 
   // Did pressing Enter change the pane at all (vs the just-typed state)?
   const paneAdvanced = normalize(input.after) !== normalize(baseline);
@@ -200,17 +249,20 @@ export function evaluateDelivery(input: EvaluateDeliveryInput): ConfirmResult {
   const actedOnVisiblePrompt = paneAdvanced && visibleInAfter && !parkedInAfter && !promptStillParkedInBusyPane;
   const shellEchoedCommand = input.shellCommand === true && visibleInBaseline && visibleInAfter;
   const delivered =
-    queuedDetected ||
-    handledOutputDetected ||
-    workingDetected ||
-    composerCleared ||
-    (!visibleInAfter && paneAdvanced) ||
-    actedOnVisiblePrompt ||
-    shellEchoedCommand;
-  const queued = delivered && queuedDetected;
+    !authSwitchDetected &&
+    (queuedDetected ||
+      handledOutputDetected ||
+      workingDetected ||
+      composerCleared ||
+      (!visibleInAfter && paneAdvanced) ||
+      actedOnVisiblePrompt ||
+      shellEchoedCommand);
+  const queued = queuedDetected;
 
   let reason: string;
-  if (queuedDetected) {
+  if (authSwitchDetected) {
+    reason = "prompt is queued behind an auth profile/account switch; action needed before retry";
+  } else if (queuedDetected) {
     reason = "prompt accepted but queued for submission (agent busy)";
   } else if (handledOutputDetected) {
     reason = "target handled the prompt with disabled/rejection output";
@@ -230,7 +282,16 @@ export function evaluateDelivery(input: EvaluateDeliveryInput): ConfirmResult {
     reason = "no change after submit — not delivered";
   }
 
-  return { delivered, reason, composerCleared, workingDetected, queued, handledOutput: delivered && handledOutputDetected };
+  return {
+    delivered,
+    reason,
+    composerCleared,
+    workingDetected,
+    queued,
+    actionNeeded: authSwitchDetected,
+    authSwitchDetected,
+    handledOutput: delivered && handledOutputDetected,
+  };
 }
 
 export interface ConfirmDeliveryOptions {
@@ -243,6 +304,7 @@ export interface ConfirmDeliveryOptions {
   maxPolls?: number;
   workingPatterns?: RegExp[];
   queuedPatterns?: RegExp[];
+  actionNeededPatterns?: RegExp[];
   handledOutputPatterns?: RegExp[];
   shellCommand?: boolean;
   sleep?: (ms: number) => Promise<void>;
@@ -272,6 +334,7 @@ export async function confirmDelivery(
       prompt: opts.prompt,
       workingPatterns: opts.workingPatterns,
       queuedPatterns: opts.queuedPatterns,
+      actionNeededPatterns: opts.actionNeededPatterns,
       handledOutputPatterns: opts.handledOutputPatterns,
       shellCommand: opts.shellCommand,
     });

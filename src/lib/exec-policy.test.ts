@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   classifyPaneCommand,
+  detectAgentKindFromProcessTree,
+  detectAgentTargetFromSignals,
+  detectAgentActivity,
   evaluateExecPolicy,
   isAgentWrapperCommand,
   looksLikeAgentPane,
@@ -136,6 +139,185 @@ describe("exec command policy", () => {
   gpt-5.5 xhigh fast · account013 · 5h 9% left · Main [default]       Goal achieved (21s)
 `, { processTree: "1234 1 Ss /usr/bin/bash\n1240 1234 Sl+ node /srv/transcript-viewer.js\n" }),
     ).toBe(false);
+  });
+
+  test("recognizes active wrapped Codewith panes after the startup banner has scrolled away", () => {
+    const activeCapture = `
+Goal active Objective: Add reliable session orchestration to dispatch
+
+› Follow-up implementation prompt
+
+  gpt-5.5 xhigh fast · account016 · 5h 9% left · Main [default]       Pursuing goal (3m)
+`;
+
+    expect(looksLikeWrappedAgentComposer(activeCapture, { processTree: codewithProcessTree })).toBe(true);
+    expect(detectAgentActivity(activeCapture)).toBe("active");
+    expect(
+      detectAgentTargetFromSignals({
+        paneCommand: "node",
+        visible: activeCapture,
+        processTree: codewithProcessTree,
+        cwd: "/home/hasna/Workspace/hasna/opensource/open-dispatch",
+      }),
+    ).toMatchObject({
+      targetKind: "agent",
+      agentKind: "codewith",
+      composerState: "active",
+      canReceivePrompt: false,
+      canQueuePrompt: true,
+      submitKeys: ["Enter", "Tab"],
+      recommendedSubmitKey: "Tab",
+    });
+  });
+
+  test("does not accept active Codewith-looking text from arbitrary node processes", () => {
+    const activeCapture = `
+Goal active Objective: Add reliable session orchestration to dispatch
+
+› Follow-up implementation prompt
+
+  gpt-5.5 xhigh fast · account016 · 5h 9% left · Main [default]       Pursuing goal (3m)
+`;
+
+    expect(
+      looksLikeWrappedAgentComposer(activeCapture, {
+        processTree: "1234 1 Ss /usr/bin/bash\n1240 1234 Sl+ node /srv/transcript-viewer.js\n",
+      }),
+    ).toBe(false);
+    expect(
+      looksLikeWrappedAgentComposer(activeCapture, {
+        processTree: "1234 1 Ss /usr/bin/bash\n1240 1234 Sl+ node /srv/transcript-viewer.js codewith\n",
+      }),
+    ).toBe(false);
+    expect(detectAgentKindFromProcessTree("1234 1 Ss node /srv/transcript-viewer.js codewith\n")).toBe("unknown");
+  });
+
+  test("does not accept scoped package prefix spoofs as wrapped Codewith evidence", () => {
+    const activeCapture = `
+Goal active Objective: Copied from a real Codewith pane
+
+› Follow-up implementation prompt
+
+  gpt-5.5 xhigh fast · account016 · 5h 9% left · Main [default]       Pursuing goal (3m)
+`;
+    const detection = detectAgentTargetFromSignals({
+      paneCommand: "node",
+      visible: activeCapture,
+      processTree: "1234 1 Ss node /tmp/node_modules/@hasna/codewith-viewer/index.js\n",
+      cwd: "/tmp",
+    });
+
+    expect(detection).toMatchObject({
+      targetKind: "unknown",
+      agentKind: "unknown",
+      canReceivePrompt: false,
+      canQueuePrompt: false,
+    });
+    expect(looksLikeWrappedAgentComposer(activeCapture, {
+      processTree: "1234 1 Ss node /tmp/node_modules/@hasna/codewith-viewer/index.js\n",
+    })).toBe(false);
+  });
+
+  test("detects the open-dispatch self-pane active Codewith wrapper shape", () => {
+    const visible = `
+• Working (38s • esc to interrupt)
+
+› Find and fix a bug in @filename
+
+  gpt-5.5 xhigh fast · 5h 90% left · account010 · Main [default]      Pursuing goal (10s)
+`;
+    const processTree = `
+2994685  517407 Ss   /usr/bin/bash
+ 682460 2994685 Sl+   \\_ node /home/hasna/.bun/bin/codewith --no-alt-screen --auth-profile account010
+ 682479  682460 Sl+       \\_ /home/hasna/.bun/install/global/node_modules/@hasna/codewith/node_modules/@hasna/codewith-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codewith --no-alt-screen --auth-profile account010
+`;
+
+    expect(
+      detectAgentTargetFromSignals({
+        paneCommand: "node",
+        visible,
+        processTree,
+        cwd: "/home/hasna/Workspace/hasna/opensource/open-dispatch",
+      }),
+    ).toMatchObject({
+      targetKind: "agent",
+      agentKind: "codewith",
+      composerState: "active",
+      canQueuePrompt: true,
+      recommendedSubmitKey: "Tab",
+    });
+  });
+
+  test("detects direct Claude Code and OpenCode panes", () => {
+    const claude = detectAgentTargetFromSignals({
+      paneCommand: "claude",
+      visible: `
+╭────────────────────────╮
+│ Claude Code            │
+│ cwd: /repo             │
+╰────────────────────────╯
+> awaiting prompt
+`,
+    });
+    expect(claude).toMatchObject({
+      targetKind: "agent",
+      agentKind: "claude",
+      composerState: "idle",
+      canReceivePrompt: true,
+      submitKeys: ["Enter", "Tab"],
+      recommendedSubmitKey: "Enter",
+    });
+
+    const opencode = detectAgentTargetFromSignals({
+      paneCommand: "opencode",
+      visible: `
+╭────────────────────────╮
+│ OpenCode               │
+│ workspace: /repo       │
+╰────────────────────────╯
+› implement this
+`,
+    });
+    expect(opencode).toMatchObject({
+      targetKind: "agent",
+      agentKind: "opencode",
+      composerState: "idle",
+      canReceivePrompt: true,
+      canQueuePrompt: false,
+      submitKeys: ["Enter"],
+    });
+  });
+
+  test("detects wrapped Claude and OpenCode launchers only with live UI proof", () => {
+    const claudeProcess = "1 0 Ss node /home/hasna/.local/bin/claude --dangerously-skip-permissions\n";
+    expect(
+      detectAgentTargetFromSignals({
+        paneCommand: "node",
+        processTree: claudeProcess,
+        visible: `
+╭────────────────────────╮
+│ Claude Code            │
+│ cwd: /repo             │
+╰────────────────────────╯
+> awaiting prompt
+`,
+      }),
+    ).toMatchObject({ targetKind: "agent", agentKind: "claude", composerState: "idle" });
+
+    const opencodeProcess = "1 0 Ss bunx opencode\n";
+    expect(
+      detectAgentTargetFromSignals({
+        paneCommand: "bun",
+        processTree: opencodeProcess,
+        visible: `
+╭────────────────────────╮
+│ OpenCode               │
+│ workspace: /repo       │
+╰────────────────────────╯
+› implement this
+`,
+      }),
+    ).toMatchObject({ targetKind: "agent", agentKind: "opencode", composerState: "idle" });
   });
 
   test("requires active composer or busy context for wrapped agent recognition", () => {

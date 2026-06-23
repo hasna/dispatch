@@ -87,20 +87,27 @@ export class Tmux {
    * Enumerate dispatchable targets (every pane across all sessions) on this
    * machine, so an agent can discover where to send a prompt.
    */
-  listTargets(): { target: string; window: string; active: boolean }[] {
+  listTargets(): { target: string; window: string; active: boolean; paneCommand?: string; cwd?: string; panePid?: string }[] {
     const res = this.tmux([
       "list-panes",
       "-a",
       "-F",
-      "#{session_name}:#{window_index}.#{pane_index}\t#{window_name}\t#{pane_active}",
+      "#{session_name}:#{window_index}.#{pane_index}\t#{window_name}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_pid}",
     ]);
     if (res.exitCode !== 0) return [];
     return res.stdout
       .split("\n")
       .filter((l) => l.trim().length > 0)
       .map((line) => {
-        const [target = "", window = "", active = "0"] = line.split("\t");
-        return { target, window, active: active.trim() === "1" };
+        const [target = "", window = "", active = "0", paneCommand = "", cwd = "", panePid = ""] = line.split("\t");
+        return {
+          target,
+          window,
+          active: active.trim() === "1",
+          paneCommand: paneCommand || undefined,
+          cwd: cwd || undefined,
+          panePid: panePid || undefined,
+        };
       });
   }
 
@@ -111,8 +118,8 @@ export class Tmux {
   }
 
   /** Best-effort process tree for the pane's process group. */
-  processTree(target: string): string {
-    const pid = this.paneProperty(target, "pane_pid");
+  processTree(target: string, panePid?: string): string {
+    const pid = panePid ?? this.paneProperty(target, "pane_pid");
     if (!/^\d+$/.test(pid)) return "";
     const group = this.runner.run(["ps", "-o", "pid=,ppid=,stat=,command=", "--forest", "-g", pid]);
     if (group.exitCode === 0 && group.stdout.trim()) return group.stdout;

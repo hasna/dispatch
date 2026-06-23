@@ -14,6 +14,20 @@ const codewithComposerCapture = `
 › Fix native chat
 `;
 
+const activeCodewithCapture = `
+• Working (38s • esc to interrupt)
+
+› Find and fix a bug in @filename
+
+  gpt-5.5 xhigh fast · 5h 90% left · account010 · Main [default]      Pursuing goal (10s)
+`;
+
+const codewithProcessTree = `
+1234 1 Ss /usr/bin/bash
+1240 1234 Sl+ node /home/hasna/.bun/bin/codewith --auth-profile account005
+1241 1240 Sl+ /home/hasna/.bun/install/global/node_modules/@hasna/codewith/node_modules/@hasna/codewith-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codewith --auth-profile account005
+`;
+
 function runner(command: string, capture = "> idle composer", processTree = ""): MockRunner {
   const r = new MockRunner();
   r.responder = (argv) => {
@@ -75,6 +89,35 @@ describe("performKeyDispatch", () => {
 
     expect(rec.status).toBe("delivered");
     expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("Enter"))).toBe(true);
+  });
+
+  test("refuses Enter key on active agents by default", async () => {
+    const r = runner("node", activeCodewithCapture, codewithProcessTree);
+    const rec = await performKeyDispatch({ target: "open-dispatch:1.1", key: "Enter" }, { tmux: new Tmux(r) });
+
+    expect(rec.status).toBe("skipped");
+    expect(rec.detection).toMatchObject({ agentKind: "codewith", composerState: "active", canQueuePrompt: true });
+    expect(rec.detail).toMatch(/refusing Enter key/);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("Enter"))).toBe(false);
+  });
+
+  test("allows Tab key on active Codewith agents with proven queue support", async () => {
+    const r = runner("node", activeCodewithCapture, codewithProcessTree);
+    const rec = await performKeyDispatch({ target: "open-dispatch:1.1", key: "Tab" }, { tmux: new Tmux(r) });
+
+    expect(rec.status).toBe("delivered");
+    expect(rec.detection).toMatchObject({ agentKind: "codewith", composerState: "active", canQueuePrompt: true });
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("Tab"))).toBe(true);
+  });
+
+  test("refuses Tab key on active agents without queue support", async () => {
+    const r = runner("codex", "✶ Working… (esc to interrupt)");
+    const rec = await performKeyDispatch({ target: "work:codex", key: "Tab" }, { tmux: new Tmux(r) });
+
+    expect(rec.status).toBe("skipped");
+    expect(rec.detection).toMatchObject({ agentKind: "codex", composerState: "active", canQueuePrompt: false });
+    expect(rec.detail).toMatch(/does not advertise Tab support/);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("Tab"))).toBe(false);
   });
 
   test("skips disallowed keys before target inspection or delivery", async () => {
