@@ -32,6 +32,11 @@ Because tmux text payloads travel as a properly-quoted single argument and large
 are piped via stdin (`load-buffer -`), long and multi-line prompts cross the SSH boundary
 without corruption — bracketed paste still applies on the remote pane.
 
+Remote commands default to a 20s timeout because real tmux operations over SSH/Tailscale
+can take several seconds during route setup. Override it with
+`DISPATCH_REMOTE_TIMEOUT_MS=<ms>` when you need faster failure behavior, especially for
+bulk runs against machines that may be down.
+
 ## Requirements
 
 - Passwordless SSH to the target host (key/agent), reachable over LAN or Tailscale.

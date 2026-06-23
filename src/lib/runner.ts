@@ -60,7 +60,7 @@ export class LocalRunner implements Runner {
 
 export function remoteTimeoutMs(): number {
   const raw = Number(process.env.DISPATCH_REMOTE_TIMEOUT_MS);
-  return Number.isFinite(raw) && raw > 0 ? raw : 5000;
+  return Number.isFinite(raw) && raw > 0 ? raw : 20000;
 }
 
 export function fallbackSshCommand(id: string, command: string): string {

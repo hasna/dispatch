@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { CaptureResult, DispatchRecord, ScheduledDispatch } from "../types.js";
+import type { BulkDispatchResult, CaptureResult, DispatchRecord, ScheduledDispatch } from "../types.js";
 
 /**
  * Resolve the prompt text from the flags: --prompt wins, else --file, else
@@ -68,6 +68,15 @@ export function formatCapture(result: CaptureResult): string {
     }
   }
   return parts.join("\n");
+}
+
+export function formatBulk(result: BulkDispatchResult): string {
+  const lines = [
+    `${result.status === "completed" ? "✓" : "✗"} bulk ${result.source} requested=${result.requested} planned=${result.planned} delivered=${result.delivered} skipped=${result.skipped} failed=${result.failed}${result.dryRun ? " dry-run" : ""}`,
+  ];
+  if (result.detail) lines.push(result.detail);
+  for (const rec of result.records) lines.push(formatRecord(rec));
+  return lines.join("\n");
 }
 
 /** One-line human summary of a scheduled dispatch. */

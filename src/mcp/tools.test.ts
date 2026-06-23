@@ -8,7 +8,15 @@ import { Store } from "../lib/store.js";
 import { Tmux } from "../lib/tmux.js";
 import { MockRunner } from "../test/mock-runner.js";
 import { buildProgram } from "../cli/index.js";
-import type { CaptureOptions, DispatchOptions, DispatchRecord, ExecOptions, KeyOptions } from "../types.js";
+import type {
+  BulkDispatchOptions,
+  BulkDispatchResult,
+  CaptureOptions,
+  DispatchOptions,
+  DispatchRecord,
+  ExecOptions,
+  KeyOptions,
+} from "../types.js";
 
 function deps(): ToolDeps {
   const store = new Store(":memory:");
@@ -129,6 +137,62 @@ describe("MCP tool handlers", () => {
     await tool("dispatch_send").handler(d, { target: "work:agent", prompt: "Fix native chat", goal: true });
 
     expect(received).toMatchObject({ target: "work:agent", prompt: "Fix native chat", goal: true });
+  });
+
+  test("send delegates sessions-query bulk orchestration options to the client", async () => {
+    const d = deps();
+    let received: BulkDispatchOptions | undefined;
+    d.client.bulkSend = async (opts: BulkDispatchOptions): Promise<BulkDispatchResult> => {
+      received = opts;
+      return {
+        status: "completed",
+        source: "sessions-query",
+        requested: 1,
+        planned: 1,
+        delivered: 0,
+        skipped: 1,
+        failed: 0,
+        dryRun: true,
+        maxConcurrency: 2,
+        jitterMs: 50,
+        perMachineLimit: 1,
+        records: [],
+      };
+    };
+
+    const result = await tool("dispatch_send").handler(d, {
+      source: "sessions-query",
+      sessionsQuery: "open-router",
+      prompt: "Fix native chat",
+      goal: true,
+      ifIdle: true,
+      dryRun: true,
+      captureBeforeLines: 120,
+      maxConcurrency: 2,
+      jitterMs: 50,
+      perMachineLimit: 1,
+    });
+
+    expect(result).toMatchObject({ source: "sessions-query", dryRun: true });
+    expect(received).toMatchObject({
+      source: "sessions-query",
+      sessionsQuery: "open-router",
+      prompt: "Fix native chat",
+      goal: true,
+      ifIdle: true,
+      dryRun: true,
+      captureBeforeLines: 120,
+      maxConcurrency: 2,
+      jitterMs: 50,
+      perMachineLimit: 1,
+    });
+  });
+
+  test("send rejects missing target when no bulk source is provided", async () => {
+    const d = deps();
+    await expect(Promise.resolve().then(() => tool("dispatch_send").handler(d, { prompt: "Fix native chat" }))).rejects.toThrow(
+      /requires target, targets, or source=sessions-query/,
+    );
   });
 
   test("key delegates allowlisted special-key options to the client", async () => {

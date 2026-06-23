@@ -1,11 +1,14 @@
 import type { ExecTargetKind } from "../types.js";
-import { classifyPaneCommand, isAgentWrapperCommand, looksLikeWrappedAgentComposer } from "./exec-policy.js";
+import type { AgentActivityState } from "../types.js";
+import { classifyPaneCommand, detectAgentActivity, isAgentWrapperCommand, looksLikeWrappedAgentComposer } from "./exec-policy.js";
 import { Tmux } from "./tmux.js";
 
 export interface AgentComposerTargetResult {
   ok: boolean;
   paneCommand: string;
   targetKind?: ExecTargetKind;
+  activity?: AgentActivityState;
+  visible?: string;
   detail?: string;
 }
 
@@ -52,7 +55,8 @@ export function validateAgentComposerTarget(tmux: Tmux, target: string): AgentCo
   }
 
   if (targetKind === "agent") {
-    return { ok: true, paneCommand, targetKind };
+    const visible = tmux.capturePane(target);
+    return { ok: true, paneCommand, targetKind, activity: detectAgentActivity(visible), visible };
   }
 
   if (!isAgentWrapperCommand(paneCommand)) {
@@ -75,5 +79,5 @@ export function validateAgentComposerTarget(tmux: Tmux, target: string): AgentCo
     };
   }
 
-  return { ok: true, paneCommand, targetKind };
+  return { ok: true, paneCommand, targetKind, activity: detectAgentActivity(visibleBefore), visible: visibleBefore };
 }

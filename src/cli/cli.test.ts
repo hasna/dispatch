@@ -2,11 +2,19 @@ import { describe, expect, test } from "bun:test";
 import { writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildProgram } from "./index.js";
+import { buildProgram, parseIntegerOption } from "./index.js";
 import { formatRecord, formatSchedule, resolvePrompt } from "./format.js";
 import { DispatchClient } from "../sdk/index.js";
 import { Store } from "../lib/store.js";
-import type { CaptureOptions, DispatchOptions, DispatchRecord, ExecOptions, KeyOptions } from "../types.js";
+import type {
+  BulkDispatchOptions,
+  BulkDispatchResult,
+  CaptureOptions,
+  DispatchOptions,
+  DispatchRecord,
+  ExecOptions,
+  KeyOptions,
+} from "../types.js";
 
 describe("resolvePrompt", () => {
   test("prefers --prompt", () => {
@@ -225,6 +233,186 @@ describe("CLI read/schedule commands (in-memory client)", () => {
     } finally {
       rmSync(f, { force: true });
     }
+  });
+
+  test("send forwards idle guard, dry-run, and capture-before options", async () => {
+    let received: DispatchOptions | undefined;
+    const fakeClient = {
+      send: async (opts: DispatchOptions): Promise<DispatchRecord> => {
+        received = opts;
+        return {
+          id: "send-guard",
+          kind: "prompt",
+          target: opts.target,
+          machine: "local",
+          prompt: opts.prompt,
+          status: "skipped",
+          dryRun: opts.dryRun,
+          targetState: "active",
+          detail: "target is active; refusing because --if-idle was requested",
+          createdAt: "x",
+          updatedAt: "x",
+        };
+      },
+    } as DispatchClient;
+    const program = buildProgram({ clientFactory: () => fakeClient, out: () => undefined });
+
+    process.exitCode = 0;
+    await program.parseAsync(
+      [
+        "send",
+        "--to",
+        "open-sessions:2.1",
+        "--prompt",
+        "Inspect",
+        "--if-idle",
+        "--dry-run",
+        "--capture-before",
+        "80",
+        "--json",
+      ],
+      { from: "user" },
+    );
+
+    expect(received).toMatchObject({
+      target: "open-sessions:2.1",
+      prompt: "Inspect",
+      ifIdle: true,
+      dryRun: true,
+      captureBeforeLines: 80,
+    });
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+  });
+
+  test("send dry-run plans exit successfully when the target would be used", async () => {
+    let received: DispatchOptions | undefined;
+    const fakeClient = {
+      send: async (opts: DispatchOptions): Promise<DispatchRecord> => {
+        received = opts;
+        return {
+          id: "send-dry-plan",
+          kind: "prompt",
+          target: opts.target,
+          machine: "local",
+          prompt: opts.prompt,
+          status: "skipped",
+          dryRun: true,
+          detail: "dry run: prompt would be submitted using literal delivery",
+          createdAt: "x",
+          updatedAt: "x",
+        };
+      },
+    } as DispatchClient;
+    const program = buildProgram({ clientFactory: () => fakeClient, out: () => undefined });
+
+    process.exitCode = 0;
+    await program.parseAsync(["send", "--to", "work:agent", "--prompt", "Inspect", "--dry-run"], { from: "user" });
+
+    expect(received).toMatchObject({ target: "work:agent", dryRun: true });
+    expect(process.exitCode).toBe(0);
+  });
+
+  test("send --from sessions-query delegates bulk-safe defaults", async () => {
+    const out: string[] = [];
+    let received: BulkDispatchOptions | undefined;
+    const fakeClient = {
+      bulkSend: async (opts: BulkDispatchOptions): Promise<BulkDispatchResult> => {
+        received = opts;
+        return {
+          status: "completed",
+          source: "sessions-query",
+          requested: 1,
+          planned: 1,
+          delivered: 0,
+          skipped: 1,
+          failed: 0,
+          dryRun: true,
+          maxConcurrency: 3,
+          jitterMs: 25,
+          perMachineLimit: 1,
+          records: [],
+        };
+      },
+    } as DispatchClient;
+    const program = buildProgram({ clientFactory: () => fakeClient, out: (s) => out.push(s) });
+
+    await program.parseAsync(
+      [
+        "send",
+        "--from",
+        "sessions-query",
+        "--sessions-query",
+        "open-router",
+        "--prompt",
+        "Fix native chat",
+        "--goal",
+        "--dry-run",
+        "--max-concurrency",
+        "3",
+        "--jitter",
+        "25",
+        "--per-machine-limit",
+        "1",
+        "--json",
+      ],
+      { from: "user" },
+    );
+
+    expect(received).toMatchObject({
+      source: "sessions-query",
+      sessionsQuery: "open-router",
+      prompt: "Fix native chat",
+      goal: true,
+      ifIdle: true,
+      dryRun: true,
+      maxConcurrency: 3,
+      jitterMs: 25,
+      perMachineLimit: 1,
+    });
+    expect(JSON.parse(out.join("\n"))).toMatchObject({ source: "sessions-query", dryRun: true });
+  });
+
+  test("comma-separated --to targets use explicit bulk dispatch", async () => {
+    let received: BulkDispatchOptions | undefined;
+    const fakeClient = {
+      bulkSend: async (opts: BulkDispatchOptions): Promise<BulkDispatchResult> => {
+        received = opts;
+        return {
+          status: "completed",
+          source: "explicit",
+          requested: 2,
+          planned: 2,
+          delivered: 2,
+          skipped: 0,
+          failed: 0,
+          dryRun: false,
+          maxConcurrency: 1,
+          jitterMs: 0,
+          perMachineLimit: 1,
+          records: [],
+        };
+      },
+    } as DispatchClient;
+    const program = buildProgram({ clientFactory: () => fakeClient, out: () => undefined });
+
+    await program.parseAsync(["send", "--to", "open-a:1.1,open-b:1.1", "--prompt", "Bulk"], { from: "user" });
+
+    expect(received).toMatchObject({
+      source: "explicit",
+      targets: [
+        { target: "open-a:1.1", machine: undefined },
+        { target: "open-b:1.1", machine: undefined },
+      ],
+      prompt: "Bulk",
+      ifIdle: true,
+    });
+  });
+
+  test("send rejects invalid capture-before values", async () => {
+    expect(() => parseIntegerOption("capture-before", 1)("abc")).toThrow(/capture-before.*integer/i);
+    expect(() => parseIntegerOption("capture-before", 1)("0")).toThrow(/capture-before.*integer/i);
+    expect(parseIntegerOption("capture-before", 1)("120")).toBe(120);
   });
 
   test("key delegates allowlisted special-key dispatch", async () => {

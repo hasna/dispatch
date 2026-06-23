@@ -23,6 +23,7 @@ dispatch send --to work:agent --prompt "Refactor the parser and add tests"
 | Shell command dispatch needs guardrails | **Exec security filter** — shell targets only, allowlisted command prefixes, destructive/exfiltration blockers, dry-run audit, and no `C-c` unless explicitly requested |
 | Need to press a special key deliberately | **Safe key dispatch** — `dispatch key` only allows named safe keys and still refuses shells / unproven wrapper panes |
 | Need to inspect what happened in a pane | **Bounded capture** — `dispatch capture` captures recent transcript lines, strips terminal controls, and redacts obvious secrets before output or optional AI transforms |
+| Need to fan out prompts across live agent sessions | **Bulk/session orchestration** — `dispatch send` supports idle guards, dry-run, jitter/concurrency caps, pre-capture, and fixed `sessions live/status --json` registry probes |
 | "Did it actually go through?" | **Smart delivery confirmation** — diffs the pane before/after and detects the agent's working/`esc to interrupt` state and the composer clearing |
 | Doesn't work across machines | **Cross-machine** routing through [`@hasna/machines`](https://github.com/hasna/machines) (Tailscale / LAN / SSH) |
 | Fire-and-forget / later | **Scheduled dispatches** (`--at` / `--cron`) owned by a **persistent daemon** that survives restarts |
@@ -70,6 +71,14 @@ dispatch send --to work:agent --prompt "draft" --no-submit
 # Create a Codewith goal from the delivered prompt
 dispatch send --goal --to open-browser:1.1 --prompt "Fix native chat..."
 
+# Bulk-send to explicit targets with safety guards and pre-capture
+dispatch send --to open-a:1.1,open-b:1.1 --prompt "Run smoke tests" \
+  --if-idle --dry-run --capture-before 120 --max-concurrency 2 --jitter 500
+
+# Resolve targets from an open-sessions registry when available
+dispatch send --from sessions-query --sessions-query open-router \
+  --prompt "Fix native chat..." --goal --dry-run
+
 # Target a pane explicitly, and another machine
 dispatch send --machine spark01 --to work:agent.1 --prompt "build it" --json
 ```
@@ -81,6 +90,16 @@ Key flags: `--to <session:window[.pane]>`, `--prompt`/`--file`/stdin, `--machine
 `--goal` prefixes the delivered prompt with `/goal ` unless it already starts with
 `/goal`. The prefix happens after `--prompt`/`--file`/stdin resolution and before
 delivery/recording, so multiline prompt contents are preserved.
+
+Bulk/session orchestration flags: `--if-idle`, `--queue`, `--force-active`,
+`--capture-before <lines>`, `--dry-run`, `--max-concurrency <n>`, `--jitter <ms>`,
+and `--per-machine-limit <n>`. A comma-separated `--to` list uses explicit bulk
+dispatch. `--from sessions-query` asks the `sessions` CLI for fixed JSON commands
+only (`sessions live --json --once`, then `sessions status --json`) and filters with
+`--sessions-query`; it does not execute arbitrary shell text. Bulk sends default to
+`--if-idle`, so active targets are skipped unless `--queue` or
+`--force-active` is passed. `--capture-before` stores a bounded redacted transcript
+on each dispatch record for later `dispatch status` / `dispatch list` audit context.
 
 ### Key
 
@@ -245,7 +264,21 @@ const cap = await dispatch.capture({ target: "work:agent", lines: 120 });
 console.log(keyRec.status, cap.text);
 ```
 
-One-shot helpers: `import { dispatch, dispatchExec, dispatchKey, dispatchCapture } from "@hasna/dispatch"`.
+```ts
+const bulk = await dispatch.bulkSend({
+  source: "sessions-query",
+  sessionsQuery: "open-router",
+  prompt: "Fix native chat...",
+  goal: true,
+  dryRun: true,
+  maxConcurrency: 2,
+  jitterMs: 500,
+  captureBeforeLines: 120,
+});
+console.log(bulk.planned, bulk.skipped, bulk.failed);
+```
+
+One-shot helpers: `import { dispatch, dispatchBulk, dispatchExec, dispatchKey, dispatchCapture } from "@hasna/dispatch"`.
 
 ## MCP
 

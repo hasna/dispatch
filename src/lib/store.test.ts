@@ -91,6 +91,39 @@ describe("Store — dispatches", () => {
     s.close();
   });
 
+  test("prompt orchestration audit fields round-trip", () => {
+    const s = mem();
+    const rec = s.createDispatch({
+      target: "open-sessions:2.1",
+      prompt: "Inspect this",
+      status: "skipped",
+      dryRun: true,
+      targetState: "active",
+      captureBefore: {
+        status: "captured",
+        target: "open-sessions:2.1",
+        machine: "local",
+        requestedLines: 50,
+        lines: 50,
+        maxLines: 2000,
+        capturedAt: "2026-06-23T00:00:00.000Z",
+        text: "Goal active Objective: test\n",
+        redacted: true,
+      },
+    });
+
+    expect(s.getDispatch(rec.id)).toMatchObject({
+      dryRun: true,
+      targetState: "active",
+      captureBefore: {
+        status: "captured",
+        lines: 50,
+        text: "Goal active Objective: test\n",
+      },
+    });
+    s.close();
+  });
+
   test("update throws for unknown id", () => {
     const s = mem();
     expect(() => s.updateDispatch("nope", { status: "failed" })).toThrow(/not found/);

@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 import { getPackageVersion } from "../lib/version.js";
 import { DispatchClient } from "../sdk/index.js";
-import type { CaptureOptions, CaptureTransform, DispatchOptions, ExecOptions, KeyOptions } from "../types.js";
-import { formatCapture, formatRecord, formatSchedule, resolvePrompt } from "./format.js";
+import type { BulkDispatchOptions, CaptureOptions, CaptureTransform, DispatchOptions, ExecOptions, KeyOptions } from "../types.js";
+import { formatBulk, formatCapture, formatRecord, formatSchedule, resolvePrompt } from "./format.js";
 import { registerDaemonCommands } from "./daemon-commands.js";
 import { Tmux } from "../lib/tmux.js";
 import { createRunner } from "../lib/runner.js";
@@ -16,6 +16,16 @@ export interface CliDeps {
   err?: (s: string) => void;
   /** Pre-read stdin content (piped prompt). */
   stdin?: string;
+}
+
+export function parseIntegerOption(label: string, min: number) {
+  return (value: string): number => {
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < min) {
+      throw new InvalidArgumentError(`${label} must be an integer >= ${min}`);
+    }
+    return parsed;
+  };
 }
 
 export function buildProgram(deps: CliDeps = {}): Command {
@@ -42,10 +52,20 @@ export function buildProgram(deps: CliDeps = {}): Command {
   program
     .command("send")
     .description("Dispatch a prompt to a tmux target and auto-submit it")
-    .requiredOption("-t, --to <target>", "tmux target, e.g. session:window or session:window.pane")
+    .option("-t, --to <target>", "tmux target, e.g. session:window or session:window.pane. Comma-separate for bulk.")
     .option("-p, --prompt <text>", "prompt text (or use --file / stdin)")
     .option("-f, --file <path>", "read the prompt from a file")
     .option("--goal", "prefix the delivered prompt with /goal unless it already starts with /goal")
+    .option("--from <source>", "target source: sessions-query")
+    .option("--sessions-query <query>", "filter sessions-query target JSON by text")
+    .option("--if-idle", "refuse delivery unless the target looks idle")
+    .option("--queue", "allow active targets and rely on the agent queue")
+    .option("--force-active", "explicitly override active/unknown target refusal")
+    .option("--capture-before <lines>", "capture redacted transcript lines before delivery", parseIntegerOption("capture-before", 1))
+    .option("--dry-run", "validate targets/guards and show what would be sent without typing")
+    .option("--max-concurrency <n>", "bulk max concurrent dispatches", parseIntegerOption("max-concurrency", 1), 1)
+    .option("--jitter <ms>", "bulk random delay before each dispatch", parseIntegerOption("jitter", 0), 0)
+    .option("--per-machine-limit <n>", "bulk max concurrent dispatches per machine", parseIntegerOption("per-machine-limit", 1))
     .option("-m, --machine <id>", "target machine (via @hasna/machines); local when omitted")
     .option("--no-submit", "type into the composer but do not press Enter")
     .option("--no-confirm", "skip delivery confirmation")
@@ -56,11 +76,54 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .action(async (opts) => {
       const stdin = opts.prompt || opts.file ? deps.stdin : deps.stdin ?? (await readStdinIfPiped());
       const prompt = resolvePrompt(opts, stdin);
+      const targets = String(opts.to ?? "")
+        .split(",")
+        .map((target) => target.trim())
+        .filter(Boolean)
+        .map((target) => ({ target, machine: opts.machine }));
+      if (opts.from && opts.from !== "sessions-query") {
+        throw new Error(`unsupported target source: ${opts.from}`);
+      }
+      if (opts.from === "sessions-query" || targets.length > 1) {
+        const options: BulkDispatchOptions = {
+          source: opts.from === "sessions-query" ? "sessions-query" : "explicit",
+          targets: opts.from === "sessions-query" ? undefined : targets,
+          sessionsQuery: opts.sessionsQuery,
+          prompt,
+          goal: opts.goal === true,
+          machine: opts.machine,
+          submit: opts.submit,
+          confirm: opts.confirm,
+          submitDelayMs: opts.delay,
+          maxSubmitRetries: opts.retries,
+          mode: opts.mode,
+          ifIdle: opts.ifIdle === true || (opts.queue !== true && opts.forceActive !== true),
+          queue: opts.queue === true,
+          forceActive: opts.forceActive === true,
+          dryRun: opts.dryRun === true,
+          captureBeforeLines: opts.captureBefore,
+          maxConcurrency: opts.maxConcurrency,
+          jitterMs: opts.jitter,
+          perMachineLimit: opts.perMachineLimit,
+        };
+        const result = await withClient((c) => c.bulkSend(options));
+        out(opts.json ? JSON.stringify(result, null, 2) : formatBulk(result));
+        if (result.status === "failed") process.exitCode = 1;
+        return;
+      }
+      if (targets.length === 0) {
+        throw new Error("no target: pass --to <target> or --from sessions-query");
+      }
       const options: DispatchOptions = {
-        target: opts.to,
+        target: targets[0]!.target,
         prompt,
         goal: opts.goal === true,
         machine: opts.machine,
+        ifIdle: opts.ifIdle === true,
+        queue: opts.queue === true,
+        forceActive: opts.forceActive === true,
+        dryRun: opts.dryRun === true,
+        captureBeforeLines: opts.captureBefore,
         submit: opts.submit,
         confirm: opts.confirm,
         submitDelayMs: opts.delay,
@@ -69,7 +132,8 @@ export function buildProgram(deps: CliDeps = {}): Command {
       };
       const rec = await withClient((c) => c.send(options));
       out(opts.json ? JSON.stringify(rec, null, 2) : formatRecord(rec));
-      if (rec.status === "failed") process.exitCode = 1;
+      const plannedDryRun = rec.status === "skipped" && rec.dryRun === true && /^dry run:/i.test(rec.detail ?? "");
+      if (rec.status === "failed" || (rec.status === "skipped" && !plannedDryRun)) process.exitCode = 1;
     });
 
   program

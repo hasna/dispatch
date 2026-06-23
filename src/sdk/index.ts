@@ -7,6 +7,8 @@
  *   console.log(rec.status, rec.confirm?.reason);
  */
 import type {
+  BulkDispatchOptions,
+  BulkDispatchResult,
   CaptureOptions,
   CaptureResult,
   DispatchOptions,
@@ -24,6 +26,8 @@ import { performExec } from "../lib/exec.js";
 import { performKeyDispatch } from "../lib/key.js";
 import { performCapture } from "../lib/capture.js";
 import { computeNextRun } from "../lib/schedule.js";
+import { performBulkDispatch } from "../lib/bulk.js";
+import { resolveSessionsTargets } from "../lib/sessions-source.js";
 
 export interface DispatchClientOptions {
   /** Use an explicit store; otherwise the default sqlite store is opened. */
@@ -78,6 +82,22 @@ export class DispatchClient {
     const runner = await createRunner(options.machine);
     const tmux = new Tmux(runner);
     return performCapture(options, { tmux });
+  }
+
+  /** Dispatch one prompt to multiple targets with idle guards/concurrency controls. */
+  async bulkSend(options: BulkDispatchOptions): Promise<BulkDispatchResult> {
+    let targets = options.targets ?? [];
+    if (options.source === "sessions-query") {
+      const runner = await createRunner(options.machine);
+      targets = await resolveSessionsTargets({ runner, machine: options.machine, query: options.sessionsQuery });
+    }
+    return performBulkDispatch(
+      { ...options, targets },
+      {
+        store: this.store,
+        makeTmux: async (machine?: string) => new Tmux(await createRunner(machine)),
+      },
+    );
   }
 
   /** Look up a previously-recorded dispatch by id. */
@@ -152,6 +172,16 @@ export async function dispatchCapture(options: CaptureOptions): Promise<CaptureR
   const client = new DispatchClient({ persist: false });
   try {
     return await client.capture(options);
+  } finally {
+    client.close();
+  }
+}
+
+/** One-shot convenience: bulk dispatch without managing a client. */
+export async function dispatchBulk(options: BulkDispatchOptions): Promise<BulkDispatchResult> {
+  const client = new DispatchClient({ persist: false });
+  try {
+    return await client.bulkSend(options);
   } finally {
     client.close();
   }

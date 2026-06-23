@@ -109,6 +109,16 @@ export interface DispatchOptions {
   goal?: boolean;
   /** Optional machine id (local when omitted). Resolved via @hasna/machines. */
   machine?: string;
+  /** Refuse delivery unless the target looks idle. */
+  ifIdle?: boolean;
+  /** Allow delivery to an active/busy agent, relying on the agent's own queueing behavior. */
+  queue?: boolean;
+  /** Explicit override for active/unknown target state. Use sparingly. */
+  forceActive?: boolean;
+  /** Validate target, guards, and delivery plan without sending text or Enter. */
+  dryRun?: boolean;
+  /** Capture this many redacted lines before delivery and attach them to the record. */
+  captureBeforeLines?: number;
   /**
    * Override the auto-calculated pre-Enter delay (ms). When omitted, the delay
    * is derived from the prompt's word/char count.
@@ -125,6 +135,49 @@ export interface DispatchOptions {
    * literal send-keys for short single-line ones.
    */
   mode?: "auto" | "paste" | "literal";
+}
+
+export type AgentActivityState = "idle" | "active" | "unknown";
+
+export interface DispatchTargetRef {
+  target: string;
+  machine?: string;
+  source?: string;
+  state?: AgentActivityState;
+}
+
+export type DispatchTargetSource = "explicit" | "sessions-query";
+
+export interface BulkDispatchOptions extends Omit<DispatchOptions, "target" | "machine"> {
+  targets?: DispatchTargetRef[];
+  /** Fixed target source. `sessions-query` probes `sessions live/status --json` when available. */
+  source?: DispatchTargetSource;
+  /** Machine on which to resolve a target source such as sessions-query. */
+  machine?: string;
+  /** Optional text filter for sessions-query target results. */
+  sessionsQuery?: string;
+  /** Max concurrent dispatches. Default 1. */
+  maxConcurrency?: number;
+  /** Sleep up to this many ms before each dispatch. Default 0. */
+  jitterMs?: number;
+  /** Max concurrent dispatches per machine. Default equals maxConcurrency. */
+  perMachineLimit?: number;
+}
+
+export interface BulkDispatchResult {
+  status: "completed" | "failed";
+  source: DispatchTargetSource;
+  requested: number;
+  planned: number;
+  delivered: number;
+  skipped: number;
+  failed: number;
+  dryRun: boolean;
+  maxConcurrency: number;
+  jitterMs: number;
+  perMachineLimit: number;
+  records: DispatchRecord[];
+  detail?: string;
 }
 
 /** Options controlling a single allowlisted special-key dispatch. */
@@ -227,6 +280,10 @@ export interface DispatchRecord {
   targetKind?: ExecTargetKind;
   /** True when exec only validated and recorded the delivery plan. */
   dryRun?: boolean;
+  /** Detected agent activity before prompt delivery. */
+  targetState?: AgentActivityState;
+  /** Optional pre-delivery transcript capture requested by `captureBeforeLines`. */
+  captureBefore?: CaptureResult;
   /** Exact tmux input that would be or was sent for exec records. */
   execPlan?: ExecDeliveryPlan;
   createdAt: string;

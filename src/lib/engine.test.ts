@@ -52,6 +52,14 @@ const wrappedCompletedGoalCodewithCapture = `
                                                       Goal achieved (3h 52m)
 `;
 
+const activeCodewithCapture = `
+Goal active Objective: Add reliable session orchestration to dispatch
+
+› Follow-up implementation prompt
+
+  gpt-5.5 xhigh fast · account016 · 5h 9% left · Main [default]       Pursuing goal (3m)
+`;
+
 const codewithProcessTree = `
 1234 1 Ss /usr/bin/bash
 1240 1234 Sl+ node /home/hasna/.bun/bin/codewith --auth-profile account005
@@ -428,6 +436,70 @@ describe("performDispatch", () => {
     expect(r.argvs().some((a) => a.includes("Enter"))).toBe(false);
   });
 
+  test("accepts active wrapped Codewith panes but --if-idle skips before delivery", async () => {
+    const r = composerRunner("node", activeCodewithCapture, "✶ Working… (esc to interrupt)", codewithProcessTree);
+
+    const rec = await performDispatch(
+      { target: "open-sessions:2.1", prompt: "Do not send to a busy pane", ifIdle: true },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("skipped");
+    expect(rec.targetState).toBe("active");
+    expect(rec.detail).toMatch(/target is active/);
+    expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
+  });
+
+  test("allows active wrapped Codewith panes when queue is explicitly requested", async () => {
+    const r = composerRunner("node", activeCodewithCapture, "✶ Working… (esc to interrupt)", codewithProcessTree);
+
+    const rec = await performDispatch(
+      { target: "open-sessions:2.1", prompt: "Queue this safely", ifIdle: true, queue: true, submit: false },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("delivered");
+    expect(rec.targetState).toBe("active");
+    expect(rec.detail).toMatch(/without submitting/);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("-l"))).toBe(true);
+  });
+
+  test("dry-run validates active wrapped Codewith panes without typing into them", async () => {
+    const r = composerRunner("node", activeCodewithCapture, "✶ Working… (esc to interrupt)", codewithProcessTree);
+
+    const rec = await performDispatch(
+      { target: "open-sessions:2.1", prompt: "Would send only", queue: true, dryRun: true },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("skipped");
+    expect(rec.dryRun).toBe(true);
+    expect(rec.targetState).toBe("active");
+    expect(rec.detail).toMatch(/dry run/);
+    expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
+  });
+
+  test("capture-before records bounded transcript before delivery", async () => {
+    const r = composerRunner("node", completedGoalCodewithCapture, "✶ Working… (esc to interrupt)", codewithProcessTree);
+    const store = new Store(":memory:");
+
+    const rec = await performDispatch(
+      { target: "open-codewith-04:1.1", prompt: "Follow up", submit: false, captureBeforeLines: 20 },
+      { tmux: new Tmux(r), store, sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("delivered");
+    expect(rec.captureBefore).toMatchObject({
+      status: "captured",
+      target: "open-codewith-04:1.1",
+      requestedLines: 20,
+      lines: 20,
+      redacted: true,
+    });
+    expect(store.getDispatch(rec.id)!.captureBefore?.text).toContain("Goal achieved");
+    store.close();
+  });
+
   test("accepts a bun-launched Codex composer when pane content proves it", async () => {
     const r = composerRunner("bun", codexComposerCapture, "✶ Working… (esc to interrupt)", codexProcessTree);
 
@@ -571,11 +643,13 @@ GET /health 200
   test("confirm:false marks delivered without probing", async () => {
     const r = tuiRunner();
     const rec = await performDispatch(
-      { target: "work:agent", prompt: "go", confirm: false },
+      { target: "work:agent", prompt: "go", confirm: false, captureBeforeLines: 5 },
       { tmux: new Tmux(r), sleep: noSleep },
     );
     expect(rec.status).toBe("delivered");
     expect(rec.detail).toMatch(/confirmation disabled/);
+    expect(rec.targetState).toBe("idle");
+    expect(rec.captureBefore).toMatchObject({ status: "captured", requestedLines: 5 });
   });
 
   test("explicit submitDelayMs overrides the auto delay", async () => {

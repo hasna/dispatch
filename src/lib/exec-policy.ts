@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { posix as path } from "node:path";
-import type { ExecFilterResult, ExecPolicy, ExecTargetKind } from "../types.js";
+import type { AgentActivityState, ExecFilterResult, ExecPolicy, ExecTargetKind } from "../types.js";
 
 const SHELL_COMMANDS = new Set(["bash", "csh", "dash", "fish", "ksh", "nu", "sh", "tcsh", "zsh"]);
 const AGENT_COMMANDS = new Set([
@@ -97,9 +97,7 @@ function hasWrappedAgentProcessEvidence(processTree = ""): boolean {
         /node_modules\/@hasna\/codewith(?:\/|\s|$)/i.test(line) ||
         /node_modules\/(?:@openai\/)?codex(?:\/|\s|$)/i.test(line) ||
         /\/bin\/codewith(?:\s|$)/i.test(line) ||
-        /\/bin\/codex(?:\s|$)/i.test(line) ||
-        /(?:^|\s)codewith(?:\s|$)/i.test(line) ||
-        /(?:^|\s)codex(?:\s|$)/i.test(line),
+        /\/bin\/codex(?:\s|$)/i.test(line),
     );
 }
 
@@ -129,6 +127,45 @@ function hasCompletedCodewithComposer(text: string, processTree?: string): boole
   return hasGoal && /^›(?:\s|$).+/.test(composerLine) && metadataPattern.test(metadataLine);
 }
 
+function hasWrappedAgentLiveUi(text: string, processTree?: string): boolean {
+  if (!hasWrappedAgentProcessEvidence(processTree)) return false;
+  const normalized = text
+    .split("\n")
+    .map(stripTuiLineChrome)
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .join("\n");
+  const hasModelStatus =
+    /\b(?:gpt|o\d|codex|claude|glm|gemini|qwen|deepseek|llama|mistral|kimi|grok)[\w.+:-]*(?:\s+\w+){0,4}\s+·\s+.*\b(?:Pursuing goal|Working|Goal achieved|Goal blocked|Goal failed|Goal cancelled)\b/i.test(
+      normalized,
+    );
+  const hasGoalActivity = /\bGoal active Objective:|\bPursuing goal\b|\bWorking \(\d|\besc to interrupt\b/i.test(normalized);
+  const hasComposer = /^›(?:\s|$).*/m.test(normalized);
+  return hasGoalActivity && (hasComposer || hasModelStatus);
+}
+
+/** Best-effort visible-state classifier for agent panes. */
+export function detectAgentActivity(text: string): AgentActivityState {
+  const normalized = text
+    .split("\n")
+    .map(stripTuiLineChrome)
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .join("\n");
+  if (
+    /\b(?:Pursuing goal|Working \(|esc to interrupt|background terminal running|Messages to be submitted after next tool call|Goal active Objective:)\b/i.test(
+      normalized,
+    )
+  ) {
+    return "active";
+  }
+  if (/\bGoal achieved(?:\s*\([^)]+\))?\b/i.test(normalized) && /^›(?:\s|$).*/m.test(normalized)) {
+    return "idle";
+  }
+  if (hasNamedAgentComposer(text) || /^›(?:\s|$).*/m.test(normalized) || /^>\s+(?:awaiting prompt|idle|idle composer)\b/im.test(normalized)) {
+    return "idle";
+  }
+  return "unknown";
+}
+
 export interface WrappedAgentEvidence {
   /** Process tree for the tmux pane; required to trust wrapper-launched agent UI text. */
   processTree?: string;
@@ -138,7 +175,8 @@ export interface WrappedAgentEvidence {
 export function looksLikeWrappedAgentComposer(text: string, evidence: WrappedAgentEvidence = {}): boolean {
   return (
     (hasWrappedAgentProcessEvidence(evidence.processTree) && hasNamedAgentComposer(text)) ||
-    hasCompletedCodewithComposer(text, evidence.processTree)
+    hasCompletedCodewithComposer(text, evidence.processTree) ||
+    hasWrappedAgentLiveUi(text, evidence.processTree)
   );
 }
 

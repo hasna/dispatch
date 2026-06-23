@@ -41,9 +41,20 @@ export const TOOLS: ToolDef[] = [
     description:
       "Type a prompt into a tmux target and reliably auto-submit it (auto-delay + Enter with retry), then confirm delivery. Supports long/multiline prompts and remote machines.",
     inputSchema: {
-      target: z.string().describe("tmux target, e.g. session:window or session:window.pane"),
+      target: z.string().optional().describe("tmux target, e.g. session:window or session:window.pane"),
       prompt: z.string().describe("the prompt text to deliver"),
       machine: z.string().optional().describe("target machine id (local when omitted)"),
+      source: z.enum(["sessions-query"]).optional().describe("target source; sessions-query probes sessions live/status JSON"),
+      sessionsQuery: z.string().optional().describe("filter sessions-query target JSON by text"),
+      targets: z.array(z.object({ target: z.string(), machine: z.string().optional() })).optional(),
+      ifIdle: z.boolean().optional().describe("refuse delivery unless target looks idle"),
+      queue: z.boolean().optional().describe("allow active targets and rely on the agent queue"),
+      forceActive: z.boolean().optional().describe("explicitly override active/unknown target refusal"),
+      dryRun: z.boolean().optional().describe("validate target/guards without typing"),
+      captureBeforeLines: z.number().optional().describe("capture redacted transcript lines before delivery"),
+      maxConcurrency: z.number().optional().describe("bulk max concurrent dispatches"),
+      jitterMs: z.number().optional().describe("bulk random delay before each dispatch"),
+      perMachineLimit: z.number().optional().describe("bulk max concurrent dispatches per machine"),
       submit: z.boolean().optional().describe("press Enter to submit (default true)"),
       confirm: z.boolean().optional().describe("verify delivery (default true)"),
       delayMs: z.number().optional().describe("override the auto-computed pre-Enter delay"),
@@ -51,18 +62,50 @@ export const TOOLS: ToolDef[] = [
       mode: z.enum(["auto", "paste", "literal"]).optional().describe("delivery mode"),
       goal: z.boolean().optional().describe("prefix prompt with /goal unless it already starts with /goal"),
     },
-    handler: (deps, a) =>
-      deps.client.send({
+    handler: (deps, a) => {
+      if (a.source || a.targets) {
+        return deps.client.bulkSend({
+          source: a.source as never,
+          targets: a.targets as never,
+          sessionsQuery: a.sessionsQuery as string | undefined,
+          prompt: a.prompt as string,
+          goal: a.goal as boolean | undefined,
+          machine: a.machine as string | undefined,
+          submit: a.submit as boolean | undefined,
+          confirm: a.confirm as boolean | undefined,
+          submitDelayMs: a.delayMs as number | undefined,
+          maxSubmitRetries: a.retries as number | undefined,
+          mode: a.mode as "auto" | "paste" | "literal" | undefined,
+          ifIdle: (a.ifIdle as boolean | undefined) ?? (a.queue !== true && a.forceActive !== true),
+          queue: a.queue as boolean | undefined,
+          forceActive: a.forceActive as boolean | undefined,
+          dryRun: a.dryRun as boolean | undefined,
+          captureBeforeLines: a.captureBeforeLines as number | undefined,
+          maxConcurrency: a.maxConcurrency as number | undefined,
+          jitterMs: a.jitterMs as number | undefined,
+          perMachineLimit: a.perMachineLimit as number | undefined,
+        });
+      }
+      if (typeof a.target !== "string" || a.target.trim().length === 0) {
+        throw new Error("dispatch_send requires target, targets, or source=sessions-query");
+      }
+      return deps.client.send({
         target: a.target as string,
         prompt: a.prompt as string,
         goal: a.goal as boolean | undefined,
         machine: a.machine as string | undefined,
+        ifIdle: a.ifIdle as boolean | undefined,
+        queue: a.queue as boolean | undefined,
+        forceActive: a.forceActive as boolean | undefined,
+        dryRun: a.dryRun as boolean | undefined,
+        captureBeforeLines: a.captureBeforeLines as number | undefined,
         submit: a.submit as boolean | undefined,
         confirm: a.confirm as boolean | undefined,
         submitDelayMs: a.delayMs as number | undefined,
         maxSubmitRetries: a.retries as number | undefined,
         mode: a.mode as "auto" | "paste" | "literal" | undefined,
-      }),
+      });
+    },
   },
   {
     name: "dispatch_key",

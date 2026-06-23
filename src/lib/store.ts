@@ -12,6 +12,8 @@ import type {
   ExecFilterResult,
   ExecTargetKind,
   ExecDeliveryPlan,
+  AgentActivityState,
+  CaptureResult,
   ScheduledDispatch,
 } from "../types.js";
 
@@ -30,6 +32,8 @@ interface DispatchRow {
   target_kind: string | null;
   dry_run: number | null;
   exec_plan_json: string | null;
+  target_state: string | null;
+  capture_before_json: string | null;
   created_at: string;
   delivered_at: string | null;
   updated_at: string;
@@ -64,6 +68,8 @@ function rowToDispatch(r: DispatchRow): DispatchRecord {
     targetKind: (r.target_kind as ExecTargetKind | null) ?? undefined,
     dryRun: r.dry_run === null ? undefined : r.dry_run === 1,
     execPlan: r.exec_plan_json ? (JSON.parse(r.exec_plan_json) as ExecDeliveryPlan) : undefined,
+    targetState: (r.target_state as AgentActivityState | null) ?? undefined,
+    captureBefore: r.capture_before_json ? (JSON.parse(r.capture_before_json) as CaptureResult) : undefined,
     createdAt: r.created_at,
     deliveredAt: r.delivered_at ?? undefined,
     updatedAt: r.updated_at,
@@ -144,6 +150,8 @@ export class Store {
         target_kind TEXT,
         dry_run INTEGER,
         exec_plan_json TEXT,
+        target_state TEXT,
+        capture_before_json TEXT,
         created_at TEXT NOT NULL,
         delivered_at TEXT,
         updated_at TEXT NOT NULL
@@ -172,6 +180,8 @@ export class Store {
     this.ensureDispatchColumn("target_kind", "TEXT");
     this.ensureDispatchColumn("dry_run", "INTEGER");
     this.ensureDispatchColumn("exec_plan_json", "TEXT");
+    this.ensureDispatchColumn("target_state", "TEXT");
+    this.ensureDispatchColumn("capture_before_json", "TEXT");
   }
 
   private ensureDispatchColumn(name: string, definition: string): void {
@@ -212,6 +222,8 @@ export class Store {
     targetKind?: ExecTargetKind;
     dryRun?: boolean;
     execPlan?: ExecDeliveryPlan;
+    targetState?: AgentActivityState;
+    captureBefore?: CaptureResult;
   }): DispatchRecord {
     const now = nowIso();
     const rec: DispatchRecord = {
@@ -228,13 +240,15 @@ export class Store {
       targetKind: input.targetKind,
       dryRun: input.dryRun,
       execPlan: input.execPlan,
+      targetState: input.targetState,
+      captureBefore: input.captureBefore,
       createdAt: now,
       updatedAt: now,
     };
     withSqliteBusyRetry(() =>
       this.db.query(
-        `INSERT INTO dispatches (id, kind, target, machine, prompt, status, detail, confirm_json, submit_delay_ms, command_hash, filter_json, target_kind, dry_run, exec_plan_json, created_at, delivered_at, updated_at)
-         VALUES ($id, $kind, $target, $machine, $prompt, $status, $detail, $confirm, $delay, $commandHash, $filter, $targetKind, $dryRun, $execPlan, $created, $delivered, $updated)`,
+        `INSERT INTO dispatches (id, kind, target, machine, prompt, status, detail, confirm_json, submit_delay_ms, command_hash, filter_json, target_kind, dry_run, exec_plan_json, target_state, capture_before_json, created_at, delivered_at, updated_at)
+         VALUES ($id, $kind, $target, $machine, $prompt, $status, $detail, $confirm, $delay, $commandHash, $filter, $targetKind, $dryRun, $execPlan, $targetState, $captureBefore, $created, $delivered, $updated)`,
       )
       .run({
         $id: rec.id,
@@ -251,6 +265,8 @@ export class Store {
         $targetKind: rec.targetKind ?? null,
         $dryRun: rec.dryRun === undefined ? null : rec.dryRun ? 1 : 0,
         $execPlan: rec.execPlan ? JSON.stringify(rec.execPlan) : null,
+        $targetState: rec.targetState ?? null,
+        $captureBefore: rec.captureBefore ? JSON.stringify(rec.captureBefore) : null,
         $created: rec.createdAt,
         $delivered: null,
         $updated: rec.updatedAt,
@@ -280,6 +296,8 @@ export class Store {
         | "targetKind"
         | "dryRun"
         | "execPlan"
+        | "targetState"
+        | "captureBefore"
       >
     >,
   ): DispatchRecord {
@@ -291,7 +309,8 @@ export class Store {
         `UPDATE dispatches
          SET status=$status, detail=$detail, confirm_json=$confirm, submit_delay_ms=$delay,
              command_hash=$commandHash, filter_json=$filter, target_kind=$targetKind,
-             dry_run=$dryRun, exec_plan_json=$execPlan, delivered_at=$delivered,
+             dry_run=$dryRun, exec_plan_json=$execPlan, target_state=$targetState,
+             capture_before_json=$captureBefore, delivered_at=$delivered,
              updated_at=$updated
          WHERE id=$id`,
       )
@@ -306,6 +325,8 @@ export class Store {
         $targetKind: merged.targetKind ?? null,
         $dryRun: merged.dryRun === undefined ? null : merged.dryRun ? 1 : 0,
         $execPlan: merged.execPlan ? JSON.stringify(merged.execPlan) : null,
+        $targetState: merged.targetState ?? null,
+        $captureBefore: merged.captureBefore ? JSON.stringify(merged.captureBefore) : null,
         $delivered: merged.deliveredAt ?? null,
         $updated: merged.updatedAt,
       }),

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   classifyPaneCommand,
+  detectAgentActivity,
   evaluateExecPolicy,
   isAgentWrapperCommand,
   looksLikeAgentPane,
@@ -135,6 +136,40 @@ describe("exec command policy", () => {
 
   gpt-5.5 xhigh fast · account013 · 5h 9% left · Main [default]       Goal achieved (21s)
 `, { processTree: "1234 1 Ss /usr/bin/bash\n1240 1234 Sl+ node /srv/transcript-viewer.js\n" }),
+    ).toBe(false);
+  });
+
+  test("recognizes active wrapped Codewith panes after the startup banner has scrolled away", () => {
+    const activeCapture = `
+Goal active Objective: Add reliable session orchestration to dispatch
+
+› Follow-up implementation prompt
+
+  gpt-5.5 xhigh fast · account016 · 5h 9% left · Main [default]       Pursuing goal (3m)
+`;
+
+    expect(looksLikeWrappedAgentComposer(activeCapture, { processTree: codewithProcessTree })).toBe(true);
+    expect(detectAgentActivity(activeCapture)).toBe("active");
+  });
+
+  test("does not accept active Codewith-looking text from arbitrary node processes", () => {
+    const activeCapture = `
+Goal active Objective: Add reliable session orchestration to dispatch
+
+› Follow-up implementation prompt
+
+  gpt-5.5 xhigh fast · account016 · 5h 9% left · Main [default]       Pursuing goal (3m)
+`;
+
+    expect(
+      looksLikeWrappedAgentComposer(activeCapture, {
+        processTree: "1234 1 Ss /usr/bin/bash\n1240 1234 Sl+ node /srv/transcript-viewer.js\n",
+      }),
+    ).toBe(false);
+    expect(
+      looksLikeWrappedAgentComposer(activeCapture, {
+        processTree: "1234 1 Ss /usr/bin/bash\n1240 1234 Sl+ node /srv/transcript-viewer.js codewith\n",
+      }),
     ).toBe(false);
   });
 

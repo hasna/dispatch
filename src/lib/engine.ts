@@ -6,6 +6,7 @@ import { submit } from "./submit.js";
 import { confirmDelivery, evaluateDelivery } from "./confirm.js";
 import { genId, nowIso } from "./ids.js";
 import { validateAgentComposerTarget } from "./agent-target.js";
+import { performCapture } from "./capture.js";
 
 /** Single-line prompts longer than this also go through paste, not send-keys. */
 export const PASTE_LENGTH_THRESHOLD = 1000;
@@ -45,10 +46,11 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
   const submitEnabled = options.submit !== false;
   const confirmEnabled = options.confirm !== false;
   const prompt = applyGoalPrefix(options.prompt, options.goal === true);
+  const dryRun = options.dryRun === true;
 
   // Create (or synthesize) the record.
   let record: DispatchRecord = store
-    ? store.createDispatch({ target: options.target, machine, prompt, status: "sending" })
+    ? store.createDispatch({ target: options.target, machine, prompt, status: "sending", dryRun })
     : {
         id: genId(),
         kind: "prompt",
@@ -56,6 +58,7 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
         machine,
         prompt,
         status: "sending",
+        dryRun,
         createdAt: nowIso(),
         updatedAt: nowIso(),
       };
@@ -69,6 +72,9 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
         confirm: record.confirm,
         submitDelayMs: record.submitDelayMs,
         deliveredAt: record.deliveredAt,
+        dryRun: record.dryRun,
+        targetState: record.targetState,
+        captureBefore: record.captureBefore,
       });
     }
     return record;
@@ -78,10 +84,41 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
   const target = validateAgentComposerTarget(tmux, options.target);
   const shellCommand = target.targetKind === "shell";
   if (!target.ok) return finish({ status: "failed", detail: target.detail });
+  const targetState = target.activity ?? "unknown";
+  let captureBefore = target.visible && options.captureBeforeLines
+    ? await performCapture({ target: options.target, lines: options.captureBeforeLines }, { tmux })
+    : undefined;
+  if (!captureBefore && options.captureBeforeLines) {
+    captureBefore = await performCapture({ target: options.target, lines: options.captureBeforeLines }, { tmux });
+  }
   const before = tmux.capturePane(options.target, { start: 50 });
+  record = { ...record, targetState, captureBefore };
+
+  if (options.ifIdle && targetState !== "idle" && options.queue !== true && options.forceActive !== true) {
+    return finish({
+      status: "skipped",
+      detail: `target is ${targetState}; refusing because --if-idle was requested (pass --queue to let the agent queue it, or --force-active to override)`,
+      targetState,
+      captureBefore,
+      dryRun,
+    });
+  }
 
   // 3. Deliver the prompt.
   const mode = chooseMode(prompt, options.mode);
+  const delayMs = options.submitDelayMs ?? computeSubmitDelay(prompt);
+
+  if (dryRun) {
+    return finish({
+      status: "skipped",
+      detail: `dry run: prompt would be ${submitEnabled ? "submitted" : "typed without submitting"} using ${mode} delivery`,
+      submitDelayMs: delayMs,
+      targetState,
+      captureBefore,
+      dryRun: true,
+    });
+  }
+
   try {
     if (mode === "paste") {
       tmux.paste(options.target, prompt, { bracketed: true });
@@ -100,8 +137,6 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
     afterTyped = undefined;
   }
 
-  const delayMs = options.submitDelayMs ?? computeSubmitDelay(prompt);
-
   // 5. Type-only mode: don't submit.
   if (!submitEnabled) {
     return finish({
@@ -109,6 +144,8 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
       detail: "typed into composer without submitting (submit disabled)",
       submitDelayMs: delayMs,
       deliveredAt: nowIso(),
+      targetState,
+      captureBefore,
     });
   }
 
@@ -134,6 +171,8 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
       detail: "submitted (confirmation disabled)",
       submitDelayMs: delayMs,
       deliveredAt: nowIso(),
+      targetState,
+      captureBefore,
     });
   }
 
@@ -153,5 +192,7 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
     confirm,
     submitDelayMs: delayMs,
     deliveredAt: confirm.delivered ? nowIso() : undefined,
+    targetState,
+    captureBefore,
   });
 }
