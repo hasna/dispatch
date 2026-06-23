@@ -51,4 +51,6 @@ too:
 
 ```bash
 dispatch schedule --machine spark01 --to work:agent --prompt "nightly" --cron "0 2 * * *"
+dispatch schedule --machine spark01 --to work:agent --prompt "follow up" --in 30m
+dispatch loop --machine spark01 --to work:agent --prompt "summarize status" --every 5m --name spark01-status
 ```

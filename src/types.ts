@@ -291,6 +291,12 @@ export interface CaptureResult {
   ai?: CaptureAiResult;
 }
 
+/** User-facing kind of a persisted scheduled prompt. */
+export type ScheduleKind = "schedule" | "loop";
+
+/** Lifecycle status of a scheduled prompt or loop. */
+export type ScheduleStatus = "scheduled" | "paused" | "fired" | "cancelled" | "failed";
+
 /** A persisted dispatch record. */
 export interface DispatchRecord {
   id: string;
@@ -331,18 +337,26 @@ export interface DispatchRecord {
 export interface ScheduledDispatch {
   id: string;
   options: DispatchOptions;
+  /** User-facing kind. `loop` means recurring interval/loop workflow. */
+  kind?: ScheduleKind;
+  /** Optional human label for list/status output. */
+  name?: string;
   /** One-shot fire time (ISO 8601). Mutually used with `cron`. */
   at?: string;
   /** Recurring cron expression (5-field). */
   cron?: string;
+  /** Recurring interval duration as provided by the user, e.g. `5m`. */
+  every?: string;
+  /** Recurring interval duration in milliseconds. */
+  intervalMs?: number;
   /** Next computed fire time (ISO 8601). */
   nextRun: string;
   /**
-   * `scheduled` — waiting to fire (or retrying). `fired` — a one-shot completed
-   * (or last cron run succeeded). `cancelled` — cancelled by a user. `failed` —
-   * a one-shot gave up after exhausting its retry window.
+   * `scheduled` — waiting to fire (or retrying). `paused` — stopped until
+   * resumed. `fired` — a one-shot completed. `cancelled` — cancelled by a user.
+   * `failed` — a one-shot gave up after exhausting its retry window.
    */
-  status: "scheduled" | "fired" | "cancelled" | "failed";
+  status: ScheduleStatus;
   /** Id of the last dispatch this schedule produced. */
   lastDispatchId?: string;
   lastFiredAt?: string;

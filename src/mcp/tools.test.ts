@@ -49,11 +49,30 @@ describe("MCP tool handlers", () => {
     const sched = (await tool("dispatch_schedule").handler(d, {
       target: "s:w",
       prompt: "later",
-      cron: "*/5 * * * *",
-    })) as { id: string; status: string };
+      in: "30m",
+      name: "reminder",
+    })) as { id: string; status: string; name: string };
     expect(sched.status).toBe("scheduled");
+    expect(sched.name).toBe("reminder");
     expect(await tool("dispatch_schedules").handler(d, {})).toHaveLength(1);
     expect(await tool("dispatch_cancel").handler(d, { id: sched.id })).toEqual({ cancelled: true });
+  });
+
+  test("loop + status + pause + resume + clear round-trip", async () => {
+    const d = deps();
+    const loop = (await tool("dispatch_loop").handler(d, {
+      target: "s:w",
+      prompt: "poll",
+      every: "5m",
+      name: "poller",
+    })) as { id: string; kind: string; every: string };
+    expect(loop).toMatchObject({ kind: "loop", every: "5m" });
+    expect(await tool("dispatch_loops").handler(d, {})).toHaveLength(1);
+    expect(await tool("dispatch_status").handler(d, { id: loop.id })).toMatchObject({ id: loop.id, kind: "loop" });
+    expect(await tool("dispatch_pause").handler(d, { id: loop.id })).toEqual({ paused: true });
+    expect(await tool("dispatch_resume").handler(d, { id: loop.id })).toEqual({ resumed: true });
+    expect(await tool("dispatch_clear").handler(d, { id: loop.id })).toEqual({ cleared: true });
+    expect(await tool("dispatch_loops").handler(d, {})).toHaveLength(0);
   });
 
   test("targets enumerates tmux panes via the injected runner", async () => {

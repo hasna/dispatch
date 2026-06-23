@@ -69,6 +69,24 @@ describe("formatters", () => {
     expect(line).toContain("cron(*/5 * * * *)");
     expect(line).toContain("2026-06-17T10:05:00.000Z");
   });
+
+  test("formatSchedule shows named loops", () => {
+    const line = formatSchedule({
+      id: "loop1",
+      kind: "loop",
+      name: "poller",
+      options: { target: "work:agent", prompt: "poll" },
+      every: "5m",
+      intervalMs: 5 * 60_000,
+      nextRun: "2026-06-17T10:05:00.000Z",
+      status: "paused",
+      createdAt: "x",
+      updatedAt: "x",
+    });
+    expect(line).toContain("paused");
+    expect(line).toContain("loop:poller");
+    expect(line).toContain("every(5m)");
+  });
 });
 
 function runner() {
@@ -125,11 +143,59 @@ describe("CLI read/schedule commands (in-memory client)", () => {
     expect(out.join("\n")).toContain("cancelled");
   });
 
-  test("schedule rejects missing at/cron", async () => {
+  test("schedule --in creates a relative one-shot", async () => {
+    const { program, out } = runner();
+    await program.parseAsync(
+      ["schedule", "--to", "work:agent", "--prompt", "later", "--in", "30m", "--name", "reminder", "--json"],
+      { from: "user" },
+    );
+    const sched = JSON.parse(out.join("\n"));
+    expect(sched.status).toBe("scheduled");
+    expect(sched.name).toBe("reminder");
+    expect(sched.at).toBeDefined();
+    expect(sched.cron).toBeUndefined();
+  });
+
+  test("loop command creates, lists, inspects, pauses, resumes, and clears", async () => {
+    const { program, out } = runner();
+    await program.parseAsync(
+      ["loop", "--to", "work:agent", "--prompt", "check status", "--every", "5m", "--name", "status-loop", "--json"],
+      { from: "user" },
+    );
+    const loop = JSON.parse(out.join("\n"));
+    expect(loop).toMatchObject({ status: "scheduled", kind: "loop", name: "status-loop", every: "5m" });
+    out.length = 0;
+
+    await program.parseAsync(["loops", "--json"], { from: "user" });
+    expect(JSON.parse(out.join("\n"))).toHaveLength(1);
+    out.length = 0;
+
+    await program.parseAsync(["status", loop.id, "--json"], { from: "user" });
+    expect(JSON.parse(out.join("\n")).kind).toBe("loop");
+    out.length = 0;
+
+    await program.parseAsync(["pause", loop.id], { from: "user" });
+    expect(out.join("\n")).toContain("paused");
+    out.length = 0;
+
+    await program.parseAsync(["resume", loop.id], { from: "user" });
+    expect(out.join("\n")).toContain("resumed");
+    out.length = 0;
+
+    await program.parseAsync(["clear", loop.id], { from: "user" });
+    expect(out.join("\n")).toContain("cleared");
+  });
+
+  test("schedule rejects missing timing mode and invalid combinations", async () => {
     const { program } = runner();
     await expect(
       program.parseAsync(["schedule", "--to", "s:w", "--prompt", "x"], { from: "user" }),
-    ).rejects.toThrow(/at.*cron/);
+    ).rejects.toThrow(/exactly one/);
+    await expect(
+      program.parseAsync(["schedule", "--to", "s:w", "--prompt", "x", "--in", "30m", "--cron", "* * * * *"], {
+        from: "user",
+      }),
+    ).rejects.toThrow(/exactly one/);
   });
 
   test("exec --dry-run prints the exact paste plan", async () => {

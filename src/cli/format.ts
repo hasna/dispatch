@@ -30,6 +30,7 @@ const STATUS_ICON: Record<string, string> = {
   pending: "·",
   sending: "→",
   scheduled: "⧗",
+  paused: "‖",
   cancelled: "⊘",
   skipped: "↷",
 };
@@ -81,10 +82,19 @@ export function formatBulk(result: BulkDispatchResult): string {
 
 /** One-line human summary of a scheduled dispatch. */
 export function formatSchedule(s: ScheduledDispatch): string {
-  const when = s.cron ? `cron(${s.cron})` : `at ${s.at}`;
+  const icon = STATUS_ICON[s.status] ?? "⧗";
+  const kind = s.kind ?? (s.intervalMs ? "loop" : "schedule");
+  const label = s.name ? `${kind}:${s.name}` : kind;
+  const when = s.every
+    ? `every(${s.every})`
+    : s.intervalMs
+      ? `every(${s.intervalMs}ms)`
+      : s.cron
+        ? `cron(${s.cron})`
+        : `at ${s.at}`;
   const where = s.options.machine && s.options.machine !== "local"
     ? `${s.options.machine}/${s.options.target}`
     : s.options.target;
   const preview = s.options.prompt.replace(/\s+/g, " ").slice(0, 40);
-  return `⧗ ${s.id}  ${s.status.padEnd(9)} ${when} next=${s.nextRun}  ${where}  "${preview}"`;
+  return `${icon} ${s.id}  ${s.status.padEnd(9)} ${label} ${when} next=${s.nextRun}  ${where}  "${preview}"`;
 }

@@ -66,13 +66,14 @@ d("dispatch daemon (real tmux + fake agent)", () => {
     expect(JSON.parse(runCli(["daemon", "status", "--json"]).stdout).running).toBe(false);
   });
 
-  test("a scheduled dispatch fires at its time and is delivered to the pane", async () => {
+  test("a relative scheduled dispatch fires and is delivered to the pane", async () => {
     runCli(["daemon", "start"]);
     const sched = JSON.parse(
-      runCli(["schedule", "--to", SESSION, "--prompt", "scheduled hello to the agent", "--at", isoIn(1500), "--json"])
+      runCli(["schedule", "--to", SESSION, "--prompt", "scheduled hello to the agent", "--in", "1500ms", "--json"])
         .stdout,
     );
     expect(sched.status).toBe("scheduled");
+    expect(sched.at).toBeDefined();
 
     // Wait past the fire time + a tick + full delivery (generous for load).
     await Bun.sleep(12000);
@@ -85,6 +86,27 @@ d("dispatch daemon (real tmux + fake agent)", () => {
     expect(fired).toBeDefined();
     expect(fired.status).toBe("delivered");
     expect(fired.confirm.delivered).toBe(true);
+  }, 30000);
+
+  test("an interval loop fires and remains scheduled for its next run", async () => {
+    runCli(["daemon", "start"]);
+    const loop = JSON.parse(
+      runCli(["loop", "--to", SESSION, "--prompt", "loop hello to the agent", "--every", "2s", "--name", "it-loop", "--json"])
+        .stdout,
+    );
+    expect(loop).toMatchObject({ status: "scheduled", kind: "loop", name: "it-loop", every: "2s" });
+
+    await Bun.sleep(9000);
+
+    const loops = JSON.parse(runCli(["loops", "--json"]).stdout);
+    const after = loops.find((s: any) => s.id === loop.id);
+    expect(after).toBeDefined();
+    expect(after.status).toBe("scheduled");
+    expect(after.lastDispatchId).toBeDefined();
+
+    const dispatches = JSON.parse(runCli(["list", "--json"]).stdout);
+    expect(dispatches.some((r: any) => r.prompt.includes("loop hello"))).toBe(true);
+    expect(runCli(["clear", loop.id]).status).toBe(0);
   }, 30000);
 
   test("scheduled dispatch survives a daemon restart (persisted queue)", async () => {

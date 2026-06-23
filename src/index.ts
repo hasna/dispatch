@@ -47,7 +47,7 @@ export {
   DEFAULT_QUEUED_PATTERNS,
   DEFAULT_ACTION_NEEDED_PATTERNS,
 } from "./lib/confirm.js";
-export { computeNextRun, parseCron, nextCronRun } from "./lib/schedule.js";
+export { computeNextRun, parseCron, parseDurationMs, nextCronRun } from "./lib/schedule.js";
 export { tick } from "./lib/scheduler.js";
 export type { SchedulerDeps, TickResult } from "./lib/scheduler.js";
 export { Tmux, parseTarget, formatTarget } from "./lib/tmux.js";

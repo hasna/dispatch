@@ -202,6 +202,42 @@ describe("Store — schedules", () => {
     s.close();
   });
 
+  test("loop metadata round-trips and can be filtered by kind/status", () => {
+    const s = mem();
+    const loop = s.createSchedule({
+      options: { target: "s:w", prompt: "loop" },
+      kind: "loop",
+      name: "heartbeat",
+      every: "5m",
+      intervalMs: 5 * 60_000,
+      nextRun: "2099-01-01T00:05:00.000Z",
+    });
+
+    expect(s.getSchedule(loop.id)).toMatchObject({
+      kind: "loop",
+      name: "heartbeat",
+      every: "5m",
+      intervalMs: 5 * 60_000,
+    });
+    expect(s.listSchedules({ kind: "loop" })).toHaveLength(1);
+    expect(s.listSchedules({ kind: "schedule" })).toHaveLength(0);
+    s.updateSchedule(loop.id, { status: "paused" });
+    expect(s.listSchedules({ status: "paused", kind: "loop" })).toHaveLength(1);
+    expect(s.dueSchedules(Date.parse("2100-01-01T00:00:00.000Z"))).toHaveLength(0);
+    s.close();
+  });
+
+  test("countSchedules is not capped by list page size", () => {
+    const s = mem();
+    for (let i = 0; i < 250; i += 1) {
+      s.createSchedule({ options: { target: "s:w", prompt: `task ${i}` }, nextRun: "2099-01-01T00:00:00.000Z" });
+    }
+    expect(s.listSchedules({ status: "scheduled" })).toHaveLength(200);
+    expect(s.countSchedules({ status: "scheduled" })).toBe(250);
+    expect(s.dueSchedules(Date.parse("2100-01-01T00:00:00.000Z"))).toHaveLength(250);
+    s.close();
+  });
+
   test("dueSchedules returns only past-due scheduled entries", () => {
     const s = mem();
     s.createSchedule({ options: { target: "s:w", prompt: "past" }, nextRun: "2000-01-01T00:00:00.000Z" });

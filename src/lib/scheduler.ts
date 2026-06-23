@@ -59,10 +59,16 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
     }
 
     const firedAt = nowIso();
+    const currentSched = deps.store.getSchedule(sched.id);
+    if (!currentSched || currentSched.status !== "scheduled") {
+      // A user may pause/cancel/clear a schedule while its dispatch is in
+      // flight. Do not resurrect it or abort the rest of the tick.
+      continue;
+    }
     if (failedDispatch) {
       // One-shots give up after the retry window so a permanently-dead target
       // does not cause infinite retries; crons always retry at their cadence.
-      if (!sched.cron) {
+      if (!sched.cron && !sched.intervalMs) {
         // Measure the retry window from the effective first-due time: the later
         // of the scheduled time and creation. A past `at` means "fire ASAP" and
         // must not be treated as decades of expired retries.
@@ -71,45 +77,50 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
           new Date(sched.createdAt).getTime(),
         );
         if (current.getTime() - firstDue >= maxRetryWindowMs) {
-          const updated = deps.store.updateSchedule(sched.id, {
+          const updated = deps.store.updateScheduleIfStatus(sched.id, "scheduled", {
             status: "failed",
             lastDispatchId,
             lastFiredAt: firedAt,
           });
-          failed.push(updated);
+          if (updated) failed.push(updated);
           continue;
         }
       }
-      const nextRun = sched.cron
-        ? computeNextRun({ cron: sched.cron }, now())
-        : new Date(current.getTime() + retryDelayMs).toISOString();
-      const updated = deps.store.updateSchedule(sched.id, {
+      const nextRun = sched.intervalMs
+        ? computeNextRun({ intervalMs: sched.intervalMs }, now())
+        : sched.cron
+          ? computeNextRun({ cron: sched.cron }, now())
+          : new Date(current.getTime() + retryDelayMs).toISOString();
+      const updated = deps.store.updateScheduleIfStatus(sched.id, "scheduled", {
         status: "scheduled",
         nextRun,
         lastDispatchId,
         lastFiredAt: firedAt,
       });
-      failed.push(updated);
+      if (updated) failed.push(updated);
       continue;
     }
 
-    if (sched.cron) {
-      // Reschedule for the next cron occurrence after now.
-      const nextRun = computeNextRun({ cron: sched.cron }, now());
-      const updated = deps.store.updateSchedule(sched.id, {
+    if (sched.cron || sched.intervalMs) {
+      // Reschedule recurring schedules after the dispatch attempt completes,
+      // which avoids overlapping runs by default.
+      const nextRun = sched.intervalMs
+        ? computeNextRun({ intervalMs: sched.intervalMs }, now())
+        : computeNextRun({ cron: sched.cron }, now());
+      const updated = deps.store.updateScheduleIfStatus(sched.id, "scheduled", {
         status: "scheduled",
         nextRun,
         lastDispatchId,
         lastFiredAt: firedAt,
       });
-      fired.push(updated);
+      if (updated) fired.push(updated);
     } else {
-      const updated = deps.store.updateSchedule(sched.id, {
+      const updated = deps.store.updateScheduleIfStatus(sched.id, "scheduled", {
         status: "fired",
         lastDispatchId,
         lastFiredAt: firedAt,
       });
-      fired.push(updated);
+      if (updated) fired.push(updated);
     }
   }
 

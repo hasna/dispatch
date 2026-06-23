@@ -235,16 +235,21 @@ export function buildProgram(deps: CliDeps = {}): Command {
 
   program
     .command("status <id>")
-    .description("Show a recorded dispatch by id")
+    .description("Show a recorded dispatch or scheduled dispatch/loop by id")
     .option("--json", "output JSON")
     .action(async (id, opts) => {
       const rec = await withClient((c) => c.status(id));
-      if (!rec) {
-        err(`dispatch not found: ${id}`);
+      if (rec) {
+        out(opts.json ? JSON.stringify(rec, null, 2) : formatRecord(rec));
+        return;
+      }
+      const sched = await withClient((c) => c.scheduleStatus(id));
+      if (!sched) {
+        err(`dispatch or schedule not found: ${id}`);
         process.exitCode = 1;
         return;
       }
-      out(opts.json ? JSON.stringify(rec, null, 2) : formatRecord(rec));
+      out(opts.json ? JSON.stringify(sched, null, 2) : formatSchedule(sched));
     });
 
   program
@@ -291,23 +296,75 @@ export function buildProgram(deps: CliDeps = {}): Command {
 
   program
     .command("schedule")
-    .description("Queue a dispatch to fire later (one-shot --at or recurring --cron)")
+    .description("Queue a dispatch to fire later (--at, --in, --cron, or --every)")
     .requiredOption("-t, --to <target>", "tmux target")
     .option("-p, --prompt <text>", "prompt text (or --file / stdin)")
     .option("-f, --file <path>", "read the prompt from a file")
     .option("--goal", "prefix the delivered prompt with /goal unless it already starts with /goal")
+    .option("--name <name>", "optional schedule/loop name")
     .option("-m, --machine <id>", "target machine")
     .option("--at <time>", "one-shot fire time (ISO 8601 or anything Date parses)")
+    .option("--in <duration>", "one-shot relative delay, e.g. 30m, 5 minutes, 2h, 1d")
     .option("--cron <expr>", "recurring 5-field cron expression")
+    .option("--every <duration>", "recurring interval loop, e.g. 5m or 1 hour")
+    .option("--if-idle", "refuse delivery unless the target looks idle when fired")
+    .option("--queue", "queue on active agents that prove Tab queued-message support when fired")
+    .option("--force-active", "explicitly override active/unknown target refusal when fired")
     .option("--json", "output JSON")
     .action(async (opts) => {
       const stdin = opts.prompt || opts.file ? deps.stdin : deps.stdin ?? (await readStdinIfPiped());
       const prompt = resolvePrompt(opts, stdin);
       const sched = await withClient((c) =>
         c.schedule({
-          options: { target: opts.to, prompt, goal: opts.goal === true, machine: opts.machine },
+          options: {
+            target: opts.to,
+            prompt,
+            goal: opts.goal === true,
+            machine: opts.machine,
+            ifIdle: opts.ifIdle === true,
+            queue: opts.queue === true,
+            forceActive: opts.forceActive === true,
+          },
           at: opts.at,
+          in: opts.in,
           cron: opts.cron,
+          every: opts.every,
+          name: opts.name,
+        }),
+      );
+      out(opts.json ? JSON.stringify(sched, null, 2) : formatSchedule(sched));
+    });
+
+  program
+    .command("loop")
+    .description("Create a recurring interval dispatch loop")
+    .requiredOption("-t, --to <target>", "tmux target")
+    .requiredOption("--every <duration>", "recurring interval, e.g. 5m, 30min, 1 hour")
+    .option("-p, --prompt <text>", "prompt text (or --file / stdin)")
+    .option("-f, --file <path>", "read the prompt from a file")
+    .option("--goal", "prefix the delivered prompt with /goal unless it already starts with /goal")
+    .option("--name <name>", "optional loop name")
+    .option("-m, --machine <id>", "target machine")
+    .option("--if-idle", "refuse delivery unless the target looks idle when fired")
+    .option("--queue", "queue on active agents that prove Tab queued-message support when fired")
+    .option("--force-active", "explicitly override active/unknown target refusal when fired")
+    .option("--json", "output JSON")
+    .action(async (opts) => {
+      const stdin = opts.prompt || opts.file ? deps.stdin : deps.stdin ?? (await readStdinIfPiped());
+      const prompt = resolvePrompt(opts, stdin);
+      const sched = await withClient((c) =>
+        c.loop({
+          options: {
+            target: opts.to,
+            prompt,
+            goal: opts.goal === true,
+            machine: opts.machine,
+            ifIdle: opts.ifIdle === true,
+            queue: opts.queue === true,
+            forceActive: opts.forceActive === true,
+          },
+          every: opts.every,
+          name: opts.name,
         }),
       );
       out(opts.json ? JSON.stringify(sched, null, 2) : formatSchedule(sched));
@@ -316,14 +373,31 @@ export function buildProgram(deps: CliDeps = {}): Command {
   program
     .command("schedules")
     .description("List scheduled dispatches")
-    .option("-s, --status <status>", "filter by status (scheduled | fired | cancelled)")
+    .option("-s, --status <status>", "filter by status (scheduled | paused | fired | cancelled | failed)")
+    .option("--kind <kind>", "filter by kind (schedule | loop)")
     .option("--json", "output JSON")
     .action(async (opts) => {
-      const rows = await withClient((c) => c.listSchedules({ status: opts.status }));
+      const rows = await withClient((c) => c.listSchedules({ status: opts.status, kind: opts.kind }));
       if (opts.json) {
         out(JSON.stringify(rows, null, 2));
       } else if (rows.length === 0) {
         out("no scheduled dispatches");
+      } else {
+        for (const s of rows) out(formatSchedule(s));
+      }
+    });
+
+  program
+    .command("loops")
+    .description("List recurring interval loops")
+    .option("-s, --status <status>", "filter by status (scheduled | paused | cancelled | failed)")
+    .option("--json", "output JSON")
+    .action(async (opts) => {
+      const rows = await withClient((c) => c.listLoops({ status: opts.status }));
+      if (opts.json) {
+        out(JSON.stringify(rows, null, 2));
+      } else if (rows.length === 0) {
+        out("no dispatch loops");
       } else {
         for (const s of rows) out(formatSchedule(s));
       }
@@ -338,6 +412,45 @@ export function buildProgram(deps: CliDeps = {}): Command {
         out(`cancelled ${id}`);
       } else {
         err(`could not cancel ${id} (not found or not scheduled)`);
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command("pause <id>")
+    .description("Pause a scheduled dispatch or loop")
+    .action(async (id) => {
+      const ok = await withClient((c) => c.pauseSchedule(id));
+      if (ok) {
+        out(`paused ${id}`);
+      } else {
+        err(`could not pause ${id} (not found or not scheduled)`);
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command("resume <id>")
+    .description("Resume a paused scheduled dispatch or loop")
+    .action(async (id) => {
+      const ok = await withClient((c) => c.resumeSchedule(id));
+      if (ok) {
+        out(`resumed ${id}`);
+      } else {
+        err(`could not resume ${id} (not found or not paused)`);
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command("clear <id>")
+    .description("Delete a scheduled dispatch or loop")
+    .action(async (id) => {
+      const ok = await withClient((c) => c.clearSchedule(id));
+      if (ok) {
+        out(`cleared ${id}`);
+      } else {
+        err(`could not clear ${id} (not found)`);
         process.exitCode = 1;
       }
     });

@@ -16,6 +16,8 @@ import type {
   AgentTargetInfo,
   CaptureResult,
   ScheduledDispatch,
+  ScheduleKind,
+  ScheduleStatus,
 } from "../types.js";
 
 interface DispatchRow {
@@ -44,8 +46,12 @@ interface DispatchRow {
 interface ScheduleRow {
   id: string;
   options_json: string;
+  kind: string | null;
+  name: string | null;
   at: string | null;
   cron: string | null;
+  every: string | null;
+  interval_ms: number | null;
   next_run: string;
   status: string;
   last_dispatch_id: string | null;
@@ -83,10 +89,14 @@ function rowToSchedule(r: ScheduleRow): ScheduledDispatch {
   return {
     id: r.id,
     options: JSON.parse(r.options_json) as DispatchOptions,
+    kind: (r.kind as ScheduleKind | null) ?? (r.interval_ms ? "loop" : "schedule"),
+    name: r.name ?? undefined,
     at: r.at ?? undefined,
     cron: r.cron ?? undefined,
+    every: r.every ?? undefined,
+    intervalMs: r.interval_ms ?? undefined,
     nextRun: r.next_run,
-    status: r.status as ScheduledDispatch["status"],
+    status: r.status as ScheduleStatus,
     lastDispatchId: r.last_dispatch_id ?? undefined,
     lastFiredAt: r.last_fired_at ?? undefined,
     createdAt: r.created_at,
@@ -96,6 +106,8 @@ function rowToSchedule(r: ScheduleRow): ScheduledDispatch {
 
 const STALE_SENDING_DISPATCH_MS = 60 * 1000;
 const SQLITE_BUSY_TIMEOUT_MS = 10000;
+const DEFAULT_SCHEDULE_LIMIT = 200;
+const DEFAULT_DUE_SCHEDULE_LIMIT = 1000;
 const SQLITE_BUSY_RETRY_BUFFER = new Int32Array(new SharedArrayBuffer(4));
 
 function isSqliteBusy(err: unknown): boolean {
@@ -166,8 +178,12 @@ export class Store {
       CREATE TABLE IF NOT EXISTS schedules (
         id TEXT PRIMARY KEY,
         options_json TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'schedule',
+        name TEXT,
         at TEXT,
         cron TEXT,
+        every TEXT,
+        interval_ms INTEGER,
         next_run TEXT NOT NULL,
         status TEXT NOT NULL,
         last_dispatch_id TEXT,
@@ -187,6 +203,10 @@ export class Store {
     this.ensureDispatchColumn("target_state", "TEXT");
     this.ensureDispatchColumn("detection_json", "TEXT");
     this.ensureDispatchColumn("capture_before_json", "TEXT");
+    this.ensureScheduleColumn("kind", "TEXT NOT NULL DEFAULT 'schedule'");
+    this.ensureScheduleColumn("name", "TEXT");
+    this.ensureScheduleColumn("every", "TEXT");
+    this.ensureScheduleColumn("interval_ms", "INTEGER");
   }
 
   private ensureDispatchColumn(name: string, definition: string): void {
@@ -195,6 +215,14 @@ export class Store {
     );
     if (rows.some((row) => row.name === name)) return;
     withSqliteBusyRetry(() => this.db.exec(`ALTER TABLE dispatches ADD COLUMN ${name} ${definition};`));
+  }
+
+  private ensureScheduleColumn(name: string, definition: string): void {
+    const rows = withSqliteBusyRetry(() =>
+      this.db.query<{ name: string }, []>("PRAGMA table_info(schedules)").all(),
+    );
+    if (rows.some((row) => row.name === name)) return;
+    withSqliteBusyRetry(() => this.db.exec(`ALTER TABLE schedules ADD COLUMN ${name} ${definition};`));
   }
 
   // ---- dispatches ----
@@ -363,16 +391,24 @@ export class Store {
 
   createSchedule(input: {
     options: DispatchOptions;
+    kind?: ScheduleKind;
+    name?: string;
     at?: string;
     cron?: string;
+    every?: string;
+    intervalMs?: number;
     nextRun: string;
   }): ScheduledDispatch {
     const now = nowIso();
     const sched: ScheduledDispatch = {
       id: genId(),
       options: input.options,
+      kind: input.kind ?? (input.intervalMs ? "loop" : "schedule"),
+      name: input.name,
       at: input.at,
       cron: input.cron,
+      every: input.every,
+      intervalMs: input.intervalMs,
       nextRun: input.nextRun,
       status: "scheduled",
       createdAt: now,
@@ -380,14 +416,18 @@ export class Store {
     };
     withSqliteBusyRetry(() =>
       this.db.query(
-        `INSERT INTO schedules (id, options_json, at, cron, next_run, status, last_dispatch_id, last_fired_at, created_at, updated_at)
-         VALUES ($id, $options, $at, $cron, $next, $status, $lastDispatch, $lastFired, $created, $updated)`,
+        `INSERT INTO schedules (id, options_json, kind, name, at, cron, every, interval_ms, next_run, status, last_dispatch_id, last_fired_at, created_at, updated_at)
+         VALUES ($id, $options, $kind, $name, $at, $cron, $every, $intervalMs, $next, $status, $lastDispatch, $lastFired, $created, $updated)`,
       )
       .run({
         $id: sched.id,
         $options: JSON.stringify(sched.options),
+        $kind: sched.kind ?? "schedule",
+        $name: sched.name ?? null,
         $at: sched.at ?? null,
         $cron: sched.cron ?? null,
+        $every: sched.every ?? null,
+        $intervalMs: sched.intervalMs ?? null,
         $next: sched.nextRun,
         $status: sched.status,
         $lastDispatch: null,
@@ -427,30 +467,64 @@ export class Store {
     return merged;
   }
 
+  updateScheduleIfStatus(
+    id: string,
+    status: ScheduleStatus,
+    patch: Partial<Pick<ScheduledDispatch, "nextRun" | "status" | "lastDispatchId" | "lastFiredAt">>,
+  ): ScheduledDispatch | undefined {
+    const existing = this.getSchedule(id);
+    if (!existing || existing.status !== status) return undefined;
+    return this.updateSchedule(id, patch);
+  }
+
   deleteSchedule(id: string): boolean {
     const res = withSqliteBusyRetry(() => this.db.query("DELETE FROM schedules WHERE id = ?").run(id));
     return res.changes > 0;
   }
 
-  listSchedules(opts: { status?: ScheduledDispatch["status"]; limit?: number } = {}): ScheduledDispatch[] {
-    const limit = opts.limit ?? 200;
-    const rows = opts.status
-      ? this.db
-          .query<ScheduleRow, [string, number]>(
-            "SELECT * FROM schedules WHERE status = ? ORDER BY next_run ASC LIMIT ?",
-          )
-          .all(opts.status, limit)
-      : this.db
-          .query<ScheduleRow, [number]>("SELECT * FROM schedules ORDER BY next_run ASC LIMIT ?")
-          .all(limit);
+  countSchedules(opts: { status?: ScheduleStatus; kind?: ScheduleKind } = {}): number {
+    const clauses: string[] = [];
+    const params: Record<string, string> = {};
+    if (opts.status) {
+      clauses.push("status = $status");
+      params.$status = opts.status;
+    }
+    if (opts.kind) {
+      clauses.push("kind = $kind");
+      params.$kind = opts.kind;
+    }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+    const row = this.db.query<{ count: number }, Record<string, string>>(`SELECT COUNT(*) AS count FROM schedules ${where}`).get(params);
+    return row?.count ?? 0;
+  }
+
+  listSchedules(opts: { status?: ScheduleStatus; kind?: ScheduleKind; limit?: number } = {}): ScheduledDispatch[] {
+    const limit = opts.limit ?? DEFAULT_SCHEDULE_LIMIT;
+    const clauses: string[] = [];
+    const params: Record<string, string | number> = { $limit: limit };
+    if (opts.status) {
+      clauses.push("status = $status");
+      params.$status = opts.status;
+    }
+    if (opts.kind) {
+      clauses.push("kind = $kind");
+      params.$kind = opts.kind;
+    }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+    const rows = this.db
+      .query<ScheduleRow, Record<string, string | number>>(`SELECT * FROM schedules ${where} ORDER BY next_run ASC LIMIT $limit`)
+      .all(params);
     return rows.map(rowToSchedule);
   }
 
   /** Schedules that are due to fire at or before `nowMs`. */
-  dueSchedules(nowMs: number): ScheduledDispatch[] {
-    return this.listSchedules({ status: "scheduled" }).filter(
-      (s) => new Date(s.nextRun).getTime() <= nowMs,
-    );
+  dueSchedules(nowMs: number, limit: number = DEFAULT_DUE_SCHEDULE_LIMIT): ScheduledDispatch[] {
+    const rows = this.db
+      .query<ScheduleRow, { $now: string; $limit: number }>(
+        "SELECT * FROM schedules WHERE status = 'scheduled' AND next_run <= $now ORDER BY next_run ASC LIMIT $limit",
+      )
+      .all({ $now: new Date(nowMs).toISOString(), $limit: limit });
+    return rows.map(rowToSchedule);
   }
 
   close(): void {

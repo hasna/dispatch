@@ -24,8 +24,9 @@
 
 ## Surfaces
 
-- **SDK** — `DispatchClient` (`send`, `status`, `list`, `schedule`, `listSchedules`,
-  `cancelSchedule`). The programmatic core; the other surfaces wrap it.
+- **SDK** — `DispatchClient` (`send`, `status`, `list`, `schedule`, `loop`,
+  `scheduleStatus`, `listSchedules`, `listLoops`, `pauseSchedule`, `resumeSchedule`,
+  `cancelSchedule`, `clearSchedule`). The programmatic core; the other surfaces wrap it.
 - **CLI** — `commander` commands; thin adapters over the client. Read/schedule commands
   are unit-tested with an injected in-memory client; `send` is integration-tested.
 - **MCP** — every verb defined once in `mcp/tools.ts` (zod schema + handler) and
@@ -47,5 +48,6 @@ Everything lives in sqlite at `~/.hasna/dispatch/dispatch.db` (override with
 `DISPATCH_DATA_DIR`):
 
 - `dispatches` — every dispatch with status, confirmation result, computed delay, timestamps.
-- `schedules` — one-shot (`at`) and recurring (`cron`) scheduled dispatches with their
-  next run time and last fired dispatch.
+- `schedules` — one-shot (`at` or relative `in`), recurring cron (`cron`), and
+  interval loop (`every`/`interval_ms`) dispatches with kind/name, next run time,
+  lifecycle status, and last fired dispatch.

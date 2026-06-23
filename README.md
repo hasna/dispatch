@@ -27,7 +27,7 @@ dispatch send --to work:agent --prompt "Refactor the parser and add tests"
 | Need to know what a pane actually is | **Native agent detection** — Codewith, Codex, Claude Code/Claude, and OpenCode panes are classified from command, process tree, cwd, and live UI proof |
 | "Did it actually go through?" | **Smart delivery confirmation** — diffs the pane before/after and detects the agent's working/`esc to interrupt` state and the composer clearing |
 | Doesn't work across machines | **Cross-machine** routing through [`@hasna/machines`](https://github.com/hasna/machines) (Tailscale / LAN / SSH) |
-| Fire-and-forget / later | **Scheduled dispatches** (`--at` / `--cron`) owned by a **persistent daemon** that survives restarts |
+| Fire-and-forget / later | **Scheduled dispatches and loops** (`--at` / `--in` / `--cron` / `--every`) owned by a **persistent daemon** that survives restarts |
 
 See [docs/reliability.md](docs/reliability.md) for the full mechanism.
 
@@ -48,8 +48,13 @@ dispatch capture    Capture a bounded, redacted pane transcript
 dispatch status     Show a recorded dispatch by id
 dispatch list       List recorded dispatches (newest first)
 dispatch targets    List dispatchable tmux targets (panes) on a machine
-dispatch schedule   Queue a dispatch to fire later (--at or --cron)
+dispatch schedule   Queue a dispatch to fire later (--at, --in, --cron, or --every)
+dispatch loop       Create a recurring interval loop (--every)
 dispatch schedules  List scheduled dispatches
+dispatch loops      List recurring interval loops
+dispatch pause      Pause a schedule/loop
+dispatch resume     Resume a paused schedule/loop
+dispatch clear      Delete a schedule/loop
 dispatch cancel     Cancel a scheduled dispatch
 dispatch daemon     start | stop | status | run  (scheduled-dispatch queue)
 ```
@@ -242,11 +247,23 @@ dispatch targets --machine spark01 --json
 # One-shot at a specific time
 dispatch schedule --to work:agent --prompt "deploy" --at 2026-06-18T09:00:00Z
 
+# One-shot relative to now
+dispatch schedule --to work:agent --prompt "check the deploy" --in 30m
+dispatch schedule --machine spark01 --to work:agent --prompt "remote follow-up" --in "5 minutes"
+
 # Recurring (5-field cron)
 dispatch schedule --to work:agent --prompt "run nightly suite" --cron "0 2 * * *"
 
-dispatch schedules            # list
-dispatch cancel <id>          # cancel
+# Recurring interval loop
+dispatch loop --to work:agent --prompt "capture status and report blockers" --every 5m --name status-loop
+
+dispatch schedules            # list schedules and loops
+dispatch loops                # list interval loops
+dispatch status <id>          # inspect a dispatch, schedule, or loop
+dispatch pause <id>           # pause a schedule/loop
+dispatch resume <id>          # resume a paused schedule/loop
+dispatch cancel <id>          # mark cancelled
+dispatch clear <id>           # delete
 ```
 
 Scheduled dispatches are fired by the **daemon**:
@@ -259,6 +276,10 @@ dispatch daemon stop
 
 The queue is persisted (sqlite under `~/.hasna/dispatch`), so it **survives a daemon
 restart** — a schedule created while the daemon was down still fires once it's back up.
+The daemon processes due schedules serially; interval loops compute their next run only
+after the previous dispatch attempt completes, so runs do not overlap by default. If a
+target is busy or unsafe, the dispatch attempt is recorded as skipped/failed and a loop
+waits until its next interval.
 
 ## SDK
 
@@ -279,7 +300,19 @@ const sched = dispatch.schedule({
   options: { target: "work:agent", prompt: "nightly" },
   cron: "0 2 * * *",
 });
+const later = dispatch.schedule({
+  options: { target: "work:agent", prompt: "follow up" },
+  in: "30m",
+});
+const loop = dispatch.loop({
+  options: { target: "work:agent", prompt: "summarize current status" },
+  every: "5m",
+  name: "status-loop",
+});
 dispatch.listSchedules();
+dispatch.listLoops();
+dispatch.pauseSchedule(loop.id);
+dispatch.resumeSchedule(loop.id);
 dispatch.status(rec.id);
 dispatch.close();
 ```
@@ -323,7 +356,8 @@ Every CLI verb is also an MCP tool, so agents can dispatch over MCP:
 // register the server: dispatch-mcp  (stdio)
 // tools:
 //   dispatch_send, dispatch_key, dispatch_capture, dispatch_exec, dispatch_status, dispatch_list, dispatch_targets,
-//   dispatch_schedule, dispatch_schedules, dispatch_cancel,
+//   dispatch_schedule, dispatch_loop, dispatch_schedules, dispatch_loops,
+//   dispatch_cancel, dispatch_pause, dispatch_resume, dispatch_clear,
 //   dispatch_daemon_start, dispatch_daemon_stop, dispatch_daemon_status
 ```
 
