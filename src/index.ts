@@ -37,7 +37,16 @@ export {
 } from "./lib/exec-policy.js";
 export { inspectAgentTarget, validateAgentComposerTarget } from "./lib/agent-target.js";
 export { computeSubmitDelay, countWords } from "./lib/delay.js";
-export { evaluateDelivery, confirmDelivery, detectWorking, DEFAULT_WORKING_PATTERNS } from "./lib/confirm.js";
+export {
+  evaluateDelivery,
+  confirmDelivery,
+  detectWorking,
+  detectQueued,
+  detectActionNeeded,
+  DEFAULT_WORKING_PATTERNS,
+  DEFAULT_QUEUED_PATTERNS,
+  DEFAULT_ACTION_NEEDED_PATTERNS,
+} from "./lib/confirm.js";
 export { computeNextRun, parseCron, nextCronRun } from "./lib/schedule.js";
 export { tick } from "./lib/scheduler.js";
 export type { SchedulerDeps, TickResult } from "./lib/scheduler.js";

@@ -473,6 +473,35 @@ describe("performDispatch", () => {
     expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("Enter"))).toBe(false);
   });
 
+  test("reports Codewith auth-switch queued stalls as action-needed instead of delivered", async () => {
+    const r = composerRunner(
+      "node",
+      activeCodewithCapture,
+      `Auto-switching auth profile to account010...
+Your prompt will continue with that account
+Queued follow-up inputs:
+  Continue after profile switch`,
+      codewithProcessTree,
+    );
+
+    const rec = await performDispatch(
+      { target: "open-guardrails:1.1", prompt: "Continue after profile switch", queue: true, submitDelayMs: 0 },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("failed");
+    expect(rec.detail).toMatch(/auth profile|action needed/i);
+    expect(rec.deliveredAt).toBeUndefined();
+    expect(rec.confirm).toMatchObject({
+      delivered: false,
+      queued: true,
+      actionNeeded: true,
+      authSwitchDetected: true,
+    });
+    expect(r.argvs().filter((a) => a[1] === "send-keys" && a.includes("Tab"))).toHaveLength(1);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("Enter"))).toBe(false);
+  });
+
   test("dry-run validates active wrapped Codewith panes without typing into them", async () => {
     const r = composerRunner("node", activeCodewithCapture, "✶ Working… (esc to interrupt)", codewithProcessTree);
 

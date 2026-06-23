@@ -128,10 +128,11 @@ bulk send results include detection metadata when available:
 Normal prompt delivery uses `Enter` and refuses active agents unless `--force-active`
 is explicitly passed. `--queue` is the safe active-agent path: when detection proves
 the target supports queued-message behavior, dispatch types the prompt and presses
-`Tab`; otherwise it refuses. Detection supports direct binaries and compatible
-`node`/`bun`/`npx`/`bunx`/`pnpm`/`yarn`/`npm exec` launchers, but wrapper panes still
-need live composer UI proof so arbitrary `node` output and copied transcripts stay
-fail-closed.
+`Tab`; otherwise it refuses. Queued Tab delivery is single-shot to avoid duplicate
+queued follow-up inputs; `--retries` applies to Enter submission. Detection supports
+direct binaries and compatible `node`/`bun`/`npx`/`bunx`/`pnpm`/`yarn`/`npm exec`
+launchers, but wrapper panes still need live composer UI proof so arbitrary `node`
+output and copied transcripts stay fail-closed.
 
 ### Key
 
@@ -345,7 +346,11 @@ CLI `--allow`; it does not accept inline allowlists from the caller.
    `DISPATCH_MS_PER_CHAR`.
 4. Press **Enter**, then re-press until the **delivery probe** confirms submission
    (working indicator appeared / composer cleared) or retries are exhausted.
-5. Record a **delivered / not-delivered** verdict with a reason.
+   Queued Tab delivery is not retried because duplicate Tabs can create duplicate
+   queued follow-up inputs.
+5. Record a **delivered / not-delivered** verdict with a reason. If a Codewith
+   pane queues input while an auth profile/account switch is visible, the verdict
+   is **not delivered** with `actionNeeded=true` rather than a false success.
 
 ## Environment
 

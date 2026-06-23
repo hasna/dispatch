@@ -60,7 +60,7 @@ export const TOOLS: ToolDef[] = [
       submit: z.boolean().optional().describe("press Enter to submit (default true)"),
       confirm: z.boolean().optional().describe("verify delivery (default true)"),
       delayMs: z.number().optional().describe("override the auto-computed pre-Enter delay"),
-      retries: z.number().optional().describe("max Enter retries if not confirmed"),
+      retries: z.number().optional().describe("max Enter retries if not confirmed; queued Tab delivery is single-shot"),
       mode: z.enum(["auto", "paste", "literal"]).optional().describe("delivery mode"),
       goal: z.boolean().optional().describe("prefix prompt with /goal unless it already starts with /goal"),
     },

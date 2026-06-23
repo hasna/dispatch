@@ -205,13 +205,16 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
   const probe = confirmEnabled
     ? async (): Promise<boolean> => {
         const after = tmux.capturePane(options.target, { start: 50 });
-        return evaluateDelivery({ before, after, afterTyped, prompt, shellCommand }).delivered;
+        const verdict = evaluateDelivery({ before, after, afterTyped, prompt, shellCommand });
+        // Stop retrying submit keys once the target has entered a known
+        // operator-action-needed state. Final confirmation will record failure.
+        return verdict.delivered || verdict.actionNeeded === true;
       }
     : undefined;
 
   await submit(tmux, options.target, {
     delayMs,
-    maxRetries: options.maxSubmitRetries ?? 2,
+    maxRetries: submitKey === "Tab" ? 0 : options.maxSubmitRetries ?? 2,
     submitKey,
     isSubmitted: probe,
     sleep,

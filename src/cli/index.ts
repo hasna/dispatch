@@ -80,7 +80,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .option("--no-submit", "type into the composer but do not press Enter")
     .option("--no-confirm", "skip delivery confirmation")
     .option("--delay <ms>", "override the auto-computed pre-Enter delay", (v) => parseInt(v, 10))
-    .option("--retries <n>", "max Enter retries if not confirmed", (v) => parseInt(v, 10))
+    .option("--retries <n>", "max Enter retries if not confirmed; queued Tab delivery is single-shot", (v) => parseInt(v, 10))
     .option("--mode <mode>", "delivery mode: auto | paste | literal", "auto")
     .option("--json", "output JSON")
     .action(async (opts) => {

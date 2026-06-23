@@ -108,9 +108,17 @@ export interface ConfirmResult {
   /**
    * True when the prompt was accepted but staged for later submission (the
    * target agent was busy, e.g. "Messages to be submitted after next tool
-   * call"). Still counts as delivered.
+   * call"). Usually counts as delivered unless actionNeeded is also true.
    */
   queued?: boolean;
+  /**
+   * True when the prompt reached a state that requires human/operator action
+   * before it can be trusted as submitted, for example a Codewith auth-profile
+   * auto-switch that leaves follow-up input queued but not draining.
+   */
+  actionNeeded?: boolean;
+  /** True when actionNeeded was caused by an auth/account switch or limit state. */
+  authSwitchDetected?: boolean;
   /**
    * True when the target app handled the prompt by rendering an immediate
    * rejection/disabled/unavailable message. Still counts as delivered because
