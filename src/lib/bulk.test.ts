@@ -14,12 +14,17 @@ function agentTmux(capture = "> idle composer"): Tmux {
     if (argv[1] === "display-message" && argv.at(-1) === "#{pane_in_mode}") {
       return { stdout: "0\n", stderr: "", exitCode: 0, source: "local" };
     }
-    if (argv[1] === "send-keys" && argv.includes("Enter")) {
+    if (argv[1] === "send-keys" && (argv.includes("Enter") || argv.includes("Tab"))) {
       submitted = true;
       return { stdout: "", stderr: "", exitCode: 0, source: "local" };
     }
     if (argv[1] === "capture-pane") {
-      return { stdout: submitted ? "✶ Working… (esc to interrupt)" : capture, stderr: "", exitCode: 0, source: "local" };
+      return {
+        stdout: submitted ? "Messages to be submitted after next tool call\nQueued: Queue this" : capture,
+        stderr: "",
+        exitCode: 0,
+        source: "local",
+      };
     }
     return { stdout: "", stderr: "", exitCode: 0, source: "local" };
   };
@@ -113,7 +118,7 @@ describe("performBulkDispatch", () => {
         targets: [{ target: "open-sessions:2.1", source: "sessions-query", state: "active" }],
         prompt: "Queue this",
         queue: true,
-        submit: false,
+        submitDelayMs: 0,
       },
       {
         makeTmux: async () => agentTmux("✶ Working… (esc to interrupt)"),
@@ -122,7 +127,12 @@ describe("performBulkDispatch", () => {
     );
 
     expect(result.delivered).toBe(1);
-    expect(result.records[0]).toMatchObject({ status: "delivered", targetState: "active" });
+    expect(result.records[0]).toMatchObject({
+      status: "delivered",
+      targetState: "active",
+      confirm: { queued: true },
+      detection: { recommendedSubmitKey: "Tab" },
+    });
   });
 
   test("returns a failed summary when a source resolves no targets", async () => {

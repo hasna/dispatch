@@ -63,7 +63,7 @@ describe("MCP tool handlers", () => {
     d.makeTmux = async () => new Tmux(r);
     const targets = (await tool("dispatch_targets").handler(d, {})) as Array<{ target: string; active: boolean }>;
     expect(targets).toHaveLength(2);
-    expect(targets[0]).toEqual({ target: "work:1.0", window: "agent", active: true } as never);
+    expect(targets[0]).toMatchObject({ target: "work:1.0", window: "agent", active: true } as never);
     expect(targets[1]!.active).toBe(false);
   });
 
@@ -139,6 +139,34 @@ describe("MCP tool handlers", () => {
     expect(received).toMatchObject({ target: "work:agent", prompt: "Fix native chat", goal: true });
   });
 
+  test("send forwards submit-key selection to the client", async () => {
+    const d = deps();
+    let received: DispatchOptions | undefined;
+    d.client.send = async (opts: DispatchOptions): Promise<DispatchRecord> => {
+      received = opts;
+      return {
+        id: "send-tab",
+        kind: "prompt",
+        target: opts.target,
+        machine: "local",
+        prompt: opts.prompt,
+        status: "skipped",
+        detail: "dry run",
+        createdAt: "x",
+        updatedAt: "x",
+      };
+    };
+
+    await tool("dispatch_send").handler(d, {
+      target: "work:agent",
+      prompt: "Queue me",
+      submitKey: "Tab",
+      dryRun: true,
+    });
+
+    expect(received).toMatchObject({ target: "work:agent", submitKey: "Tab", dryRun: true });
+  });
+
   test("send delegates sessions-query bulk orchestration options to the client", async () => {
     const d = deps();
     let received: BulkDispatchOptions | undefined;
@@ -166,6 +194,7 @@ describe("MCP tool handlers", () => {
       prompt: "Fix native chat",
       goal: true,
       ifIdle: true,
+      submitKey: undefined,
       dryRun: true,
       captureBeforeLines: 120,
       maxConcurrency: 2,

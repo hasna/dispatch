@@ -5,6 +5,7 @@ import { Store } from "../lib/store.js";
 import { Tmux } from "../lib/tmux.js";
 import { createRunner } from "../lib/runner.js";
 import { loadExecPolicy } from "../lib/exec-policy.js";
+import { inspectAgentTarget } from "../lib/agent-target.js";
 import { daemonStatus, stopDaemon } from "../daemon/control.js";
 import { startDaemon } from "../daemon/daemon.js";
 
@@ -50,6 +51,7 @@ export const TOOLS: ToolDef[] = [
       ifIdle: z.boolean().optional().describe("refuse delivery unless target looks idle"),
       queue: z.boolean().optional().describe("allow active targets and rely on the agent queue"),
       forceActive: z.boolean().optional().describe("explicitly override active/unknown target refusal"),
+      submitKey: z.enum(["Enter", "Tab"]).optional().describe("prompt submit key"),
       dryRun: z.boolean().optional().describe("validate target/guards without typing"),
       captureBeforeLines: z.number().optional().describe("capture redacted transcript lines before delivery"),
       maxConcurrency: z.number().optional().describe("bulk max concurrent dispatches"),
@@ -72,6 +74,7 @@ export const TOOLS: ToolDef[] = [
           goal: a.goal as boolean | undefined,
           machine: a.machine as string | undefined,
           submit: a.submit as boolean | undefined,
+          submitKey: a.submitKey as "Enter" | "Tab" | undefined,
           confirm: a.confirm as boolean | undefined,
           submitDelayMs: a.delayMs as number | undefined,
           maxSubmitRetries: a.retries as number | undefined,
@@ -94,6 +97,7 @@ export const TOOLS: ToolDef[] = [
         prompt: a.prompt as string,
         goal: a.goal as boolean | undefined,
         machine: a.machine as string | undefined,
+        submitKey: a.submitKey as "Enter" | "Tab" | undefined,
         ifIdle: a.ifIdle as boolean | undefined,
         queue: a.queue as boolean | undefined,
         forceActive: a.forceActive as boolean | undefined,
@@ -251,7 +255,15 @@ export const TOOLS: ToolDef[] = [
     inputSchema: { machine: z.string().optional() },
     handler: async (deps, a) => {
       const tmux = await tmuxFor(deps, a.machine as string | undefined);
-      return tmux.listTargets();
+      return tmux.listTargets().map((target) => ({
+        ...target,
+        detection: inspectAgentTarget(tmux, target.target, {
+          assumeExists: true,
+          paneCommand: target.paneCommand,
+          cwd: target.cwd,
+          panePid: target.panePid,
+        }).detection,
+      }));
     },
   },
   {

@@ -70,7 +70,7 @@ d("confirmation regressions (real tmux)", () => {
     if (res.status !== 0) throw new Error(`failed to start busy agent: ${res.stderr}`);
     await Bun.sleep(900);
 
-    const send = runCli(["send", "--to", SESSION, "--prompt", "apply the lease-loss fix now", "--json"]);
+    const send = runCli(["send", "--to", SESSION, "--prompt", "apply the lease-loss fix now", "--queue", "--json"]);
     expect(send.status).toBe(0);
     const rec = JSON.parse(send.stdout);
     expect(rec.status).toBe("delivered");

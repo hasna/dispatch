@@ -99,6 +99,18 @@ describe("Store — dispatches", () => {
       status: "skipped",
       dryRun: true,
       targetState: "active",
+      detection: {
+        targetKind: "agent",
+        agentKind: "codewith",
+        composerState: "active",
+        canReceivePrompt: false,
+        canQueuePrompt: true,
+        submitKeys: ["Enter", "Tab"],
+        recommendedSubmitKey: "Tab",
+        reason: "active composer supports queued Tab prompt delivery",
+        paneCommand: "node",
+        cwd: "/repo",
+      },
       captureBefore: {
         status: "captured",
         target: "open-sessions:2.1",
@@ -115,6 +127,12 @@ describe("Store — dispatches", () => {
     expect(s.getDispatch(rec.id)).toMatchObject({
       dryRun: true,
       targetState: "active",
+      detection: {
+        agentKind: "codewith",
+        composerState: "active",
+        canQueuePrompt: true,
+        recommendedSubmitKey: "Tab",
+      },
       captureBefore: {
         status: "captured",
         lines: 50,

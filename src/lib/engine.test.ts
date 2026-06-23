@@ -124,7 +124,7 @@ function tuiRunner(): MockRunner {
     if (argv[1] === "display-message" && argv.at(-1) === "#{pane_current_command}") {
       return { stdout: "codewith\n", stderr: "", exitCode: 0, source: "local" };
     }
-    if (argv[1] === "send-keys" && argv.includes("Enter")) {
+    if (argv[1] === "send-keys" && (argv.includes("Enter") || argv.includes("Tab"))) {
       submitted = true;
       return { stdout: "", stderr: "", exitCode: 0, source: "local" };
     }
@@ -159,7 +159,7 @@ function composerRunner(
     if (argv[0] === "ps") {
       return { stdout: processTree, stderr: "", exitCode: processTree ? 0 : 1, source: "local" };
     }
-    if (argv[1] === "send-keys" && argv.includes("Enter")) {
+    if (argv[1] === "send-keys" && (argv.includes("Enter") || argv.includes("Tab"))) {
       submitted = true;
       return { stdout: "", stderr: "", exitCode: 0, source: "local" };
     }
@@ -436,32 +436,41 @@ describe("performDispatch", () => {
     expect(r.argvs().some((a) => a.includes("Enter"))).toBe(false);
   });
 
-  test("accepts active wrapped Codewith panes but --if-idle skips before delivery", async () => {
+  test("refuses active wrapped Codewith panes before Enter delivery by default", async () => {
     const r = composerRunner("node", activeCodewithCapture, "✶ Working… (esc to interrupt)", codewithProcessTree);
 
     const rec = await performDispatch(
-      { target: "open-sessions:2.1", prompt: "Do not send to a busy pane", ifIdle: true },
+      { target: "open-dispatch:1.1", prompt: "Do not send Enter to a busy pane" },
       { tmux: new Tmux(r), sleep: noSleep },
     );
 
     expect(rec.status).toBe("skipped");
     expect(rec.targetState).toBe("active");
-    expect(rec.detail).toMatch(/target is active/);
+    expect(rec.detection).toMatchObject({ agentKind: "codewith", canReceivePrompt: false, canQueuePrompt: true });
+    expect(rec.detail).toMatch(/cannot receive an Enter prompt safely/);
     expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
   });
 
-  test("allows active wrapped Codewith panes when queue is explicitly requested", async () => {
-    const r = composerRunner("node", activeCodewithCapture, "✶ Working… (esc to interrupt)", codewithProcessTree);
+  test("queues active wrapped Codewith panes with Tab when queue is explicitly requested", async () => {
+    const r = composerRunner(
+      "node",
+      activeCodewithCapture,
+      "Messages to be submitted after next tool call\nQueued: Queue this safely",
+      codewithProcessTree,
+    );
 
     const rec = await performDispatch(
-      { target: "open-sessions:2.1", prompt: "Queue this safely", ifIdle: true, queue: true, submit: false },
+      { target: "open-sessions:2.1", prompt: "Queue this safely", ifIdle: true, queue: true, submitDelayMs: 0 },
       { tmux: new Tmux(r), sleep: noSleep },
     );
 
     expect(rec.status).toBe("delivered");
     expect(rec.targetState).toBe("active");
-    expect(rec.detail).toMatch(/without submitting/);
+    expect(rec.confirm?.queued).toBe(true);
+    expect(rec.detection).toMatchObject({ recommendedSubmitKey: "Tab" });
     expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("-l"))).toBe(true);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("Tab"))).toBe(true);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("Enter"))).toBe(false);
   });
 
   test("dry-run validates active wrapped Codewith panes without typing into them", async () => {
@@ -475,7 +484,21 @@ describe("performDispatch", () => {
     expect(rec.status).toBe("skipped");
     expect(rec.dryRun).toBe(true);
     expect(rec.targetState).toBe("active");
-    expect(rec.detail).toMatch(/dry run/);
+    expect(rec.detail).toMatch(/dry run: prompt would be submitted with Tab/);
+    expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
+  });
+
+  test("refuses queued Tab delivery when the active agent does not prove queue support", async () => {
+    const r = composerRunner("codex", "✶ Working… (esc to interrupt)", "Messages to be submitted after next tool call");
+
+    const rec = await performDispatch(
+      { target: "work:codex", prompt: "Queue this", queue: true, submitDelayMs: 0 },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("skipped");
+    expect(rec.detection).toMatchObject({ agentKind: "codex", composerState: "active", canQueuePrompt: false });
+    expect(rec.detail).toMatch(/does not prove queued Tab prompt support/);
     expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
   });
 
@@ -689,7 +712,7 @@ GET /health 200
     };
 
     const rec = await performDispatch(
-      { target: "work:agent", prompt: "/workflow", submitDelayMs: 0 },
+      { target: "work:agent", prompt: "/workflow", submitDelayMs: 0, forceActive: true },
       { tmux: new Tmux(r), sleep: noSleep },
     );
 

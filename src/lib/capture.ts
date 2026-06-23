@@ -7,6 +7,7 @@ import type {
   CaptureTransform,
 } from "../types.js";
 import { nowIso } from "./ids.js";
+import { inspectAgentTarget } from "./agent-target.js";
 import { Tmux } from "./tmux.js";
 
 export const DEFAULT_CAPTURE_LINES = 200;
@@ -255,7 +256,9 @@ export async function performCapture(options: CaptureOptions, deps: CaptureDeps)
   }
 
   let text: string;
+  let detection: CaptureResult["detection"];
   try {
+    detection = inspectAgentTarget(tmux, options.target).detection;
     text = tailLines(stripTerminalControl(tmux.capturePane(options.target, { start: effective })), effective);
   } catch (err) {
     return {
@@ -272,6 +275,7 @@ export async function performCapture(options: CaptureOptions, deps: CaptureDeps)
     ...base,
     status: "captured",
     text: redactedText,
+    detection,
   };
 
   if (options.ai?.enabled || options.ai?.transform || options.ai?.prompt) {

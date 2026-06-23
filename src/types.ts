@@ -18,6 +18,29 @@ export type DispatchKind = "prompt" | "exec" | "key";
 /** Runtime class of a target pane, based on tmux pane_current_command. */
 export type ExecTargetKind = "shell" | "agent" | "unknown";
 
+/** Specific terminal AI agent family detected in a tmux pane. */
+export type AgentKind = "codewith" | "codex" | "claude" | "opencode" | "unknown";
+
+/** Visible composer/activity state inferred from the live pane viewport. */
+export type ComposerState = "idle" | "active" | "unknown";
+
+/** Prompt submit key supported by send-level delivery. */
+export type SubmitKey = "Enter" | "Tab";
+
+/** Structured target detection/capability record exposed in JSON outputs. */
+export interface AgentTargetInfo {
+  targetKind: ExecTargetKind;
+  agentKind: AgentKind;
+  composerState: ComposerState;
+  canReceivePrompt: boolean;
+  canQueuePrompt: boolean;
+  submitKeys: SubmitKey[];
+  recommendedSubmitKey?: SubmitKey;
+  reason: string;
+  paneCommand?: string;
+  cwd?: string;
+}
+
 /** Command filter result recorded before any exec delivery is attempted. */
 export interface ExecFilterResult {
   allowed: boolean;
@@ -109,9 +132,11 @@ export interface DispatchOptions {
   goal?: boolean;
   /** Optional machine id (local when omitted). Resolved via @hasna/machines. */
   machine?: string;
+  /** Submit key for prompt sends. Enter is default; Tab is only for proven queue support. */
+  submitKey?: SubmitKey;
   /** Refuse delivery unless the target looks idle. */
   ifIdle?: boolean;
-  /** Allow delivery to an active/busy agent, relying on the agent's own queueing behavior. */
+  /** Queue on active agents that prove Tab queued-message support. */
   queue?: boolean;
   /** Explicit override for active/unknown target state. Use sparingly. */
   forceActive?: boolean;
@@ -137,7 +162,7 @@ export interface DispatchOptions {
   mode?: "auto" | "paste" | "literal";
 }
 
-export type AgentActivityState = "idle" | "active" | "unknown";
+export type AgentActivityState = ComposerState;
 
 export interface DispatchTargetRef {
   target: string;
@@ -253,6 +278,7 @@ export interface CaptureResult {
   capturedAt: string;
   text: string;
   redacted: boolean;
+  detection?: AgentTargetInfo;
   detail?: string;
   ai?: CaptureAiResult;
 }
@@ -282,6 +308,8 @@ export interface DispatchRecord {
   dryRun?: boolean;
   /** Detected agent activity before prompt delivery. */
   targetState?: AgentActivityState;
+  /** Structured target detection/capability metadata before delivery. */
+  detection?: AgentTargetInfo;
   /** Optional pre-delivery transcript capture requested by `captureBeforeLines`. */
   captureBefore?: CaptureResult;
   /** Exact tmux input that would be or was sent for exec records. */

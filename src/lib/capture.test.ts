@@ -14,6 +14,16 @@ function captureRunner(stdout: string, machine = "local"): MockRunner {
   const r = new MockRunner(machine);
   r.responder = (argv) => {
     if (argv[1] === "list-panes") return { stdout: "%1\n", stderr: "", exitCode: 0, source: machine };
+    if (argv[1] === "display-message" && argv.at(-1) === "#{pane_current_command}") {
+      return { stdout: "codewith\n", stderr: "", exitCode: 0, source: machine };
+    }
+    if (argv[1] === "display-message" && argv.at(-1) === "#{pane_current_path}") {
+      return { stdout: "/repo\n", stderr: "", exitCode: 0, source: machine };
+    }
+    if (argv[1] === "display-message" && argv.at(-1) === "#{pane_pid}") {
+      return { stdout: "1234\n", stderr: "", exitCode: 0, source: machine };
+    }
+    if (argv[0] === "ps") return { stdout: "", stderr: "", exitCode: 1, source: machine };
     if (argv[1] === "capture-pane") return { stdout, stderr: "", exitCode: 0, source: machine };
     return { stdout: "", stderr: "", exitCode: 0, source: machine };
   };
@@ -76,6 +86,7 @@ describe("performCapture", () => {
     expect(result.lines).toBe(3);
     expect(result.text).toBe("line 6\nline 7\napi_key=<redacted:secret>\n");
     expect(result.redacted).toBe(true);
+    expect(result.detection).toMatchObject({ targetKind: "agent", agentKind: "codewith", cwd: "/repo" });
     expect(r.argvs().some((a) => a.join(" ") === "tmux capture-pane -t work:agent -p -S -3")).toBe(true);
   });
 

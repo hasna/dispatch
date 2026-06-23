@@ -1,4 +1,5 @@
 import type { Tmux } from "./tmux.js";
+import type { SubmitKey } from "../types.js";
 
 /** Default sleep using the host timer. Injectable for tests. */
 export function realSleep(ms: number): Promise<void> {
@@ -10,6 +11,8 @@ export interface SubmitOptions {
   delayMs: number;
   /** Max additional Enter retries if submission is not confirmed. Default 2. */
   maxRetries?: number;
+  /** Submit key to press after typing. Default Enter. */
+  submitKey?: SubmitKey;
   /** Wait between retries (ms) while re-probing. Default 450. */
   retryIntervalMs?: number;
   /**
@@ -24,7 +27,7 @@ export interface SubmitOptions {
 
 export interface SubmitResult {
   submitted: boolean;
-  /** Number of Enter keypresses issued. */
+  /** Number of submit keypresses issued. */
   attempts: number;
 }
 
@@ -38,9 +41,10 @@ export async function submit(tmux: Tmux, target: string, opts: SubmitOptions): P
   const sleep = opts.sleep ?? realSleep;
   const maxRetries = opts.maxRetries ?? 2;
   const retryIntervalMs = opts.retryIntervalMs ?? 450;
+  const submitKey = opts.submitKey ?? "Enter";
 
   await sleep(Math.max(0, opts.delayMs));
-  tmux.sendKey(target, "Enter");
+  tmux.sendKey(target, submitKey);
   let attempts = 1;
 
   if (!opts.isSubmitted) {
@@ -53,7 +57,7 @@ export async function submit(tmux: Tmux, target: string, opts: SubmitOptions): P
       return { submitted: true, attempts };
     }
     if (retry < maxRetries) {
-      tmux.sendKey(target, "Enter");
+      tmux.sendKey(target, submitKey);
       attempts++;
     }
   }

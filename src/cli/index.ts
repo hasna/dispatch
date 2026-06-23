@@ -8,6 +8,7 @@ import { registerDaemonCommands } from "./daemon-commands.js";
 import { Tmux } from "../lib/tmux.js";
 import { createRunner } from "../lib/runner.js";
 import { loadExecPolicy } from "../lib/exec-policy.js";
+import { inspectAgentTarget } from "../lib/agent-target.js";
 
 export interface CliDeps {
   /** Factory for the client; when provided, the CLI will NOT close it (tests own it). */
@@ -26,6 +27,14 @@ export function parseIntegerOption(label: string, min: number) {
     }
     return parsed;
   };
+}
+
+function normalizeSubmitKeyOption(value: string | undefined): "Enter" | "Tab" | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "enter" || normalized === "return") return "Enter";
+  if (normalized === "tab") return "Tab";
+  throw new InvalidArgumentError("submit-key must be Enter or Tab");
 }
 
 export function buildProgram(deps: CliDeps = {}): Command {
@@ -60,6 +69,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .option("--sessions-query <query>", "filter sessions-query target JSON by text")
     .option("--if-idle", "refuse delivery unless the target looks idle")
     .option("--queue", "allow active targets and rely on the agent queue")
+    .option("--submit-key <key>", "prompt submit key: Enter | Tab")
     .option("--force-active", "explicitly override active/unknown target refusal")
     .option("--capture-before <lines>", "capture redacted transcript lines before delivery", parseIntegerOption("capture-before", 1))
     .option("--dry-run", "validate targets/guards and show what would be sent without typing")
@@ -85,6 +95,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
         throw new Error(`unsupported target source: ${opts.from}`);
       }
       if (opts.from === "sessions-query" || targets.length > 1) {
+        const submitKey = normalizeSubmitKeyOption(opts.submitKey);
         const options: BulkDispatchOptions = {
           source: opts.from === "sessions-query" ? "sessions-query" : "explicit",
           targets: opts.from === "sessions-query" ? undefined : targets,
@@ -93,6 +104,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
           goal: opts.goal === true,
           machine: opts.machine,
           submit: opts.submit,
+          submitKey,
           confirm: opts.confirm,
           submitDelayMs: opts.delay,
           maxSubmitRetries: opts.retries,
@@ -119,6 +131,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
         prompt,
         goal: opts.goal === true,
         machine: opts.machine,
+        submitKey: normalizeSubmitKeyOption(opts.submitKey),
         ifIdle: opts.ifIdle === true,
         queue: opts.queue === true,
         forceActive: opts.forceActive === true,
@@ -258,7 +271,15 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .option("--json", "output JSON")
     .action(async (opts) => {
       const tmux = new Tmux(await createRunner(opts.machine));
-      const targets = tmux.listTargets();
+      const targets = tmux.listTargets().map((target) => ({
+        ...target,
+        detection: inspectAgentTarget(tmux, target.target, {
+          assumeExists: true,
+          paneCommand: target.paneCommand,
+          cwd: target.cwd,
+          panePid: target.panePid,
+        }).detection,
+      }));
       if (opts.json) {
         out(JSON.stringify(targets, null, 2));
       } else if (targets.length === 0) {

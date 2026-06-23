@@ -24,6 +24,7 @@ dispatch send --to work:agent --prompt "Refactor the parser and add tests"
 | Need to press a special key deliberately | **Safe key dispatch** — `dispatch key` only allows named safe keys and still refuses shells / unproven wrapper panes |
 | Need to inspect what happened in a pane | **Bounded capture** — `dispatch capture` captures recent transcript lines, strips terminal controls, and redacts obvious secrets before output or optional AI transforms |
 | Need to fan out prompts across live agent sessions | **Bulk/session orchestration** — `dispatch send` supports idle guards, dry-run, jitter/concurrency caps, pre-capture, and fixed `sessions live/status --json` registry probes |
+| Need to know what a pane actually is | **Native agent detection** — Codewith, Codex, Claude Code/Claude, and OpenCode panes are classified from command, process tree, cwd, and live UI proof |
 | "Did it actually go through?" | **Smart delivery confirmation** — diffs the pane before/after and detects the agent's working/`esc to interrupt` state and the composer clearing |
 | Doesn't work across machines | **Cross-machine** routing through [`@hasna/machines`](https://github.com/hasna/machines) (Tailscale / LAN / SSH) |
 | Fire-and-forget / later | **Scheduled dispatches** (`--at` / `--cron`) owned by a **persistent daemon** that survives restarts |
@@ -68,6 +69,12 @@ git diff | dispatch send --to work:agent --prompt "review this diff"
 # Type without submitting (leave it in the composer)
 dispatch send --to work:agent --prompt "draft" --no-submit
 
+# Queue to an active Codewith/Claude pane that proves Tab queued-message support
+dispatch send --to open-dispatch:1.1 --prompt "Follow up safely" --queue --dry-run
+
+# Explicit submit key. Tab is accepted only when detection proves queue support.
+dispatch send --to open-dispatch:1.1 --prompt "Follow up safely" --submit-key Tab
+
 # Create a Codewith goal from the delivered prompt
 dispatch send --goal --to open-browser:1.1 --prompt "Fix native chat..."
 
@@ -84,7 +91,7 @@ dispatch send --machine spark01 --to work:agent.1 --prompt "build it" --json
 ```
 
 Key flags: `--to <session:window[.pane]>`, `--prompt`/`--file`/stdin, `--machine`,
-`--goal`, `--no-submit`, `--no-confirm`, `--delay <ms>`, `--retries <n>`,
+`--goal`, `--submit-key Enter|Tab`, `--queue`, `--no-submit`, `--no-confirm`, `--delay <ms>`, `--retries <n>`,
 `--mode auto|paste|literal`, `--json`.
 
 `--goal` prefixes the delivered prompt with `/goal ` unless it already starts with
@@ -101,6 +108,31 @@ only (`sessions live --json --once`, then `sessions status --json`) and filters 
 `--force-active` is passed. `--capture-before` stores a bounded redacted transcript
 on each dispatch record for later `dispatch status` / `dispatch list` audit context.
 
+Prompt sends now use native terminal-agent detection before typing. JSON outputs from
+`dispatch targets --json`, `dispatch status --json`, `dispatch capture --json`, and
+bulk send results include detection metadata when available:
+
+```jsonc
+{
+  "agentKind": "codewith",          // codewith | codex | claude | opencode | unknown
+  "targetKind": "agent",            // agent | shell | unknown
+  "composerState": "active",        // idle | active | unknown
+  "canReceivePrompt": false,
+  "canQueuePrompt": true,
+  "submitKeys": ["Enter", "Tab"],
+  "recommendedSubmitKey": "Tab",
+  "reason": "recognized codewith wrapper from process tree and live composer UI; active composer supports queued Tab prompt delivery"
+}
+```
+
+Normal prompt delivery uses `Enter` and refuses active agents unless `--force-active`
+is explicitly passed. `--queue` is the safe active-agent path: when detection proves
+the target supports queued-message behavior, dispatch types the prompt and presses
+`Tab`; otherwise it refuses. Detection supports direct binaries and compatible
+`node`/`bun`/`npx`/`bunx`/`pnpm`/`yarn`/`npm exec` launchers, but wrapper panes still
+need live composer UI proof so arbitrary `node` output and copied transcripts stay
+fail-closed.
+
 ### Key
 
 `dispatch key` is for deliberate special keys, not arbitrary tmux key names. It reuses
@@ -115,7 +147,9 @@ dispatch key --to open-browser:1.1 --key Enter --json
 Allowed keys: `Enter`, `Tab`, `Escape`, `Up`, `Down`, `Left`, `Right`, `Backspace`,
 `Delete`, `Home`, `End`, `PageUp`, `PageDown`. Control keys such as `C-c` are not
 accepted. Key dispatches are recorded in `dispatch list` / `dispatch status` as
-`kind: "key"` with a safe prompt like `<key:Tab>`.
+`kind: "key"` with a safe prompt like `<key:Tab>`. `Enter` is refused when the
+detected composer is active. `Tab` is refused for agents that do not advertise Tab
+support, and active Tab is allowed only when detection proves queued-message support.
 
 ### Capture
 

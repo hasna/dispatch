@@ -118,6 +118,7 @@ export async function performBulkDispatch(
             machine,
             submitDelayMs: options.submitDelayMs,
             submit: options.submit,
+            submitKey: options.submitKey,
             confirm: options.confirm,
             maxSubmitRetries: options.maxSubmitRetries,
             mode: options.mode,

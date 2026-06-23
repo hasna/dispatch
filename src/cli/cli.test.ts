@@ -313,6 +313,35 @@ describe("CLI read/schedule commands (in-memory client)", () => {
     expect(process.exitCode).toBe(0);
   });
 
+  test("send --submit-key delegates Enter/Tab selection", async () => {
+    let received: DispatchOptions | undefined;
+    const fakeClient = {
+      send: async (opts: DispatchOptions): Promise<DispatchRecord> => {
+        received = opts;
+        return {
+          id: "send-tab",
+          kind: "prompt",
+          target: opts.target,
+          machine: "local",
+          prompt: opts.prompt,
+          status: "skipped",
+          dryRun: true,
+          detail: "dry run: prompt would be submitted with Tab using literal delivery",
+          createdAt: "x",
+          updatedAt: "x",
+        };
+      },
+    } as DispatchClient;
+    const program = buildProgram({ clientFactory: () => fakeClient, out: () => undefined });
+
+    await program.parseAsync(
+      ["send", "--to", "work:agent", "--prompt", "Queue me", "--submit-key", "Tab", "--dry-run"],
+      { from: "user" },
+    );
+
+    expect(received).toMatchObject({ target: "work:agent", submitKey: "Tab", dryRun: true });
+  });
+
   test("send --from sessions-query delegates bulk-safe defaults", async () => {
     const out: string[] = [];
     let received: BulkDispatchOptions | undefined;
@@ -365,6 +394,7 @@ describe("CLI read/schedule commands (in-memory client)", () => {
       prompt: "Fix native chat",
       goal: true,
       ifIdle: true,
+      submitKey: undefined,
       dryRun: true,
       maxConcurrency: 3,
       jitterMs: 25,
