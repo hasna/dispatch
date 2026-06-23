@@ -54,3 +54,15 @@ dispatch schedule --machine spark01 --to work:agent --prompt "nightly" --cron "0
 dispatch schedule --machine spark01 --to work:agent --prompt "follow up" --in 30m
 dispatch loop --machine spark01 --to work:agent --prompt "summarize status" --every 5m --name spark01-status
 ```
+
+Keep the daemon always live on the machine where the schedule is stored. On Linux hosts:
+
+```bash
+dispatch daemon service install --start
+dispatch daemon service status
+dispatch daemon status --json
+```
+
+The daemon status includes the next due item and recent schedule/loop failures. Cross-machine
+delivery failures are recorded on the schedule/loop as `lastFailureAt`,
+`lastFailureReason`, and `failureCount`; interval loops retry at their next interval.

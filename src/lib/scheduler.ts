@@ -46,15 +46,18 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
   for (const sched of due) {
     let lastDispatchId: string | undefined;
     let failedDispatch = false;
+    let failureReason: string | undefined;
     try {
       const rec = await deps.dispatch(sched.options);
       lastDispatchId = rec?.id;
       if (rec?.status !== "delivered") {
         failedDispatch = true;
-        deps.onError?.(sched, new Error(rec.detail ?? `dispatch ${rec.id} ended with status ${rec.status}`));
+        failureReason = rec?.detail ?? `dispatch ${rec?.id ?? "unknown"} ended with status ${rec?.status ?? "unknown"}`;
+        deps.onError?.(sched, new Error(failureReason));
       }
     } catch (err) {
       failedDispatch = true;
+      failureReason = err instanceof Error ? err.message : String(err);
       deps.onError?.(sched, err);
     }
 
@@ -81,6 +84,9 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
             status: "failed",
             lastDispatchId,
             lastFiredAt: firedAt,
+            lastFailureAt: firedAt,
+            lastFailureReason: failureReason,
+            failureCount: (currentSched.failureCount ?? sched.failureCount ?? 0) + 1,
           });
           if (updated) failed.push(updated);
           continue;
@@ -96,6 +102,9 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
         nextRun,
         lastDispatchId,
         lastFiredAt: firedAt,
+        lastFailureAt: firedAt,
+        lastFailureReason: failureReason,
+        failureCount: (currentSched.failureCount ?? sched.failureCount ?? 0) + 1,
       });
       if (updated) failed.push(updated);
       continue;
@@ -112,6 +121,8 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
         nextRun,
         lastDispatchId,
         lastFiredAt: firedAt,
+        lastFailureAt: undefined,
+        lastFailureReason: undefined,
       });
       if (updated) fired.push(updated);
     } else {
@@ -119,6 +130,8 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
         status: "fired",
         lastDispatchId,
         lastFiredAt: firedAt,
+        lastFailureAt: undefined,
+        lastFailureReason: undefined,
       });
       if (updated) fired.push(updated);
     }

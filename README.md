@@ -56,7 +56,7 @@ dispatch pause      Pause a schedule/loop
 dispatch resume     Resume a paused schedule/loop
 dispatch clear      Delete a schedule/loop
 dispatch cancel     Cancel a scheduled dispatch
-dispatch daemon     start | stop | status | run  (scheduled-dispatch queue)
+dispatch daemon     start | ensure | restart | status | doctor | service | stop
 ```
 
 ### Send
@@ -269,10 +269,29 @@ dispatch clear <id>           # delete
 Scheduled dispatches are fired by the **daemon**:
 
 ```bash
-dispatch daemon start         # background process owning the queue
-dispatch daemon status        # running? how many scheduled / fired?
+dispatch daemon ensure        # idempotently start/recover the queue owner
+dispatch daemon status        # health, last tick, next due item, failures
+dispatch daemon restart       # safe stop + start
+dispatch daemon doctor        # small actionable health check
 dispatch daemon stop
 ```
+
+On Linux machines such as `spark02` and `spark01`, install the daemon as a user-level
+systemd service so schedules and loops have an always-live owner:
+
+```bash
+dispatch daemon service install --start
+dispatch daemon service status
+dispatch daemon service restart
+```
+
+The generated unit is `~/.config/systemd/user/hasna-dispatch-daemon.service`.
+It runs `dispatch daemon run` with `Restart=on-failure` and `RestartSec=10s`,
+which avoids tight restart loops while recovering from crashes. If you need the
+service to survive logout on a Linux host, enable user lingering outside dispatch
+with your normal machine-management policy. macOS launchd support is not built in
+yet; use `dispatch daemon ensure` there and track launchd as a small follow-up if
+needed.
 
 The queue is persisted (sqlite under `~/.hasna/dispatch`), so it **survives a daemon
 restart** — a schedule created while the daemon was down still fires once it's back up.
@@ -280,6 +299,15 @@ The daemon processes due schedules serially; interval loops compute their next r
 after the previous dispatch attempt completes, so runs do not overlap by default. If a
 target is busy or unsafe, the dispatch attempt is recorded as skipped/failed and a loop
 waits until its next interval.
+
+Failure behavior is deliberately conservative:
+
+- one-shot schedules retry transient failures every 60s and give up after the retry
+  window, then become `failed`;
+- cron schedules and interval loops stay `scheduled` and retry at their next cadence;
+- each failed attempt records `lastFailureAt`, `lastFailureReason`, and `failureCount`;
+- `dispatch daemon status --json` reports `health`, `lastTickAt`, `nextDue`, and
+  `recentFailures` without including prompt bodies.
 
 ## SDK
 
@@ -358,7 +386,9 @@ Every CLI verb is also an MCP tool, so agents can dispatch over MCP:
 //   dispatch_send, dispatch_key, dispatch_capture, dispatch_exec, dispatch_status, dispatch_list, dispatch_targets,
 //   dispatch_schedule, dispatch_loop, dispatch_schedules, dispatch_loops,
 //   dispatch_cancel, dispatch_pause, dispatch_resume, dispatch_clear,
-//   dispatch_daemon_start, dispatch_daemon_stop, dispatch_daemon_status
+//   dispatch_daemon_start, dispatch_daemon_stop, dispatch_daemon_status,
+//   dispatch_daemon_ensure, dispatch_daemon_restart, dispatch_daemon_doctor,
+//   dispatch_daemon_service
 ```
 
 ```bash

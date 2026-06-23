@@ -33,7 +33,8 @@
   registered on `McpServer`. A parity test keeps the MCP and CLI verb sets identical.
 - **Daemon** — a long-running loop (`daemon/loop.ts`) that runs the scheduler `tick()` on
   an interval, owns the scheduled-dispatch queue, and tracks deliveries. Single-instance
-  via a pidfile; state in sqlite so it survives restarts.
+  via an atomic pidfile claim; schedules live in sqlite so they survive restarts. A small
+  heartbeat file records start time, last tick, and tick errors for health checks.
 
 ## The Runner abstraction
 
@@ -50,4 +51,22 @@ Everything lives in sqlite at `~/.hasna/dispatch/dispatch.db` (override with
 - `dispatches` — every dispatch with status, confirmation result, computed delay, timestamps.
 - `schedules` — one-shot (`at` or relative `in`), recurring cron (`cron`), and
   interval loop (`every`/`interval_ms`) dispatches with kind/name, next run time,
-  lifecycle status, and last fired dispatch.
+  lifecycle status, last fired dispatch, and failure audit fields
+  (`last_failure_at`, `last_failure_reason`, `failure_count`).
+- `daemon.pid`, `daemon.state.json`, `daemon.log` — process ownership, heartbeat,
+  and append-only daemon logs in `DISPATCH_DATA_DIR`.
+
+## Daemon health
+
+`dispatch daemon status --json` reports:
+
+- process state: `running`, `stale`, `pid`, and coarse `health` (`alive`, `stale`, `dead`);
+- heartbeat state: `startedAt`, `lastTickAt`, tick start/finish/error timestamps, and
+  heartbeat age;
+- queue state: scheduled/paused/fired/cancelled/failed counts, the next scheduled item,
+  and recent schedule/loop failures without prompt bodies.
+
+`dispatch daemon ensure` is idempotent and recovers stale pidfiles. `dispatch daemon
+restart` stops and starts the daemon. On Linux, `dispatch daemon service install --start`
+writes and enables a user-level systemd unit with `Restart=on-failure` and
+`RestartSec=10s`; this is the intended always-live mode for spark machines.

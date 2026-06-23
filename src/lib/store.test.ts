@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { rmSync } from "node:fs";
 import { Store } from "./store.js";
 
 function mem(): Store {
@@ -262,6 +264,23 @@ describe("Store — schedules", () => {
     s.close();
   });
 
+  test("schedule failure metadata is persisted and queryable", () => {
+    const s = mem();
+    const sched = s.createSchedule({ options: { target: "s:w", prompt: "sensitive body" }, nextRun: "2099-01-01T00:00:00.000Z" });
+    s.updateSchedule(sched.id, {
+      lastFailureAt: "2026-06-23T00:00:00.000Z",
+      lastFailureReason: "target pane not found",
+      failureCount: 2,
+    });
+    const after = s.getSchedule(sched.id)!;
+    expect(after.lastFailureAt).toBe("2026-06-23T00:00:00.000Z");
+    expect(after.lastFailureReason).toBe("target pane not found");
+    expect(after.failureCount).toBe(2);
+    expect(s.recentScheduleFailures()).toHaveLength(1);
+    expect(s.nextScheduled()?.id).toBe(sched.id);
+    s.close();
+  });
+
   test("persists across reopen (same file)", () => {
     const path = `/tmp/dispatch_store_${process.pid}_${Math.floor(Math.random() * 1e6)}.db`;
     const s1 = new Store(path);
@@ -270,5 +289,37 @@ describe("Store — schedules", () => {
     const s2 = new Store(path);
     expect(s2.getDispatch(rec.id)!.prompt).toBe("persist me");
     s2.close();
+  });
+
+  test("migrates older schedules table before creating failure index", () => {
+    const path = `/tmp/dispatch_store_old_${process.pid}_${Math.floor(Math.random() * 1e6)}.db`;
+    const db = new Database(path);
+    db.exec(`
+      CREATE TABLE schedules (
+        id TEXT PRIMARY KEY,
+        options_json TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'schedule',
+        name TEXT,
+        at TEXT,
+        cron TEXT,
+        every TEXT,
+        interval_ms INTEGER,
+        next_run TEXT NOT NULL,
+        status TEXT NOT NULL,
+        last_dispatch_id TEXT,
+        last_fired_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+    db.close();
+    const s = new Store(path);
+    const sched = s.createSchedule({ options: { target: "s:w", prompt: "x" }, nextRun: "2099-01-01T00:00:00.000Z" });
+    s.updateSchedule(sched.id, { lastFailureAt: "2026-06-23T00:00:00.000Z", lastFailureReason: "failed", failureCount: 1 });
+    expect(s.recentScheduleFailures()).toHaveLength(1);
+    s.close();
+    rmSync(path, { force: true });
+    rmSync(`${path}-shm`, { force: true });
+    rmSync(`${path}-wal`, { force: true });
   });
 });

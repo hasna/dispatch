@@ -66,6 +66,24 @@ d("dispatch daemon (real tmux + fake agent)", () => {
     expect(JSON.parse(runCli(["daemon", "status", "--json"]).stdout).running).toBe(false);
   });
 
+  test("ensure is idempotent and restart brings the daemon back healthy", () => {
+    const ensure = runCli(["daemon", "ensure", "--json"]);
+    expect(ensure.status).toBe(0);
+    let status = JSON.parse(runCli(["daemon", "status", "--json"]).stdout);
+    expect(status.running).toBe(true);
+    expect(status.health).toBe("alive");
+
+    const ensureAgain = JSON.parse(runCli(["daemon", "ensure", "--json"]).stdout);
+    expect(ensureAgain.alreadyRunning).toBe(true);
+
+    const restart = runCli(["daemon", "restart", "--json"]);
+    expect(restart.status).toBe(0);
+    status = JSON.parse(runCli(["daemon", "status", "--json"]).stdout);
+    expect(status.running).toBe(true);
+    expect(status.health).toBe("alive");
+    expect(status.lastTickAt || status.lastTickStartedAt).toBeDefined();
+  }, 30000);
+
   test("a relative scheduled dispatch fires and is delivered to the pane", async () => {
     runCli(["daemon", "start"]);
     const sched = JSON.parse(

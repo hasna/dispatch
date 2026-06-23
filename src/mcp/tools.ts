@@ -8,6 +8,7 @@ import { loadExecPolicy } from "../lib/exec-policy.js";
 import { inspectAgentTarget } from "../lib/agent-target.js";
 import { daemonStatus, stopDaemon } from "../daemon/control.js";
 import { startDaemon } from "../daemon/daemon.js";
+import { serviceAction } from "../daemon/service.js";
 
 export interface ToolDeps {
   client: DispatchClient;
@@ -365,12 +366,73 @@ export const TOOLS: ToolDef[] = [
     handler: async () => stopDaemon(),
   },
   {
+    name: "dispatch_daemon_ensure",
+    verb: "daemon_ensure",
+    title: "Ensure the daemon",
+    description: "Idempotently ensure the dispatch daemon is running; recover stale state.",
+    inputSchema: {},
+    handler: async (deps) => {
+      const before = daemonStatus(deps.store);
+      if (before.health === "alive") return { ok: true, started: false, alreadyRunning: true, before, after: before };
+      if (before.running || before.stale) await stopDaemon();
+      const entry = deps.daemonEntry ? deps.daemonEntry() : defaultDaemonEntry();
+      const started = await startDaemon({ cliEntry: entry, args: [] });
+      const after = daemonStatus(deps.store);
+      return { ok: after.running, started: started.started, alreadyRunning: started.alreadyRunning, before, after };
+    },
+  },
+  {
+    name: "dispatch_daemon_restart",
+    verb: "daemon_restart",
+    title: "Restart the daemon",
+    description: "Stop and restart the dispatch daemon.",
+    inputSchema: {},
+    handler: async (deps) => {
+      const stopped = await stopDaemon();
+      const entry = deps.daemonEntry ? deps.daemonEntry() : defaultDaemonEntry();
+      const started = await startDaemon({ cliEntry: entry, args: [] });
+      return { ok: started.started || started.alreadyRunning, stopped, started };
+    },
+  },
+  {
     name: "dispatch_daemon_status",
     verb: "daemon_status",
     title: "Daemon status",
     description: "Report daemon + queue status (running, scheduled, fired, dispatch counts).",
     inputSchema: {},
     handler: async (deps) => daemonStatus(deps.store),
+  },
+  {
+    name: "dispatch_daemon_doctor",
+    verb: "daemon_doctor",
+    title: "Daemon doctor",
+    description: "Return lightweight daemon health diagnostics.",
+    inputSchema: {},
+    handler: async (deps) => {
+      const status = daemonStatus(deps.store);
+      const findings: string[] = [];
+      if (status.health === "dead") findings.push("daemon is not running");
+      if (status.health === "stale") findings.push("daemon health is stale");
+      if (status.scheduled > 0 && status.health !== "alive") findings.push("scheduled items cannot fire until daemon is alive");
+      if (status.recentFailures.length > 0) findings.push("recent schedule/loop failures recorded");
+      return { ok: findings.length === 0, status, findings };
+    },
+  },
+  {
+    name: "dispatch_daemon_service",
+    verb: "daemon_service",
+    title: "Manage daemon service",
+    description: "Manage the user-level systemd service for the dispatch daemon.",
+    inputSchema: {
+      action: z.enum(["install", "start", "stop", "restart", "status", "uninstall"]),
+      start: z.boolean().optional(),
+    },
+    handler: async (deps, a) =>
+      serviceAction(a.action as never, {
+        execPath: process.execPath,
+        cliEntry: deps.daemonEntry ? deps.daemonEntry() : defaultDaemonEntry(),
+        startAfterInstall: a.start === true,
+      }),
   },
 ];
 

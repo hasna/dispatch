@@ -4,18 +4,22 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  claimPid,
   daemonStatus,
   isAlive,
   isDaemonRunning,
+  readDaemonState,
   readPid,
   removePid,
   signalStop,
   stopDaemon,
+  writeDaemonState,
   writePid,
 } from "./control.js";
 import { Store } from "../lib/store.js";
 
 const pidPath = join(tmpdir(), `dispatch_test_pid_${process.pid}_${Math.floor(Math.random() * 1e6)}.pid`);
+const statePath = join(tmpdir(), `dispatch_test_state_${process.pid}_${Math.floor(Math.random() * 1e6)}.json`);
 const DEAD_PID = 2147480000; // almost certainly not a live process
 
 function spawnNamedSleeper(argv0: string) {
@@ -24,6 +28,7 @@ function spawnNamedSleeper(argv0: string) {
 
 afterEach(() => {
   rmSync(pidPath, { force: true });
+  rmSync(statePath, { force: true });
 });
 
 describe("pidfile", () => {
@@ -33,6 +38,25 @@ describe("pidfile", () => {
     removePid(pidPath);
     expect(readPid(pidPath)).toBeUndefined();
     expect(existsSync(pidPath)).toBe(false);
+  });
+  test("claimPid recovers a stale pidfile atomically", () => {
+    writePid(DEAD_PID, pidPath);
+    const claimed = claimPid(process.pid, pidPath);
+    expect(claimed.claimed).toBe(true);
+    expect(readPid(pidPath)).toBe(process.pid);
+  });
+  test("claimPid refuses an already running owned daemon", () => {
+    writePid(process.pid, pidPath);
+    const claimed = claimPid(12345, pidPath);
+    expect(claimed.claimed).toBe(false);
+    expect(claimed.pid).toBe(process.pid);
+  });
+});
+
+describe("daemon state", () => {
+  test("write/read daemon heartbeat state", () => {
+    writeDaemonState({ pid: 123, startedAt: "2026-06-23T00:00:00.000Z", intervalMs: 1000, lastTickAt: "2026-06-23T00:00:01.000Z" }, statePath);
+    expect(readDaemonState(statePath)).toMatchObject({ pid: 123, intervalMs: 1000, lastTickAt: "2026-06-23T00:00:01.000Z" });
   });
 });
 
@@ -108,11 +132,87 @@ describe("daemonStatus", () => {
     store.updateSchedule(paused.id, { status: "paused" });
     store.createDispatch({ target: "s:w", prompt: "a" });
     writePid(process.pid, pidPath);
-    const st = daemonStatus(store, pidPath);
+    writeDaemonState(
+      {
+        pid: process.pid,
+        startedAt: "2026-06-23T00:00:00.000Z",
+        intervalMs: 1000,
+        lastTickAt: new Date().toISOString(),
+      },
+      statePath,
+    );
+    const st = daemonStatus(store, pidPath, statePath);
     expect(st.running).toBe(true);
+    expect(st.health).toBe("alive");
     expect(st.scheduled).toBe(1);
     expect(st.paused).toBe(1);
     expect(st.recentDispatches).toBe(1);
+    expect(st.nextDue?.target).toBe("s:w");
+    store.close();
+  });
+  test("reports stale health when heartbeat is old", () => {
+    const store = new Store(":memory:");
+    writePid(process.pid, pidPath);
+    writeDaemonState(
+      {
+        pid: process.pid,
+        startedAt: "2026-06-23T00:00:00.000Z",
+        intervalMs: 1000,
+        lastTickAt: "2026-06-23T00:00:00.000Z",
+      },
+      statePath,
+    );
+    const st = daemonStatus(store, pidPath, statePath, new Date("2026-06-23T00:02:00.000Z"));
+    expect(st.health).toBe("stale");
+    store.close();
+  });
+  test("uses the freshest tick marker while a tick is in progress", () => {
+    const store = new Store(":memory:");
+    writePid(process.pid, pidPath);
+    writeDaemonState(
+      {
+        pid: process.pid,
+        startedAt: "2026-06-23T00:00:00.000Z",
+        intervalMs: 1000,
+        lastTickAt: "2026-06-23T00:00:00.000Z",
+        lastTickStartedAt: "2026-06-23T00:01:59.000Z",
+      },
+      statePath,
+    );
+    const st = daemonStatus(store, pidPath, statePath, new Date("2026-06-23T00:02:00.000Z"));
+    expect(st.health).toBe("alive");
+    expect(st.heartbeatAgeMs).toBe(1000);
+    store.close();
+  });
+  test("ignores heartbeat state for a different live pid", () => {
+    const store = new Store(":memory:");
+    writePid(process.pid, pidPath);
+    writeDaemonState(
+      {
+        pid: DEAD_PID,
+        startedAt: "2026-06-23T00:00:00.000Z",
+        intervalMs: 1000,
+        lastTickAt: "2026-06-23T00:00:00.000Z",
+      },
+      statePath,
+    );
+    const st = daemonStatus(store, pidPath, statePath, new Date("2026-06-23T00:02:00.000Z"));
+    expect(st.health).toBe("alive");
+    expect(st.lastTickAt).toBeUndefined();
+    store.close();
+  });
+  test("reports recent schedule failures without exposing prompt text", () => {
+    const store = new Store(":memory:");
+    const sched = store.createSchedule({ options: { target: "s:w", prompt: "secret prompt" }, nextRun: "2099-01-01T00:00:00Z" });
+    store.updateSchedule(sched.id, {
+      lastFailureAt: "2026-06-23T00:00:00.000Z",
+      lastFailureReason: "target pane not found",
+      failureCount: 1,
+    });
+    const st = daemonStatus(store, pidPath, statePath);
+    expect(st.recentFailures).toHaveLength(1);
+    expect(st.recentFailures[0]).toMatchObject({ id: sched.id, target: "s:w", lastFailureReason: "target pane not found" });
+    expect(JSON.stringify(st.recentFailures)).not.toContain("secret prompt");
     store.close();
   });
 });

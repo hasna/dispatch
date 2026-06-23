@@ -360,6 +360,12 @@ export interface ScheduledDispatch {
   /** Id of the last dispatch this schedule produced. */
   lastDispatchId?: string;
   lastFiredAt?: string;
+  /** Last failed attempt timestamp, if any. Kept as audit metadata. */
+  lastFailureAt?: string;
+  /** Last failed attempt reason, if any. */
+  lastFailureReason?: string;
+  /** Number of failed attempts recorded for this schedule/loop. */
+  failureCount?: number;
   createdAt: string;
   updatedAt: string;
 }

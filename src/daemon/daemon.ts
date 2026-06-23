@@ -7,7 +7,7 @@ import { tick } from "../lib/scheduler.js";
 import { realSleep } from "../lib/submit.js";
 import { daemonLogPath, pidFilePath } from "../lib/paths.js";
 import { runLoop } from "./loop.js";
-import { isDaemonRunning, removePid, writePid } from "./control.js";
+import { claimPid, isDaemonRunning, removePid, writeDaemonState, type DaemonStateFile } from "./control.js";
 
 export interface RunDaemonOptions {
   intervalMs?: number;
@@ -20,6 +20,7 @@ export interface RunDaemonOptions {
   shouldStop?: () => boolean;
   sleep?: (ms: number) => Promise<void>;
   log?: (msg: string) => void;
+  statePath?: string;
 }
 
 function intervalFromEnv(): number | undefined {
@@ -37,21 +38,27 @@ function intervalFromEnv(): number | undefined {
  */
 export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   const pidPath = opts.pidPath ?? pidFilePath();
+  const statePath = opts.statePath;
   const intervalMs = opts.intervalMs ?? intervalFromEnv() ?? 1000;
   const log = opts.log ?? ((m: string) => console.error(`[dispatch-daemon] ${m}`));
 
-  const running = isDaemonRunning(pidPath);
-  if (running.running) {
-    throw new Error(`daemon already running (pid ${running.pid})`);
+  const claimed = claimPid(process.pid, pidPath);
+  if (!claimed.claimed) {
+    throw new Error(`daemon already running (pid ${claimed.pid ?? "unknown"})`);
   }
-  if (running.stale) removePid(pidPath);
 
   const ownStore = !opts.store;
   const store = opts.store ?? new Store();
   const ownClient = !opts.client;
   const client = opts.client ?? new DispatchClient({ store });
 
-  writePid(process.pid, pidPath);
+  let state: DaemonStateFile = {
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    intervalMs,
+  };
+  const persistState = (): void => writeDaemonState(state, statePath);
+  persistState();
   log(`started (pid ${process.pid}), interval ${intervalMs}ms`);
 
   let stopFlag = false;
@@ -69,20 +76,42 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
       shouldStop: opts.shouldStop ?? (() => stopFlag),
       onTickError: (err) => log(`tick error: ${err instanceof Error ? err.message : String(err)}`),
       tickFn: async () => {
-        const res = await tick({
-          store,
-          dispatch: (options) => client.send(options),
-          onError: (sched, err) =>
-            log(`dispatch failed for schedule ${sched.id}: ${err instanceof Error ? err.message : String(err)}`),
-        });
-        if (res.fired.length > 0) log(`fired ${res.fired.length} schedule(s)`);
-        if (res.failed.length > 0) log(`deferred ${res.failed.length} failed schedule(s) for retry`);
+        state = { ...state, lastTickStartedAt: new Date().toISOString(), lastTickError: undefined };
+        persistState();
+        try {
+          const res = await tick({
+            store,
+            dispatch: (options) => client.send(options),
+            onError: (sched, err) =>
+              log(`dispatch failed for schedule ${sched.id}: ${err instanceof Error ? err.message : String(err)}`),
+          });
+          state = {
+            ...state,
+            lastTickAt: new Date().toISOString(),
+            lastTickFinishedAt: new Date().toISOString(),
+            lastTickError: undefined,
+          };
+          persistState();
+          if (res.fired.length > 0) log(`fired ${res.fired.length} schedule(s)`);
+          if (res.failed.length > 0) log(`deferred ${res.failed.length} failed schedule(s) for retry`);
+        } catch (err) {
+          state = {
+            ...state,
+            lastTickAt: new Date().toISOString(),
+            lastTickFinishedAt: new Date().toISOString(),
+            lastTickError: err instanceof Error ? err.message : String(err),
+          };
+          persistState();
+          throw err;
+        }
       },
     });
   } finally {
     process.off("SIGTERM", onSignal);
     process.off("SIGINT", onSignal);
     removePid(pidPath);
+    state = { ...state, stoppedAt: new Date().toISOString() };
+    persistState();
     if (ownClient) client.close();
     else if (ownStore) store.close();
     log("stopped");
@@ -113,7 +142,6 @@ export async function startDaemon(opts: {
   const pidPath = opts.pidPath ?? pidFilePath();
   const running = isDaemonRunning(pidPath);
   if (running.running) return { started: false, alreadyRunning: true, pid: running.pid };
-  if (running.stale) removePid(pidPath);
 
   const logPath = opts.logPath ?? daemonLogPath();
   mkdirSync(dirname(logPath), { recursive: true });

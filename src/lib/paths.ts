@@ -20,3 +20,13 @@ export function pidFilePath(): string {
 export function daemonLogPath(): string {
   return join(dataDir(), "daemon.log");
 }
+
+/** Path to the daemon heartbeat/state file. */
+export function daemonStatePath(): string {
+  return join(dataDir(), "daemon.state.json");
+}
+
+/** Directory used as an atomic daemon pidfile lock. */
+export function daemonPidLockPath(): string {
+  return join(dataDir(), "daemon.pid.lock");
+}

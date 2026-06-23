@@ -207,6 +207,9 @@ describe("scheduler.tick", () => {
     expect(after.status).toBe("scheduled");
     expect(after.nextRun).toBe("2026-06-17T10:01:00.000Z");
     expect(after.lastDispatchId).toBe("rec-loop-failed");
+    expect(after.lastFailureAt).toBeDefined();
+    expect(after.lastFailureReason).toMatch(/ended with status skipped/);
+    expect(after.failureCount).toBe(1);
     store.close();
   });
 
@@ -229,6 +232,9 @@ describe("scheduler.tick", () => {
     expect(after.status).toBe("scheduled");
     expect(after.lastDispatchId).toBe("rec-failed");
     expect(after.nextRun).toBe("2026-06-17T10:00:05.000Z");
+    expect(after.lastFailureAt).toBeDefined();
+    expect(after.lastFailureReason).toMatch(/ended with status failed/);
+    expect(after.failureCount).toBe(1);
     store.close();
   });
 
@@ -251,6 +257,34 @@ describe("scheduler.tick", () => {
     expect(after.status).toBe("scheduled");
     expect(after.lastDispatchId).toBe("rec-skipped");
     expect(after.nextRun).toBe("2026-06-17T10:00:05.000Z");
+    store.close();
+  });
+
+  test("a later successful loop run clears active failure metadata", async () => {
+    const store = new Store(":memory:");
+    const sched = store.createSchedule({
+      options: { target: "s:w", prompt: "recover" },
+      kind: "loop",
+      every: "30s",
+      intervalMs: 30_000,
+      nextRun: "2000-01-01T00:00:00.000Z",
+    });
+    store.updateSchedule(sched.id, {
+      lastFailureAt: "2026-06-17T09:59:00.000Z",
+      lastFailureReason: "target missing",
+      failureCount: 1,
+    });
+    await tick({
+      store,
+      dispatch: async () => fakeRecord("rec-recovered", "delivered"),
+      now: () => new Date("2026-06-17T10:00:00.000Z"),
+    });
+    const after = store.getSchedule(sched.id)!;
+    expect(after.status).toBe("scheduled");
+    expect(after.lastFailureAt).toBeUndefined();
+    expect(after.lastFailureReason).toBeUndefined();
+    expect(after.failureCount).toBe(1);
+    expect(store.recentScheduleFailures()).toHaveLength(0);
     store.close();
   });
 

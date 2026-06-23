@@ -3,15 +3,17 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runDaemon, startDaemon } from "./daemon.js";
-import { writePid } from "./control.js";
+import { readDaemonState, writePid } from "./control.js";
 import { Store } from "../lib/store.js";
 import { DispatchClient } from "../sdk/index.js";
 
 const pidPath = join(tmpdir(), `dispatch_daemon_pid_${process.pid}_${Math.floor(Math.random() * 1e6)}.pid`);
+const statePath = join(tmpdir(), `dispatch_daemon_state_${process.pid}_${Math.floor(Math.random() * 1e6)}.json`);
 const noSleep = async () => {};
 
 afterEach(() => {
   rmSync(pidPath, { force: true });
+  rmSync(statePath, { force: true });
 });
 
 describe("runDaemon", () => {
@@ -35,6 +37,7 @@ describe("runDaemon", () => {
       store,
       client,
       pidPath,
+      statePath,
       sleep: noSleep,
       shouldStop: () => ticks++ >= 1,
       log: () => {},
@@ -43,6 +46,8 @@ describe("runDaemon", () => {
     expect(sends).toBe(1);
     expect(store.listSchedules({ status: "fired" })).toHaveLength(1);
     expect(existsSync(pidPath)).toBe(false); // cleaned up on exit
+    expect(readDaemonState(statePath)?.lastTickAt).toBeDefined();
+    expect(readDaemonState(statePath)?.stoppedAt).toBeDefined();
     store.close();
   });
 

@@ -56,6 +56,9 @@ interface ScheduleRow {
   status: string;
   last_dispatch_id: string | null;
   last_fired_at: string | null;
+  last_failure_at: string | null;
+  last_failure_reason: string | null;
+  failure_count: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -99,6 +102,9 @@ function rowToSchedule(r: ScheduleRow): ScheduledDispatch {
     status: r.status as ScheduleStatus,
     lastDispatchId: r.last_dispatch_id ?? undefined,
     lastFiredAt: r.last_fired_at ?? undefined,
+    lastFailureAt: r.last_failure_at ?? undefined,
+    lastFailureReason: r.last_failure_reason ?? undefined,
+    failureCount: r.failure_count ?? undefined,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -188,6 +194,9 @@ export class Store {
         status TEXT NOT NULL,
         last_dispatch_id TEXT,
         last_fired_at TEXT,
+        last_failure_at TEXT,
+        last_failure_reason TEXT,
+        failure_count INTEGER,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -207,6 +216,10 @@ export class Store {
     this.ensureScheduleColumn("name", "TEXT");
     this.ensureScheduleColumn("every", "TEXT");
     this.ensureScheduleColumn("interval_ms", "INTEGER");
+    this.ensureScheduleColumn("last_failure_at", "TEXT");
+    this.ensureScheduleColumn("last_failure_reason", "TEXT");
+    this.ensureScheduleColumn("failure_count", "INTEGER");
+    withSqliteBusyRetry(() => this.db.exec("CREATE INDEX IF NOT EXISTS idx_schedules_last_failure ON schedules(last_failure_at);"));
   }
 
   private ensureDispatchColumn(name: string, definition: string): void {
@@ -416,8 +429,8 @@ export class Store {
     };
     withSqliteBusyRetry(() =>
       this.db.query(
-        `INSERT INTO schedules (id, options_json, kind, name, at, cron, every, interval_ms, next_run, status, last_dispatch_id, last_fired_at, created_at, updated_at)
-         VALUES ($id, $options, $kind, $name, $at, $cron, $every, $intervalMs, $next, $status, $lastDispatch, $lastFired, $created, $updated)`,
+        `INSERT INTO schedules (id, options_json, kind, name, at, cron, every, interval_ms, next_run, status, last_dispatch_id, last_fired_at, last_failure_at, last_failure_reason, failure_count, created_at, updated_at)
+         VALUES ($id, $options, $kind, $name, $at, $cron, $every, $intervalMs, $next, $status, $lastDispatch, $lastFired, $lastFailureAt, $lastFailureReason, $failureCount, $created, $updated)`,
       )
       .run({
         $id: sched.id,
@@ -432,6 +445,9 @@ export class Store {
         $status: sched.status,
         $lastDispatch: null,
         $lastFired: null,
+        $lastFailureAt: null,
+        $lastFailureReason: null,
+        $failureCount: 0,
         $created: sched.createdAt,
         $updated: sched.updatedAt,
       }),
@@ -446,14 +462,23 @@ export class Store {
 
   updateSchedule(
     id: string,
-    patch: Partial<Pick<ScheduledDispatch, "nextRun" | "status" | "lastDispatchId" | "lastFiredAt">>,
+    patch: Partial<
+      Pick<
+        ScheduledDispatch,
+        "nextRun" | "status" | "lastDispatchId" | "lastFiredAt" | "lastFailureAt" | "lastFailureReason" | "failureCount"
+      >
+    >,
   ): ScheduledDispatch {
     const existing = this.getSchedule(id);
     if (!existing) throw new Error(`schedule not found: ${id}`);
     const merged: ScheduledDispatch = { ...existing, ...patch, updatedAt: nowIso() };
     withSqliteBusyRetry(() =>
       this.db.query(
-        `UPDATE schedules SET next_run=$next, status=$status, last_dispatch_id=$lastDispatch, last_fired_at=$lastFired, updated_at=$updated WHERE id=$id`,
+        `UPDATE schedules
+         SET next_run=$next, status=$status, last_dispatch_id=$lastDispatch, last_fired_at=$lastFired,
+             last_failure_at=$lastFailureAt, last_failure_reason=$lastFailureReason, failure_count=$failureCount,
+             updated_at=$updated
+         WHERE id=$id`,
       )
       .run({
         $id: id,
@@ -461,6 +486,9 @@ export class Store {
         $status: merged.status,
         $lastDispatch: merged.lastDispatchId ?? null,
         $lastFired: merged.lastFiredAt ?? null,
+        $lastFailureAt: merged.lastFailureAt ?? null,
+        $lastFailureReason: merged.lastFailureReason ?? null,
+        $failureCount: merged.failureCount ?? 0,
         $updated: merged.updatedAt,
       }),
     );
@@ -470,7 +498,12 @@ export class Store {
   updateScheduleIfStatus(
     id: string,
     status: ScheduleStatus,
-    patch: Partial<Pick<ScheduledDispatch, "nextRun" | "status" | "lastDispatchId" | "lastFiredAt">>,
+    patch: Partial<
+      Pick<
+        ScheduledDispatch,
+        "nextRun" | "status" | "lastDispatchId" | "lastFiredAt" | "lastFailureAt" | "lastFailureReason" | "failureCount"
+      >
+    >,
   ): ScheduledDispatch | undefined {
     const existing = this.getSchedule(id);
     if (!existing || existing.status !== status) return undefined;
@@ -524,6 +557,26 @@ export class Store {
         "SELECT * FROM schedules WHERE status = 'scheduled' AND next_run <= $now ORDER BY next_run ASC LIMIT $limit",
       )
       .all({ $now: new Date(nowMs).toISOString(), $limit: limit });
+    return rows.map(rowToSchedule);
+  }
+
+  /** Next scheduled item, regardless of whether it is already due. */
+  nextScheduled(): ScheduledDispatch | undefined {
+    const row = this.db
+      .query<ScheduleRow, []>(
+        "SELECT * FROM schedules WHERE status = 'scheduled' ORDER BY next_run ASC LIMIT 1",
+      )
+      .get();
+    return row ? rowToSchedule(row) : undefined;
+  }
+
+  /** Recently failed schedule/loop attempts, newest first. */
+  recentScheduleFailures(limit: number = 5): ScheduledDispatch[] {
+    const rows = this.db
+      .query<ScheduleRow, [number]>(
+        "SELECT * FROM schedules WHERE last_failure_at IS NOT NULL ORDER BY last_failure_at DESC LIMIT ?",
+      )
+      .all(limit);
     return rows.map(rowToSchedule);
   }
 
