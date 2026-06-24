@@ -23,6 +23,15 @@ export {
   MAX_CAPTURE_LINES,
 } from "./lib/capture.js";
 export { performBulkDispatch } from "./lib/bulk.js";
+export {
+  Mosaic,
+  MosaicControlError,
+  MOSAIC_SCHEMA_VERSION,
+  parseMosaicTarget,
+  performMosaicCapture,
+  performMosaicDispatch,
+} from "./lib/mosaic.js";
+export { normalizeBackend } from "./lib/backend.js";
 export { parseSessionsTargets, resolveSessionsTargets } from "./lib/sessions-source.js";
 export {
   classifyPaneCommand,

@@ -6,6 +6,7 @@ import { genId, nowIso } from "./ids.js";
 import type {
   ConfirmResult,
   DispatchOptions,
+  DispatchBackend,
   DispatchKind,
   DispatchRecord,
   DispatchStatus,
@@ -15,6 +16,7 @@ import type {
   AgentActivityState,
   AgentTargetInfo,
   CaptureResult,
+  MosaicPromptReceipt,
   ScheduledDispatch,
   ScheduleKind,
   ScheduleStatus,
@@ -23,6 +25,7 @@ import type {
 interface DispatchRow {
   id: string;
   kind: string;
+  backend: string | null;
   target: string;
   machine: string;
   prompt: string;
@@ -38,6 +41,7 @@ interface DispatchRow {
   target_state: string | null;
   detection_json: string | null;
   capture_before_json: string | null;
+  receipt_json: string | null;
   created_at: string;
   delivered_at: string | null;
   updated_at: string;
@@ -67,6 +71,7 @@ function rowToDispatch(r: DispatchRow): DispatchRecord {
   return {
     id: r.id,
     kind: (r.kind as DispatchKind | undefined) ?? "prompt",
+    backend: (r.backend as DispatchBackend | null) ?? "tmux",
     target: r.target,
     machine: r.machine,
     prompt: r.prompt,
@@ -82,6 +87,7 @@ function rowToDispatch(r: DispatchRow): DispatchRecord {
     targetState: (r.target_state as AgentActivityState | null) ?? undefined,
     detection: r.detection_json ? (JSON.parse(r.detection_json) as AgentTargetInfo) : undefined,
     captureBefore: r.capture_before_json ? (JSON.parse(r.capture_before_json) as CaptureResult) : undefined,
+    receipt: r.receipt_json ? (JSON.parse(r.receipt_json) as MosaicPromptReceipt) : undefined,
     createdAt: r.created_at,
     deliveredAt: r.delivered_at ?? undefined,
     updatedAt: r.updated_at,
@@ -159,6 +165,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS dispatches (
         id TEXT PRIMARY KEY,
         kind TEXT NOT NULL DEFAULT 'prompt',
+        backend TEXT NOT NULL DEFAULT 'tmux',
         target TEXT NOT NULL,
         machine TEXT NOT NULL,
         prompt TEXT NOT NULL,
@@ -174,6 +181,7 @@ export class Store {
         target_state TEXT,
         detection_json TEXT,
         capture_before_json TEXT,
+        receipt_json TEXT,
         created_at TEXT NOT NULL,
         delivered_at TEXT,
         updated_at TEXT NOT NULL
@@ -204,6 +212,7 @@ export class Store {
       CREATE INDEX IF NOT EXISTS idx_schedules_next ON schedules(next_run);
     `));
     this.ensureDispatchColumn("kind", "TEXT NOT NULL DEFAULT 'prompt'");
+    this.ensureDispatchColumn("backend", "TEXT NOT NULL DEFAULT 'tmux'");
     this.ensureDispatchColumn("command_hash", "TEXT");
     this.ensureDispatchColumn("filter_json", "TEXT");
     this.ensureDispatchColumn("target_kind", "TEXT");
@@ -212,6 +221,7 @@ export class Store {
     this.ensureDispatchColumn("target_state", "TEXT");
     this.ensureDispatchColumn("detection_json", "TEXT");
     this.ensureDispatchColumn("capture_before_json", "TEXT");
+    this.ensureDispatchColumn("receipt_json", "TEXT");
     this.ensureScheduleColumn("kind", "TEXT NOT NULL DEFAULT 'schedule'");
     this.ensureScheduleColumn("name", "TEXT");
     this.ensureScheduleColumn("every", "TEXT");
@@ -257,6 +267,7 @@ export class Store {
 
   createDispatch(input: {
     kind?: DispatchKind;
+    backend?: DispatchBackend;
     target: string;
     machine?: string;
     prompt: string;
@@ -271,11 +282,13 @@ export class Store {
     targetState?: AgentActivityState;
     detection?: AgentTargetInfo;
     captureBefore?: CaptureResult;
+    receipt?: MosaicPromptReceipt;
   }): DispatchRecord {
     const now = nowIso();
     const rec: DispatchRecord = {
       id: genId(),
       kind: input.kind ?? "prompt",
+      backend: input.backend ?? "tmux",
       target: input.target,
       machine: input.machine ?? "local",
       prompt: input.prompt,
@@ -290,17 +303,19 @@ export class Store {
       targetState: input.targetState,
       detection: input.detection,
       captureBefore: input.captureBefore,
+      receipt: input.receipt,
       createdAt: now,
       updatedAt: now,
     };
     withSqliteBusyRetry(() =>
       this.db.query(
-        `INSERT INTO dispatches (id, kind, target, machine, prompt, status, detail, confirm_json, submit_delay_ms, command_hash, filter_json, target_kind, dry_run, exec_plan_json, target_state, detection_json, capture_before_json, created_at, delivered_at, updated_at)
-         VALUES ($id, $kind, $target, $machine, $prompt, $status, $detail, $confirm, $delay, $commandHash, $filter, $targetKind, $dryRun, $execPlan, $targetState, $detection, $captureBefore, $created, $delivered, $updated)`,
+        `INSERT INTO dispatches (id, kind, backend, target, machine, prompt, status, detail, confirm_json, submit_delay_ms, command_hash, filter_json, target_kind, dry_run, exec_plan_json, target_state, detection_json, capture_before_json, receipt_json, created_at, delivered_at, updated_at)
+         VALUES ($id, $kind, $backend, $target, $machine, $prompt, $status, $detail, $confirm, $delay, $commandHash, $filter, $targetKind, $dryRun, $execPlan, $targetState, $detection, $captureBefore, $receipt, $created, $delivered, $updated)`,
       )
       .run({
         $id: rec.id,
         $kind: rec.kind ?? "prompt",
+        $backend: rec.backend ?? "tmux",
         $target: rec.target,
         $machine: rec.machine,
         $prompt: rec.prompt,
@@ -316,6 +331,7 @@ export class Store {
         $targetState: rec.targetState ?? null,
         $detection: rec.detection ? JSON.stringify(rec.detection) : null,
         $captureBefore: rec.captureBefore ? JSON.stringify(rec.captureBefore) : null,
+        $receipt: rec.receipt ? JSON.stringify(rec.receipt) : null,
         $created: rec.createdAt,
         $delivered: null,
         $updated: rec.updatedAt,
@@ -348,6 +364,7 @@ export class Store {
         | "targetState"
         | "detection"
         | "captureBefore"
+        | "receipt"
       >
     >,
   ): DispatchRecord {
@@ -360,7 +377,7 @@ export class Store {
          SET status=$status, detail=$detail, confirm_json=$confirm, submit_delay_ms=$delay,
              command_hash=$commandHash, filter_json=$filter, target_kind=$targetKind,
              dry_run=$dryRun, exec_plan_json=$execPlan, target_state=$targetState,
-             detection_json=$detection, capture_before_json=$captureBefore, delivered_at=$delivered,
+             detection_json=$detection, capture_before_json=$captureBefore, receipt_json=$receipt, delivered_at=$delivered,
              updated_at=$updated
          WHERE id=$id`,
       )
@@ -378,6 +395,7 @@ export class Store {
         $targetState: merged.targetState ?? null,
         $detection: merged.detection ? JSON.stringify(merged.detection) : null,
         $captureBefore: merged.captureBefore ? JSON.stringify(merged.captureBefore) : null,
+        $receipt: merged.receipt ? JSON.stringify(merged.receipt) : null,
         $delivered: merged.deliveredAt ?? null,
         $updated: merged.updatedAt,
       }),

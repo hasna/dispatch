@@ -301,6 +301,47 @@ describe("CLI read/schedule commands (in-memory client)", () => {
     }
   });
 
+  test("send --backend mosaic forwards backend and prompt file path", async () => {
+    const f = join(tmpdir(), `dispatch_mosaic_prompt_${process.pid}.txt`);
+    writeFileSync(f, "Mosaic prompt");
+    let received: DispatchOptions | undefined;
+    const fakeClient = {
+      send: async (opts: DispatchOptions): Promise<DispatchRecord> => {
+        received = opts;
+        return {
+          id: "send-mosaic",
+          kind: "prompt",
+          backend: "mosaic",
+          target: opts.target,
+          machine: "local",
+          prompt: opts.prompt,
+          status: "skipped",
+          dryRun: true,
+          detail: "dry run",
+          createdAt: "x",
+          updatedAt: "x",
+        };
+      },
+    } as DispatchClient;
+    const program = buildProgram({ clientFactory: () => fakeClient, out: () => undefined });
+
+    try {
+      await program.parseAsync(["send", "--backend", "mosaic", "--to", "work:terminal_1", "--file", f, "--dry-run"], {
+        from: "user",
+      });
+      expect(received).toMatchObject({
+        backend: "mosaic",
+        target: "work:terminal_1",
+        prompt: "Mosaic prompt",
+        promptFile: f,
+        dryRun: true,
+      });
+    } finally {
+      rmSync(f, { force: true });
+      process.exitCode = 0;
+    }
+  });
+
   test("send forwards idle guard, dry-run, and capture-before options", async () => {
     let received: DispatchOptions | undefined;
     const fakeClient = {
@@ -573,6 +614,34 @@ describe("CLI read/schedule commands (in-memory client)", () => {
     expect(JSON.parse(out.join("\n"))).toMatchObject({ status: "captured", text: "safe transcript\n" });
     expect(process.exitCode).toBe(1);
     process.exitCode = 0;
+  });
+
+  test("capture --backend mosaic forwards backend selection", async () => {
+    let received: CaptureOptions | undefined;
+    const fakeClient = {
+      capture: async (opts: CaptureOptions) => {
+        received = opts;
+        return {
+          status: "captured",
+          backend: "mosaic",
+          target: opts.target,
+          machine: "local",
+          requestedLines: opts.lines ?? 200,
+          lines: opts.lines ?? 200,
+          maxLines: 2000,
+          capturedAt: "x",
+          text: "safe transcript\n",
+          redacted: true,
+        };
+      },
+    } as DispatchClient;
+    const program = buildProgram({ clientFactory: () => fakeClient, out: () => undefined });
+
+    await program.parseAsync(["capture", "--backend", "mosaic", "--to", "work:terminal_1", "--lines", "50"], {
+      from: "user",
+    });
+
+    expect(received).toMatchObject({ backend: "mosaic", target: "work:terminal_1", lines: 50 });
   });
 
   test("blocked exec --dry-run does not print a send plan", async () => {

@@ -9,12 +9,16 @@ import { inspectAgentTarget } from "../lib/agent-target.js";
 import { daemonStatus, stopDaemon } from "../daemon/control.js";
 import { startDaemon } from "../daemon/daemon.js";
 import { serviceAction } from "../daemon/service.js";
+import { normalizeBackend } from "../lib/backend.js";
+import { Mosaic } from "../lib/mosaic.js";
 
 export interface ToolDeps {
   client: DispatchClient;
   store: Store;
   /** Build a Tmux for a machine (defaults to a real runner). */
   makeTmux?: (machine?: string) => Promise<Tmux>;
+  /** Build a Mosaic controller for a machine (defaults to a real runner). */
+  makeMosaic?: (machine?: string) => Promise<Mosaic>;
   /** Resolve the entry used to launch the daemon (defaults to the daemon bin). */
   daemonEntry?: () => string;
 }
@@ -35,16 +39,23 @@ async function tmuxFor(deps: ToolDeps, machine?: string): Promise<Tmux> {
   return new Tmux(await createRunner(machine));
 }
 
+async function mosaicFor(deps: ToolDeps, machine?: string): Promise<Mosaic> {
+  if (deps.makeMosaic) return deps.makeMosaic(machine);
+  return new Mosaic(await createRunner(machine));
+}
+
 export const TOOLS: ToolDef[] = [
   {
     name: "dispatch_send",
     verb: "send",
     title: "Dispatch a prompt",
     description:
-      "Type a prompt into a tmux target and reliably auto-submit it (auto-delay + Enter with retry), then confirm delivery. Supports long/multiline prompts and remote machines.",
+      "Type a prompt into a dispatch target and reliably submit it. tmux is default; backend=mosaic uses native Mosaic prompt receipts.",
     inputSchema: {
-      target: z.string().optional().describe("tmux target, e.g. session:window or session:window.pane"),
+      target: z.string().optional().describe("dispatch target, e.g. tmux session:window.pane or Mosaic session:pane_id"),
       prompt: z.string().describe("the prompt text to deliver"),
+      backend: z.enum(["tmux", "mosaic"]).optional().describe("backend; defaults to DISPATCH_BACKEND or tmux"),
+      promptFile: z.string().optional().describe("original prompt file path; Mosaic can send files natively"),
       machine: z.string().optional().describe("target machine id (local when omitted)"),
       source: z.enum(["sessions-query"]).optional().describe("target source; sessions-query probes sessions live/status JSON"),
       sessionsQuery: z.string().optional().describe("filter sessions-query target JSON by text"),
@@ -72,6 +83,8 @@ export const TOOLS: ToolDef[] = [
           targets: a.targets as never,
           sessionsQuery: a.sessionsQuery as string | undefined,
           prompt: a.prompt as string,
+          promptFile: a.promptFile as string | undefined,
+          backend: normalizeBackend(a.backend as string | undefined),
           goal: a.goal as boolean | undefined,
           machine: a.machine as string | undefined,
           submit: a.submit as boolean | undefined,
@@ -96,6 +109,8 @@ export const TOOLS: ToolDef[] = [
       return deps.client.send({
         target: a.target as string,
         prompt: a.prompt as string,
+        promptFile: a.promptFile as string | undefined,
+        backend: normalizeBackend(a.backend as string | undefined),
         goal: a.goal as boolean | undefined,
         machine: a.machine as string | undefined,
         submitKey: a.submitKey as "Enter" | "Tab" | undefined,
@@ -135,9 +150,10 @@ export const TOOLS: ToolDef[] = [
     verb: "capture",
     title: "Capture a pane transcript",
     description:
-      "Capture a bounded, redacted tmux pane transcript locally or on a remote machine. Optionally run a provider-configured AI transform over the redacted text.",
+      "Capture a bounded, redacted pane transcript locally or on a remote machine. Optionally run a provider-configured AI transform over tmux captures.",
     inputSchema: {
-      target: z.string().describe("tmux target, e.g. session:window or session:window.pane"),
+      target: z.string().describe("dispatch target, e.g. tmux session:window.pane or Mosaic session:pane_id"),
+      backend: z.enum(["tmux", "mosaic"]).optional().describe("backend; defaults to DISPATCH_BACKEND or tmux"),
       machine: z.string().optional().describe("target machine id (local when omitted)"),
       lines: z.number().optional().describe("recent line count (default 200, max 2000)"),
       ai: z.boolean().optional().describe("run an AI transform"),
@@ -149,6 +165,7 @@ export const TOOLS: ToolDef[] = [
     handler: (deps, a) =>
       deps.client.capture({
         target: a.target as string,
+        backend: normalizeBackend(a.backend as string | undefined),
         machine: a.machine as string | undefined,
         lines: a.lines as number | undefined,
         ai:
@@ -216,6 +233,8 @@ export const TOOLS: ToolDef[] = [
     inputSchema: {
       target: z.string(),
       prompt: z.string(),
+      backend: z.enum(["tmux", "mosaic"]).optional(),
+      promptFile: z.string().optional(),
       machine: z.string().optional(),
       goal: z.boolean().optional(),
       name: z.string().optional(),
@@ -232,6 +251,8 @@ export const TOOLS: ToolDef[] = [
         options: {
           target: a.target as string,
           prompt: a.prompt as string,
+          promptFile: a.promptFile as string | undefined,
+          backend: normalizeBackend(a.backend as string | undefined),
           goal: a.goal as boolean | undefined,
           machine: a.machine as string | undefined,
           ifIdle: a.ifIdle as boolean | undefined,
@@ -254,6 +275,8 @@ export const TOOLS: ToolDef[] = [
       target: z.string(),
       prompt: z.string(),
       every: z.string().describe("recurring interval, e.g. 5m or 1 hour"),
+      backend: z.enum(["tmux", "mosaic"]).optional(),
+      promptFile: z.string().optional(),
       machine: z.string().optional(),
       goal: z.boolean().optional(),
       name: z.string().optional(),
@@ -266,6 +289,8 @@ export const TOOLS: ToolDef[] = [
         options: {
           target: a.target as string,
           prompt: a.prompt as string,
+          promptFile: a.promptFile as string | undefined,
+          backend: normalizeBackend(a.backend as string | undefined),
           goal: a.goal as boolean | undefined,
           machine: a.machine as string | undefined,
           ifIdle: a.ifIdle as boolean | undefined,
@@ -330,20 +355,30 @@ export const TOOLS: ToolDef[] = [
   {
     name: "dispatch_targets",
     verb: "targets",
-    title: "List tmux targets",
-    description: "Enumerate dispatchable tmux targets (panes) on a machine, so you can discover where to send.",
-    inputSchema: { machine: z.string().optional() },
+    title: "List dispatch targets",
+    description: "Enumerate dispatchable tmux or Mosaic targets (panes) on a machine, so you can discover where to send.",
+    inputSchema: {
+      machine: z.string().optional(),
+      backend: z.enum(["tmux", "mosaic"]).optional(),
+      includeDetection: z.boolean().optional().describe("include tmux agent detection metadata; slower on hosts with many panes"),
+    },
     handler: async (deps, a) => {
+      const backend = normalizeBackend(a.backend as string | undefined);
+      if (backend === "mosaic") return (await mosaicFor(deps, a.machine as string | undefined)).listTargets();
       const tmux = await tmuxFor(deps, a.machine as string | undefined);
-      return tmux.listTargets().map((target) => ({
-        ...target,
-        detection: inspectAgentTarget(tmux, target.target, {
-          assumeExists: true,
-          paneCommand: target.paneCommand,
-          cwd: target.cwd,
-          panePid: target.panePid,
-        }).detection,
-      }));
+      return tmux.listTargets().map((target) => {
+        if (a.includeDetection !== true) return { ...target, backend: "tmux" };
+        return {
+          ...target,
+          backend: "tmux",
+          detection: inspectAgentTarget(tmux, target.target, {
+            assumeExists: true,
+            paneCommand: target.paneCommand,
+            cwd: target.cwd,
+            panePid: target.panePid,
+          }).detection,
+        };
+      });
     },
   },
   {
