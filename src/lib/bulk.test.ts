@@ -6,7 +6,9 @@ import { performBulkDispatch } from "./bulk.js";
 function agentTmux(capture = "> idle composer"): Tmux {
   const r = new MockRunner();
   let submitted = false;
-  r.responder = (argv) => {
+  let composerText = "";
+  let bufferText = "";
+  r.responder = (argv, input) => {
     if (argv[1] === "list-panes") return { stdout: "%1\n", stderr: "", exitCode: 0, source: "local" };
     if (argv[1] === "display-message" && argv.at(-1) === "#{pane_current_command}") {
       return { stdout: "codewith\n", stderr: "", exitCode: 0, source: "local" };
@@ -14,13 +16,29 @@ function agentTmux(capture = "> idle composer"): Tmux {
     if (argv[1] === "display-message" && argv.at(-1) === "#{pane_in_mode}") {
       return { stdout: "0\n", stderr: "", exitCode: 0, source: "local" };
     }
+    if (argv[1] === "load-buffer") {
+      bufferText = input ?? "";
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    }
+    if (argv[1] === "paste-buffer") {
+      composerText = bufferText;
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    }
+    if (argv[1] === "send-keys" && argv.includes("-l")) {
+      composerText = argv.at(-1) ?? "";
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    }
     if (argv[1] === "send-keys" && (argv.includes("Enter") || argv.includes("Tab"))) {
       submitted = true;
       return { stdout: "", stderr: "", exitCode: 0, source: "local" };
     }
     if (argv[1] === "capture-pane") {
       return {
-        stdout: submitted ? "Messages to be submitted after next tool call\nQueued: Queue this" : capture,
+        stdout: submitted
+          ? "Messages to be submitted after next tool call\nQueued: Queue this"
+          : composerText
+            ? `${capture}\n> ${composerText}`
+            : capture,
         stderr: "",
         exitCode: 0,
         source: "local",

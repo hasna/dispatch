@@ -7,7 +7,7 @@
  */
 
 export interface SubmitDelayOptions {
-  /** Floor in ms (default 150, env DISPATCH_MIN_DELAY_MS). */
+  /** Floor in ms (default 400, env DISPATCH_MIN_DELAY_MS). */
   minMs?: number;
   /** Ceiling in ms (default 4000, env DISPATCH_MAX_DELAY_MS). */
   maxMs?: number;
@@ -36,7 +36,7 @@ export function countWords(text: string): number {
  * Monotonic in length, clamped to [minMs, maxMs].
  */
 export function computeSubmitDelay(text: string, opts: SubmitDelayOptions = {}): number {
-  const minMs = opts.minMs ?? envNum("DISPATCH_MIN_DELAY_MS", 150);
+  const minMs = opts.minMs ?? envNum("DISPATCH_MIN_DELAY_MS", 400);
   const maxMs = opts.maxMs ?? envNum("DISPATCH_MAX_DELAY_MS", 4000);
   const msPerWord = opts.msPerWord ?? envNum("DISPATCH_MS_PER_WORD", 9);
   const msPerChar = opts.msPerChar ?? envNum("DISPATCH_MS_PER_CHAR", 0.6);

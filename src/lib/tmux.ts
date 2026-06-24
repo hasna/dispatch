@@ -37,6 +37,17 @@ export function nextBufferName(): string {
   return `dispatch_${process.pid}_${bufferCounter}_${Math.floor(Math.random() * 1e6)}`;
 }
 
+/** Strip embedded bracketed-paste boundary markers from user-controlled text. */
+export function stripBracketedPasteMarkers(text: string): string {
+  return text.replace(/\x1b\[200~/g, "").replace(/\x1b\[201~/g, "");
+}
+
+function sleepSync(ms: number): void {
+  if (ms <= 0) return;
+  const view = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(view, 0, 0, ms);
+}
+
 /** Thin, testable wrapper over the tmux CLI, parameterized by a {@link Runner}. */
 export class Tmux {
   constructor(private readonly runner: Runner) {}
@@ -76,11 +87,17 @@ export class Tmux {
   capturePane(target: string, opts: { start?: number } = {}): string {
     const args = ["capture-pane", "-t", target, "-p"];
     if (opts.start && opts.start > 0) args.push("-S", String(-opts.start));
-    const res = this.tmux(args);
-    if (res.exitCode !== 0) {
-      throw new Error(`capture-pane failed for ${target}: ${res.stderr.trim() || res.stdout.trim()}`);
+    let lastStdout = "";
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const res = this.tmux(args);
+      if (res.exitCode !== 0) {
+        throw new Error(`capture-pane failed for ${target}: ${res.stderr.trim() || res.stdout.trim()}`);
+      }
+      lastStdout = res.stdout;
+      if (res.stdout.trim().length > 0 || attempt === 2) return res.stdout;
+      sleepSync(80);
     }
-    return res.stdout;
+    return lastStdout;
   }
 
   /**
@@ -194,7 +211,7 @@ export class Tmux {
    */
   paste(target: string, text: string, opts: { bracketed?: boolean } = {}): void {
     const name = nextBufferName();
-    this.loadBuffer(name, text);
+    this.loadBuffer(name, stripBracketedPasteMarkers(text));
     this.pasteBuffer(target, name, { bracketed: opts.bracketed ?? true, deleteAfter: true });
   }
 }

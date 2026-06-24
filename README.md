@@ -133,8 +133,11 @@ bulk send results include detection metadata when available:
 Normal prompt delivery uses `Enter` and refuses active agents unless `--force-active`
 is explicitly passed. `--queue` is the safe active-agent path: when detection proves
 the target supports queued-message behavior, dispatch types the prompt and presses
-`Tab`; otherwise it refuses. Queued Tab delivery is single-shot to avoid duplicate
-queued follow-up inputs; `--retries` applies to Enter submission. Detection supports
+`Tab`; otherwise it refuses. Prompt sends wait until the delivered text is visibly
+parked in the composer before pressing Enter/Tab; if it never parks within
+`DISPATCH_SETTLE_TIMEOUT_MS`, dispatch refuses the submit key. Queued Tab delivery
+is single-shot to avoid duplicate queued follow-up inputs; `--retries` applies to
+Enter submission. Detection supports
 direct binaries and compatible `node`/`bun`/`npx`/`bunx`/`pnpm`/`yarn`/`npm exec`
 launchers, but wrapper panes still need live composer UI proof so arbitrary `node`
 output and copied transcripts stay fail-closed.
@@ -408,11 +411,14 @@ CLI `--allow`; it does not accept inline allowlists from the caller.
    prompt is registered before Enter. Tune via `--delay` or
    `DISPATCH_MIN_DELAY_MS` / `DISPATCH_MAX_DELAY_MS` / `DISPATCH_MS_PER_WORD` /
    `DISPATCH_MS_PER_CHAR`.
-4. Press **Enter**, then re-press until the **delivery probe** confirms submission
-   (working indicator appeared / composer cleared) or retries are exhausted.
+4. Poll until the prompt tail is visibly parked in the composer. Claude's collapsed
+   `[Pasted text]` placeholder counts only when it newly appears after delivery, so
+   stale hidden composer content cannot spoof the settle gate.
+5. Press **Enter**, then re-press until the **delivery probe** confirms submission
+   (working indicator appeared / composer cleared) or the submit timeout/retries are exhausted.
    Queued Tab delivery is not retried because duplicate Tabs can create duplicate
    queued follow-up inputs.
-5. Record a **delivered / not-delivered** verdict with a reason. If a Codewith
+6. Record a **delivered / not-delivered** verdict with a reason. If a Codewith
    pane queues input while an auth profile/account switch is visible, the verdict
    is **not delivered** with `actionNeeded=true` rather than a false success.
 
@@ -423,6 +429,8 @@ CLI `--allow`; it does not accept inline allowlists from the caller.
 | `DISPATCH_DATA_DIR` | State dir (default `~/.hasna/dispatch`) |
 | `DISPATCH_MIN_DELAY_MS` / `DISPATCH_MAX_DELAY_MS` | Clamp for the auto delay |
 | `DISPATCH_MS_PER_WORD` / `DISPATCH_MS_PER_CHAR` | Auto-delay coefficients |
+| `DISPATCH_SETTLE_TIMEOUT_MS` | Prompt-parked settle budget before the first submit key; default 2000ms |
+| `DISPATCH_SUBMIT_TIMEOUT_MS` / `DISPATCH_SUBMIT_RETRY_INTERVAL_MS` | Submit confirmation/retry budget; defaults 10000ms / 2000ms |
 | `DISPATCH_DAEMON_INTERVAL_MS` | Daemon tick interval |
 
 ## Development

@@ -161,7 +161,7 @@ export interface DispatchOptions {
   submit?: boolean;
   /** Verify delivery after submit. Default true. */
   confirm?: boolean;
-  /** Max Enter retries if the first submit did not register. Default 2. */
+  /** Max Enter retries if the first submit did not register. Default derives from DISPATCH_SUBMIT_TIMEOUT_MS. */
   maxSubmitRetries?: number;
   /**
    * How to send the text. "auto" picks paste for long/multiline prompts and

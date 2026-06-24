@@ -29,18 +29,56 @@ if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
 }
 process.stdin.resume();
 
-let buf = "";
 let queued = false;
+let inPaste = false;
+let pending = "";
+
+function visiblePending(text: string): string {
+  if (text.length > 200 || text.includes("\n")) {
+    const lines = Math.max(0, text.split("\n").length - 1);
+    return lines > 0 ? `[Pasted text +${lines} lines]` : "[Pasted text]";
+  }
+  return text;
+}
+
+function renderPending(): void {
+  if (queued || pending.length === 0) return;
+  process.stdout.write(`\n› ${visiblePending(pending)}\n`);
+}
+
+function queuePending(): void {
+  if (queued || pending.trim().length === 0) return;
+  queued = true;
+  const text = pending.replace(/[\r\n]+/g, " ").trim();
+  process.stdout.write("\nMessages to be submitted after next tool call:\n");
+  process.stdout.write(`  ${text}\n`);
+}
+
 process.stdin.on("data", (chunk: Buffer) => {
   if (file) appendFileSync(file, chunk);
-  buf += chunk.toString("utf8");
-  // Strip bracketed-paste markers + control bytes to recover the message text.
-  const text = buf.replace(/\x1b\[20[01]~/g, "").replace(/[\r\n]+/g, " ").trim();
-  if (!queued && text.length > 0) {
-    queued = true;
-    process.stdout.write("\nMessages to be submitted after next tool call:\n");
-    process.stdout.write(`  ${text}\n`);
+  const s = chunk.toString("utf8");
+  let changed = false;
+  for (let i = 0; i < s.length; i += 1) {
+    if (s.startsWith("\x1b[200~", i)) {
+      inPaste = true;
+      i += "\x1b[200~".length - 1;
+      continue;
+    }
+    if (s.startsWith("\x1b[201~", i)) {
+      inPaste = false;
+      i += "\x1b[201~".length - 1;
+      changed = true;
+      continue;
+    }
+    const ch = s[i]!;
+    if (!inPaste && ch === "\t") {
+      queuePending();
+      continue;
+    }
+    pending += ch;
+    changed = true;
   }
+  if (changed) renderPending();
 });
 
 setInterval(() => {}, 1 << 30);

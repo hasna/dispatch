@@ -133,18 +133,43 @@ function livePaneRegion(text: string, maxLines = 14): string {
   return tail.join("\n");
 }
 
-function promptParkedInComposer(text: string, tail: string): boolean {
-  if (tail.length === 0) return false;
+const CLAUDE_PASTED_TEXT_PLACEHOLDER = /\[Pasted text(?: #\d+)?(?: \+\d+ lines?)?\]/i;
+
+export interface PromptParkingEvidence {
+  parked: boolean;
+  /** True when the distinctive prompt tail is visible in the current composer region. */
+  tailVisible: boolean;
+  /** True when Claude collapsed a large paste to a `[Pasted text...]` composer placeholder. */
+  placeholder: boolean;
+}
+
+function emptyPromptParkingEvidence(): PromptParkingEvidence {
+  return { parked: false, tailVisible: false, placeholder: false };
+}
+
+function promptParkingEvidenceForTail(text: string, tail: string): PromptParkingEvidence {
+  if (tail.length === 0) return emptyPromptParkingEvidence();
   const lines = text.split("\n").map((line) => line.trimEnd()).filter((line) => line.trim().length > 0);
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     if (!/(?:^|[\s│┃║╎╏┆┇┊┋▏▎▌▐])[>›❯](?:\s|$)/.test(lines[i] ?? "")) continue;
-    return squish(lines.slice(i).join("\n")).includes(tail);
+    const composerRegion = lines.slice(i).join("\n");
+    const afterMarker = lines.slice(i + 1).join("\n");
+    if (detectLiveWorking(afterMarker) || detectQueued(afterMarker) || detectHandledOutput(afterMarker)) {
+      return emptyPromptParkingEvidence();
+    }
+    const tailVisible = squish(composerRegion).includes(tail);
+    const placeholder = CLAUDE_PASTED_TEXT_PLACEHOLDER.test(composerRegion);
+    return { parked: tailVisible || placeholder, tailVisible, placeholder };
   }
-  return false;
+  return emptyPromptParkingEvidence();
 }
 
 export function isPromptParkedInComposer(text: string, prompt: string): boolean {
-  return promptParkedInComposer(text, squish(promptTail(prompt)));
+  return promptParkingEvidenceInComposer(text, prompt).parked;
+}
+
+export function promptParkingEvidenceInComposer(text: string, prompt: string): PromptParkingEvidence {
+  return promptParkingEvidenceForTail(text, squish(promptTail(prompt)));
 }
 
 function queuedPromptVisible(text: string, tail: string, patterns: RegExp[] = DEFAULT_QUEUED_PATTERNS): boolean {
@@ -169,7 +194,7 @@ function actionNeededRegion(text: string, queuedPatterns: RegExp[], tail: string
       if (j > i) {
         const trimmed = line.trim();
         if (tail.length > 0 && squish(line).includes(tail)) continue;
-        if (/^\s+/.test(line) || /^(?:[>›]\s*)/.test(trimmed)) continue;
+        if (/^\s+/.test(line) || /^(?:[>›❯]\s*)/.test(trimmed)) continue;
       }
       regions.push(line);
     }
@@ -226,8 +251,8 @@ export function evaluateDelivery(input: EvaluateDeliveryInput): ConfirmResult {
   const promptVisible = (text: string): boolean => tail.length > 0 && squish(text).includes(tail);
   const visibleInBaseline = promptVisible(baseline);
   const visibleInAfter = promptVisible(input.after);
-  const parkedInBaseline = promptParkedInComposer(baseline, tail);
-  const parkedInAfter = promptParkedInComposer(input.after, tail);
+  const parkedInBaseline = promptParkingEvidenceForTail(baseline, tail).parked;
+  const parkedInAfter = promptParkingEvidenceForTail(input.after, tail).parked;
   const composerCleared = parkedInBaseline && !parkedInAfter;
 
   const workingBefore = patterns === DEFAULT_WORKING_PATTERNS
@@ -236,7 +261,7 @@ export function evaluateDelivery(input: EvaluateDeliveryInput): ConfirmResult {
   const workingAfter = patterns === DEFAULT_WORKING_PATTERNS
     ? detectLiveWorking(livePaneRegion(input.after))
     : detectWorking(livePaneRegion(input.after), patterns);
-  const workingDetected = workingAfter && !workingBefore && !visibleInAfter;
+  const workingDetected = workingAfter && !workingBefore && !parkedInAfter;
 
   const queuedDetected =
     (detectQueued(input.after, queuedPatterns) && !detectQueued(input.before, queuedPatterns)) ||

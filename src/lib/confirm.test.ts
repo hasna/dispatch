@@ -6,6 +6,7 @@ import {
   detectQueued,
   detectWorking,
   evaluateDelivery,
+  isPromptParkedInComposer,
   promptTail,
 } from "./confirm.js";
 import { Tmux } from "./tmux.js";
@@ -72,6 +73,28 @@ describe("promptTail", () => {
   });
 });
 
+describe("isPromptParkedInComposer", () => {
+  test("treats Claude collapsed pasted-text placeholders as parked input", () => {
+    const prompt = `${"very long pasted content ".repeat(600)}FINAL_TAIL_NOT_VISIBLE`;
+
+    expect(isPromptParkedInComposer("❯ [Pasted text]", prompt)).toBe(true);
+    expect(isPromptParkedInComposer("❯ [Pasted text #1 +11 lines]", prompt)).toBe(true);
+    expect(isPromptParkedInComposer("> [Pasted text #2 +1 line]", prompt)).toBe(true);
+  });
+
+  test("does not treat a submitted prompt in scrollback above a working footer as parked", () => {
+    const prompt = "Please refactor the tokenizer and add unit tests for edge cases.";
+    const capture = `› awaiting prompt — idle
+
+› ${prompt}
+
+✶ Working… (esc to interrupt)
+`;
+
+    expect(isPromptParkedInComposer(capture, prompt)).toBe(false);
+  });
+});
+
 describe("evaluateDelivery", () => {
   const prompt = "Refactor the auth module and add tests";
 
@@ -84,6 +107,20 @@ describe("evaluateDelivery", () => {
     expect(res.delivered).toBe(true);
     expect(res.workingDetected).toBe(true);
     expect(res.reason).toMatch(/working/i);
+  });
+
+  test("working indicator appearing after a submitted prompt left in scrollback = delivered", () => {
+    const res = evaluateDelivery({
+      before: "› awaiting prompt — idle",
+      after: `› awaiting prompt — idle
+
+› ${prompt}
+
+✶ Working… (esc to interrupt)`,
+      prompt,
+    });
+    expect(res.delivered).toBe(true);
+    expect(res.workingDetected).toBe(true);
   });
 
   test("composer clears (with typed snapshot) = delivered", () => {

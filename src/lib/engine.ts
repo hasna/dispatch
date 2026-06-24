@@ -3,7 +3,7 @@ import { Tmux } from "./tmux.js";
 import type { Store } from "./store.js";
 import { computeSubmitDelay } from "./delay.js";
 import { submit } from "./submit.js";
-import { confirmDelivery, evaluateDelivery, isPromptParkedInComposer } from "./confirm.js";
+import { confirmDelivery, evaluateDelivery, promptParkingEvidenceInComposer } from "./confirm.js";
 import { genId, nowIso } from "./ids.js";
 import { validateAgentComposerTarget } from "./agent-target.js";
 import { performCapture } from "./capture.js";
@@ -203,17 +203,25 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
 
   // 6. Submit with retry, probing delivery if confirmation is enabled.
   let checkedInitialParkedSnapshot = false;
-  const isPromptParked = mode === "paste"
-    ? (): boolean => {
-        if (!checkedInitialParkedSnapshot) {
-          checkedInitialParkedSnapshot = true;
-          if (afterTyped && isPromptParkedInComposer(afterTyped, prompt)) return true;
-        }
-        const latest = tmux.capturePane(options.target, { start: 50 });
-        afterTyped = latest;
-        return isPromptParkedInComposer(latest, prompt);
-      }
-    : undefined;
+  const beforeParkingEvidence = promptParkingEvidenceInComposer(before, prompt);
+  const trustedPromptParked = (snapshot: string): boolean => {
+    const evidence = promptParkingEvidenceInComposer(snapshot, prompt);
+    if (!evidence.parked) return false;
+    // A Claude `[Pasted text]` placeholder proves a large paste is parked only
+    // if it was not already the visible composer state before delivery. If it
+    // already existed, fail closed instead of submitting stale hidden content.
+    if (evidence.placeholder && !evidence.tailVisible && beforeParkingEvidence.placeholder) return false;
+    return true;
+  };
+  const isPromptParked = (): boolean => {
+    if (!checkedInitialParkedSnapshot) {
+      checkedInitialParkedSnapshot = true;
+      if (afterTyped && trustedPromptParked(afterTyped)) return true;
+    }
+    const latest = tmux.capturePane(options.target, { start: 50 });
+    afterTyped = latest;
+    return trustedPromptParked(latest);
+  };
   const probe = confirmEnabled
     ? async (): Promise<boolean> => {
         const after = tmux.capturePane(options.target, { start: 50 });
@@ -224,14 +232,25 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
       }
     : undefined;
 
-  await submit(tmux, options.target, {
+  const submitResult = await submit(tmux, options.target, {
     delayMs,
-    maxRetries: submitKey === "Tab" ? 0 : options.maxSubmitRetries ?? 2,
+    maxRetries: submitKey === "Tab" ? 0 : options.maxSubmitRetries,
     submitKey,
     isPromptParked,
     isSubmitted: probe,
     sleep,
   });
+
+  if (!submitResult.submitted && submitResult.attempts === 0) {
+    return finish({
+      status: "failed",
+      detail: `prompt did not settle/park in the composer before ${submitKey}; refusing to send the submit key`,
+      submitDelayMs: delayMs,
+      targetState,
+      detection,
+      captureBefore,
+    });
+  }
 
   // 7. Confirm + record.
   if (!confirmEnabled) {

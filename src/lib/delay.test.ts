@@ -13,6 +13,7 @@ describe("countWords", () => {
 
 describe("computeSubmitDelay", () => {
   test("empty prompt gets the floor", () => {
+    expect(computeSubmitDelay("")).toBe(400);
     expect(computeSubmitDelay("", { minMs: 150 })).toBe(150);
   });
 
