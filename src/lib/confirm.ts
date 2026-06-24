@@ -137,10 +137,14 @@ function promptParkedInComposer(text: string, tail: string): boolean {
   if (tail.length === 0) return false;
   const lines = text.split("\n").map((line) => line.trimEnd()).filter((line) => line.trim().length > 0);
   for (let i = lines.length - 1; i >= 0; i -= 1) {
-    if (!/(?:^|[\s│┃║╎╏┆┇┊┋▏▎▌▐])[>›](?:\s|$)/.test(lines[i] ?? "")) continue;
+    if (!/(?:^|[\s│┃║╎╏┆┇┊┋▏▎▌▐])[>›❯](?:\s|$)/.test(lines[i] ?? "")) continue;
     return squish(lines.slice(i).join("\n")).includes(tail);
   }
   return false;
+}
+
+export function isPromptParkedInComposer(text: string, prompt: string): boolean {
+  return promptParkedInComposer(text, squish(promptTail(prompt)));
 }
 
 function queuedPromptVisible(text: string, tail: string, patterns: RegExp[] = DEFAULT_QUEUED_PATTERNS): boolean {

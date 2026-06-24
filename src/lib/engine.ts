@@ -3,7 +3,7 @@ import { Tmux } from "./tmux.js";
 import type { Store } from "./store.js";
 import { computeSubmitDelay } from "./delay.js";
 import { submit } from "./submit.js";
-import { confirmDelivery, evaluateDelivery } from "./confirm.js";
+import { confirmDelivery, evaluateDelivery, isPromptParkedInComposer } from "./confirm.js";
 import { genId, nowIso } from "./ids.js";
 import { validateAgentComposerTarget } from "./agent-target.js";
 import { performCapture } from "./capture.js";
@@ -202,6 +202,18 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
   }
 
   // 6. Submit with retry, probing delivery if confirmation is enabled.
+  let checkedInitialParkedSnapshot = false;
+  const isPromptParked = mode === "paste"
+    ? (): boolean => {
+        if (!checkedInitialParkedSnapshot) {
+          checkedInitialParkedSnapshot = true;
+          if (afterTyped && isPromptParkedInComposer(afterTyped, prompt)) return true;
+        }
+        const latest = tmux.capturePane(options.target, { start: 50 });
+        afterTyped = latest;
+        return isPromptParkedInComposer(latest, prompt);
+      }
+    : undefined;
   const probe = confirmEnabled
     ? async (): Promise<boolean> => {
         const after = tmux.capturePane(options.target, { start: 50 });
@@ -216,6 +228,7 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
     delayMs,
     maxRetries: submitKey === "Tab" ? 0 : options.maxSubmitRetries ?? 2,
     submitKey,
+    isPromptParked,
     isSubmitted: probe,
     sleep,
   });

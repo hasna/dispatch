@@ -13,6 +13,12 @@ export interface SubmitOptions {
   maxRetries?: number;
   /** Submit key to press after typing. Default Enter. */
   submitKey?: SubmitKey;
+  /** Probe that returns true once the typed prompt tail is visible in the composer. */
+  isPromptParked?: () => boolean | Promise<boolean>;
+  /** Max prompt-parked probes before submitting anyway. Default 4. */
+  maxSettlePolls?: number;
+  /** Wait between prompt-parked probes (ms). Default 100. */
+  settleIntervalMs?: number;
   /** Wait between retries (ms) while re-probing. Default 450. */
   retryIntervalMs?: number;
   /**
@@ -41,9 +47,19 @@ export async function submit(tmux: Tmux, target: string, opts: SubmitOptions): P
   const sleep = opts.sleep ?? realSleep;
   const maxRetries = opts.maxRetries ?? 2;
   const retryIntervalMs = opts.retryIntervalMs ?? 450;
+  const maxSettlePolls = opts.maxSettlePolls ?? 4;
+  const settleIntervalMs = opts.settleIntervalMs ?? 100;
   const submitKey = opts.submitKey ?? "Enter";
 
   await sleep(Math.max(0, opts.delayMs));
+
+  if (opts.isPromptParked) {
+    for (let poll = 0; poll <= maxSettlePolls; poll += 1) {
+      if (await opts.isPromptParked()) break;
+      if (poll < maxSettlePolls) await sleep(settleIntervalMs);
+    }
+  }
+
   tmux.sendKey(target, submitKey);
   let attempts = 1;
 

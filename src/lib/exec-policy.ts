@@ -172,7 +172,7 @@ function hasNamedAgentComposer(text: string): boolean {
     /^[ \t]*(?:directory|cwd|workspace):[^\n]+/im,
     /^[ \t]*permissions:[^\n]+/im,
   ].filter((pattern) => pattern.test(normalized)).length;
-  const hasComposerPrompt = /^[ \t]*(?:›|>)(?:\s|$).*/m.test(normalized);
+  const hasComposerPrompt = /^[ \t]*(?:›|>|❯)(?:\s|$).*/m.test(normalized);
   const hasBusySignal =
     /\b(?:esc to interrupt|esc to cancel|ctrl\+c to (?:stop|interrupt|cancel))\b/i.test(normalized) ||
     /[✶✻●]\s*Working/i.test(normalized);
@@ -206,7 +206,7 @@ function hasWrappedAgentProcessEvidence(processTree = ""): boolean {
 }
 
 function hasCompletedCodewithComposer(text: string, processTree?: string): boolean {
-  if (!hasWrappedAgentProcessEvidence(processTree)) return false;
+  if (detectAgentKindFromProcessTree(processTree) !== "codewith") return false;
   const lines = text
     .split("\n")
     .map(stripTuiLineChrome)
@@ -223,12 +223,33 @@ function hasCompletedCodewithComposer(text: string, processTree?: string): boole
   const budget = String.raw`\d+\s*[dhms]\s+(?:100|[1-9]?\d)%\s+left`;
   const branch = String.raw`[^·\[\]\s]+(?:\s+[^·\[\]\s]+){0,4}\s+\[[^\]\n]+\]`;
   const metadataPattern = new RegExp(
-    String.raw`^${model}\s+·\s+(?:${account}\s+·\s+${budget}|${budget}\s+·\s+${account})\s+·\s+${branch}$`,
+    String.raw`^${model}\s+·\s+(?:${account}\s+·\s+${budget}|${budget}\s+·\s+${account})(?:\s+·\s+${branch})?$`,
     "i",
   );
   const hasGoal = isWrappedGoal || inlineGoal.test(statusLine);
 
   return hasGoal && /^›(?:\s|$).+/.test(composerLine) && metadataPattern.test(metadataLine);
+}
+
+function hasIdleCodewithStatusComposer(text: string, processTree?: string): boolean {
+  if (detectAgentKindFromProcessTree(processTree) !== "codewith") return false;
+  const lines = text
+    .split("\n")
+    .map(stripTuiLineChrome)
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean);
+  const statusLine = lines.at(-1) ?? "";
+  const composerLine = lines.at(-2) ?? "";
+  const model = String.raw`(?:gpt|o\d|codex|claude|glm|gemini|qwen|deepseek|llama|mistral|kimi|grok)[\w.+:-]*(?:\s+\w+){0,4}`;
+  const account = String.raw`account[\w-]+`;
+  const budget = String.raw`(?:\d+\s*[dhms]\s+)?(?:100|[1-9]?\d)%\s+left`;
+  const branch = String.raw`[^·\[\]\s]+(?:\s+[^·\[\]\s]+){0,4}\s+\[[^\]\n]+\]`;
+  const metadataPattern = new RegExp(
+    String.raw`^${model}\s+·\s+(?:${account}\s+·\s+${budget}|${budget}\s+·\s+${account})(?:\s+·\s+${branch})?$`,
+    "i",
+  );
+
+  return /^›(?:\s|$).+/.test(composerLine) && metadataPattern.test(statusLine);
 }
 
 function hasWrappedAgentLiveUi(text: string, processTree?: string): boolean {
@@ -261,10 +282,14 @@ export function detectAgentActivity(text: string): AgentActivityState {
   ) {
     return "active";
   }
-  if (/\bGoal achieved(?:\s*\([^)]+\))?\b/i.test(normalized) && /^›(?:\s|$).*/m.test(normalized)) {
+  if (/\bGoal achieved(?:\s*\([^)]+\))?\b/i.test(normalized) && /^[›❯](?:\s|$).*/m.test(normalized)) {
     return "idle";
   }
-  if (hasNamedAgentComposer(text) || /^›(?:\s|$).*/m.test(normalized) || /^>\s+(?:awaiting prompt|idle|idle composer)\b/im.test(normalized)) {
+  if (
+    hasNamedAgentComposer(text) ||
+    /^[›❯](?:\s|$).*/m.test(normalized) ||
+    /^>\s+(?:awaiting prompt|idle|idle composer)\b/im.test(normalized)
+  ) {
     return "idle";
   }
   return "unknown";
@@ -281,7 +306,12 @@ function liveUiProofForKind(kind: AgentKind, text: string, processTree?: string)
   if (kind === "unknown") return false;
   const textKind = detectAgentKindFromText(text);
   if (textKind === kind && hasNamedAgentComposer(text)) return true;
-  if (kind === "codewith" && (hasCompletedCodewithComposer(text, processTree) || hasWrappedAgentLiveUi(text, processTree))) {
+  if (
+    kind === "codewith" &&
+    (hasCompletedCodewithComposer(text, processTree) ||
+      hasIdleCodewithStatusComposer(text, processTree) ||
+      hasWrappedAgentLiveUi(text, processTree))
+  ) {
     return true;
   }
   return false;
@@ -388,6 +418,7 @@ export function looksLikeAgentPane(text: string): boolean {
   return (
     looksLikeWrappedAgentComposer(text) ||
     /\b(?:esc to interrupt|working on the previous task|messages to be submitted after next tool call)\b/i.test(text) ||
+    /^❯(?:\s|$).*/m.test(text) ||
     /^>\s+(?:awaiting prompt|idle|idle composer)\b/im.test(text) ||
     /[✶✻●]\s*Working/i.test(text)
   );

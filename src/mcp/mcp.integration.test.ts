@@ -9,17 +9,39 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "./index.js";
 import { DispatchClient } from "../sdk/index.js";
 import { Store } from "../lib/store.js";
+import { Tmux } from "../lib/tmux.js";
+import { LocalRunner, type RunResult, type Runner } from "../lib/runner.js";
 
 const tmuxAvailable = spawnSync("tmux", ["-V"], { encoding: "utf8" }).status === 0;
 const SESSION = `dispatch_mcp_it_${process.pid}`;
+const TARGET_SOCKET = `dispatch_mcp_targets_${process.pid}`;
+const TARGET_SESSION = `dispatch_mcp_targets_${process.pid}`;
 const agent = join(import.meta.dir, "..", "test", "fake-agent.ts");
 const dataDir = mkdtempSync(join(tmpdir(), "dispatch_mcp_it_"));
 
 const d = tmuxAvailable ? describe : describe.skip;
 
-async function connect() {
+class SocketTmuxRunner implements Runner {
+  readonly machine = "local";
+  private readonly local = new LocalRunner();
+
+  constructor(private readonly socket: string) {}
+
+  run(argv: string[], input?: string): RunResult {
+    if (argv[0] === "tmux") return this.local.run(["tmux", "-L", this.socket, ...argv.slice(1)], input);
+    return this.local.run(argv, input);
+  }
+}
+
+async function connect(opts: { targetSocket?: string } = {}) {
   const store = new Store(join(dataDir, "mcp.db"));
-  const server = createServer({ deps: { client: new DispatchClient({ store }), store } });
+  const server = createServer({
+    deps: {
+      client: new DispatchClient({ store }),
+      store,
+      makeTmux: opts.targetSocket ? async () => new Tmux(new SocketTmuxRunner(opts.targetSocket!)) : undefined,
+    },
+  });
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test", version: "0" });
   await server.connect(serverT);
@@ -38,10 +60,18 @@ d("MCP server (in-memory transport, real tmux)", () => {
       encoding: "utf8",
     });
     if (res.status !== 0) throw new Error(`failed to start fake agent: ${res.stderr}`);
+    spawnSync("tmux", ["-L", TARGET_SOCKET, "kill-server"], { encoding: "utf8" });
+    const targetRes = spawnSync(
+      "tmux",
+      ["-L", TARGET_SOCKET, "new-session", "-d", "-s", TARGET_SESSION, "-x", "200", "-y", "50", codewithFixtureLauncher(dataDir), "run", agent],
+      { encoding: "utf8" },
+    );
+    if (targetRes.status !== 0) throw new Error(`failed to start target fake agent: ${targetRes.stderr}`);
     await Bun.sleep(900);
   });
   afterAll(() => {
     spawnSync("tmux", ["kill-session", "-t", SESSION], { encoding: "utf8" });
+    spawnSync("tmux", ["-L", TARGET_SOCKET, "kill-server"], { encoding: "utf8" });
     rmSync(dataDir, { recursive: true, force: true });
   });
 
@@ -70,9 +100,9 @@ d("MCP server (in-memory transport, real tmux)", () => {
   }, 20000);
 
   test("dispatch_targets finds the live session", async () => {
-    const { client } = await connect();
+    const { client } = await connect({ targetSocket: TARGET_SOCKET });
     const res = await client.callTool({ name: "dispatch_targets", arguments: {} });
     const targets = textOf(res) as Array<{ target: string }>;
-    expect(targets.some((t) => t.target.startsWith(SESSION))).toBe(true);
+    expect(targets.some((t) => t.target.startsWith(TARGET_SESSION))).toBe(true);
   }, 10000);
 });
