@@ -23,6 +23,34 @@ describe("submit", () => {
     expect(enterCount(r)).toBe(1);
   });
 
+  test("waits for a prompt-parked probe before the first Enter", async () => {
+    const r = new MockRunner();
+    const order: string[] = [];
+    let probes = 0;
+    r.responder = (argv) => {
+      if (argv[1] === "send-keys" && argv.includes("Enter")) order.push("enter");
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    };
+
+    const res = await submit(new Tmux(r), "s:w", {
+      delayMs: 0,
+      sleep: async (ms) => {
+        order.push(`sleep:${ms}`);
+      },
+      isPromptParked: () => {
+        order.push("probe");
+        probes += 1;
+        return probes >= 3;
+      },
+      settleIntervalMs: 25,
+      maxSettlePolls: 5,
+    });
+
+    expect(res).toEqual({ submitted: true, attempts: 1 });
+    expect(order).toEqual(["sleep:0", "probe", "sleep:25", "probe", "sleep:25", "probe", "enter"]);
+    expect(enterCount(r)).toBe(1);
+  });
+
   test("no probe = single best-effort Enter, reported submitted", async () => {
     const r = new MockRunner();
     const res = await submit(new Tmux(r), "s:w", { delayMs: 0, sleep: noSleep });

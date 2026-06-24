@@ -42,6 +42,18 @@ const completedGoalCodewithCapture = `
   gpt-5.5 xhigh fast · account013 · 5h 9% left · Main [default]       Goal achieved (21s)
 `;
 
+const completedGoalNoBranchCodewithCapture = `
+› Follow up on this completed goal
+
+  gpt-5.5 xhigh fast · account013 · 5h 9% left       Goal achieved (21s)
+`;
+
+const idleFooterOnlyCodewithCapture = `
+› Find and fix a bug in @filename
+
+  gpt-5.5 xhigh fast · 9% left · account013
+`;
+
 const wrappedCompletedGoalCodewithCapture = `
 ⚠ Heads up, you have less than 5% of your weekly limit left.
 
@@ -408,6 +420,35 @@ describe("performDispatch", () => {
     expect(r.argvs().some((a) => a.includes("Enter"))).toBe(false);
   });
 
+  test("accepts a node-launched completed-goal Codewith composer without a branch footer segment", async () => {
+    const r = composerRunner("node", completedGoalNoBranchCodewithCapture, "✶ Working… (esc to interrupt)", codewithProcessTree);
+
+    const rec = await performDispatch(
+      { target: "open-codewith-04:1.1", prompt: "Follow up on the branchless completed goal", submit: false },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("delivered");
+    expect(rec.detail).toMatch(/without submitting/);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("-l"))).toBe(true);
+    expect(r.argvs().some((a) => a.includes("Enter"))).toBe(false);
+  });
+
+  test("accepts a node-launched idle Codewith composer with only prompt and model footer proof", async () => {
+    const r = composerRunner("node", idleFooterOnlyCodewithCapture, "✶ Working… (esc to interrupt)", codewithProcessTree);
+
+    const rec = await performDispatch(
+      { target: "open-dispatch:1.1", prompt: "Handle the next operator prompt", submit: false },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("delivered");
+    expect(rec.detection).toMatchObject({ agentKind: "codewith", composerState: "idle", canReceivePrompt: true });
+    expect(rec.detail).toMatch(/without submitting/);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("-l"))).toBe(true);
+    expect(r.argvs().some((a) => a.includes("Enter"))).toBe(false);
+  });
+
   test("accepts a bun-launched completed-goal Codewith composer when pane content proves it", async () => {
     const r = composerRunner("bun", completedGoalCodewithCapture, "✶ Working… (esc to interrupt)", codewithProcessTree);
 
@@ -581,6 +622,20 @@ Queued follow-up inputs:
     }
   });
 
+  test("accepts direct Claude composer panes using the real ❯ prompt glyph", async () => {
+    const r = composerRunner("claude", "❯ Draft this safely");
+
+    const rec = await performDispatch(
+      { target: "work:claude", prompt: "Draft this", submit: false },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("delivered");
+    expect(rec.detection).toMatchObject({ agentKind: "claude", composerState: "idle", canReceivePrompt: true });
+    expect(rec.detail).toMatch(/without submitting/);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("-l"))).toBe(true);
+  });
+
   test("refuses arbitrary node panes even though node is a common wrapper", async () => {
     const r = composerRunner(
       "node",
@@ -615,6 +670,47 @@ GET /health 200
     // persisted
     expect(store.getDispatch(rec.id)!.status).toBe("delivered");
     store.close();
+  });
+
+  test("waits for a pasted prompt tail to park before pressing Enter", async () => {
+    const prompt = "line one\nline two\nFINAL_PASTE_TAIL_MARKER";
+    const r = new MockRunner();
+    let pasted = false;
+    let entered = false;
+    let postPasteCaptures = 0;
+    let sawParkedBeforeEnter = false;
+
+    r.responder = (argv) => {
+      if (argv[1] === "list-panes") return { stdout: "%1\n", stderr: "", exitCode: 0, source: "local" };
+      if (argv[1] === "display-message") return { stdout: "codewith\n", stderr: "", exitCode: 0, source: "local" };
+      if (argv[1] === "load-buffer") return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+      if (argv[1] === "paste-buffer") {
+        pasted = true;
+        return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "send-keys" && argv.includes("Enter")) {
+        entered = true;
+        return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "capture-pane") {
+        if (entered) return { stdout: "✶ Working… (esc to interrupt)", stderr: "", exitCode: 0, source: "local" };
+        if (!pasted) return { stdout: "> idle composer", stderr: "", exitCode: 0, source: "local" };
+        postPasteCaptures += 1;
+        const stdout = postPasteCaptures >= 2 ? `> ${prompt}` : "> ";
+        if (stdout.includes("FINAL_PASTE_TAIL_MARKER")) sawParkedBeforeEnter = true;
+        return { stdout, stderr: "", exitCode: 0, source: "local" };
+      }
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    };
+
+    const rec = await performDispatch(
+      { target: "work:agent", prompt, submitDelayMs: 0 },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("delivered");
+    expect(sawParkedBeforeEnter).toBe(true);
+    expect(r.argvs().filter((a) => a[1] === "send-keys" && a.includes("Enter"))).toHaveLength(1);
   });
 
   test("goal mode records and delivers the prefixed prompt", async () => {

@@ -118,6 +118,55 @@ describe("exec command policy", () => {
     ).toBe(true);
   });
 
+  test("recognizes Codewith completed-goal idle composer statuslines without a branch segment", () => {
+    expect(
+      looksLikeWrappedAgentComposer(`
+› Follow up on this completed goal
+
+  gpt-5.5 xhigh fast · account013 · 5h 9% left       Goal achieved (21s)
+`, { processTree: codewithProcessTree }),
+    ).toBe(true);
+  });
+
+  test("recognizes bannerless idle Codewith composer status footer with process proof", () => {
+    const visible = `
+› Find and fix a bug in @filename
+
+  gpt-5.5 xhigh fast · 9% left · account013
+`;
+
+    expect(looksLikeWrappedAgentComposer(visible, { processTree: codewithProcessTree })).toBe(true);
+    expect(
+      detectAgentTargetFromSignals({
+        paneCommand: "node",
+        visible,
+        processTree: codewithProcessTree,
+        cwd: "/home/hasna/Workspace/hasna/opensource/open-dispatch",
+      }),
+    ).toMatchObject({
+      targetKind: "agent",
+      agentKind: "codewith",
+      composerState: "idle",
+      canReceivePrompt: true,
+      canQueuePrompt: false,
+      recommendedSubmitKey: "Enter",
+    });
+  });
+
+  test("requires Codewith process evidence for bannerless idle status footer content", () => {
+    const visible = `
+› Find and fix a bug in @filename
+
+  gpt-5.5 xhigh fast · 9% left · account013
+`;
+
+    expect(
+      looksLikeWrappedAgentComposer(visible, {
+        processTree: "1234 1 Ss /usr/bin/bash\n1240 1234 Sl+ node /srv/transcript-viewer.js\n",
+      }),
+    ).toBe(false);
+  });
+
   test("recognizes wrapped Codewith completed-goal statuslines with budget before account", () => {
     expect(
       looksLikeWrappedAgentComposer(`
@@ -318,6 +367,46 @@ Goal active Objective: Copied from a real Codewith pane
 `,
       }),
     ).toMatchObject({ targetKind: "agent", agentKind: "opencode", composerState: "idle" });
+  });
+
+  test("recognizes Claude's real composer prompt glyph", () => {
+    const visible = "❯ Draft the regression fix";
+
+    expect(detectAgentActivity(visible)).toBe("idle");
+    expect(
+      detectAgentTargetFromSignals({
+        paneCommand: "claude",
+        visible,
+        cwd: "/repo",
+      }),
+    ).toMatchObject({
+      targetKind: "agent",
+      agentKind: "claude",
+      composerState: "idle",
+      canReceivePrompt: true,
+      recommendedSubmitKey: "Enter",
+    });
+  });
+
+  test("does not accept bare Claude prompt glyph as wrapped agent UI proof", () => {
+    for (const [paneCommand, processTree] of [
+      ["node", "1 0 Ss node /home/hasna/.local/bin/claude --dangerously-skip-permissions\n"],
+      ["bun", "1 0 Ss bun /home/hasna/.local/bin/claude\n"],
+      ["node", "1 0 Ss node /srv/transcript-viewer.js\n"],
+    ]) {
+      const result = detectAgentTargetFromSignals({
+        paneCommand,
+        processTree,
+        visible: "❯ copied prompt from a transcript",
+        cwd: "/tmp",
+      });
+
+      expect(result, `${paneCommand} ${processTree}`).toMatchObject({
+        targetKind: "unknown",
+        agentKind: "unknown",
+        canReceivePrompt: false,
+      });
+    }
   });
 
   test("requires active composer or busy context for wrapped agent recognition", () => {
