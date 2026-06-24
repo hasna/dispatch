@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 
 /**
@@ -22,8 +22,21 @@ function reachable(host: string): { ok: boolean; bun?: string; tmux?: string } {
 }
 
 const CANDIDATES = ["spark01", "apple03", "spark02"];
+const localHostAliases = new Set(
+  [
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    hostname(),
+    hostname().split(".")[0],
+    process.env.HOSTNAME,
+  ]
+    .filter(Boolean)
+    .map((name) => name!.toLowerCase()),
+);
 let remote: { host: string; bun: string; tmux: string } | undefined;
 for (const host of CANDIDATES) {
+  if (localHostAliases.has(host.toLowerCase())) continue;
   const r = reachable(host);
   if (r.ok && r.bun && r.tmux) {
     remote = { host, bun: r.bun, tmux: r.tmux };
