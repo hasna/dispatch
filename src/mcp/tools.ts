@@ -9,6 +9,7 @@ import { inspectAgentTarget } from "../lib/agent-target.js";
 import { daemonStatus, stopDaemon } from "../daemon/control.js";
 import { startDaemon } from "../daemon/daemon.js";
 import { serviceAction } from "../daemon/service.js";
+import { summarizeBulk, summarizeRecord, summarizeSchedule } from "../cli/format.js";
 
 export interface ToolDeps {
   client: DispatchClient;
@@ -33,6 +34,16 @@ export interface ToolDef {
 async function tmuxFor(deps: ToolDeps, machine?: string): Promise<Tmux> {
   if (deps.makeTmux) return deps.makeTmux(machine);
   return new Tmux(await createRunner(machine));
+}
+
+function compactRecordResult(record: Awaited<ReturnType<DispatchClient["send"]>>, hint = "pass verbose:true for the full record") {
+  const summary = summarizeRecord(record);
+  return { id: summary.id, kind: summary.kind, status: summary.status, record: summary, compact: true, hint };
+}
+
+function compactScheduleResult(schedule: ReturnType<DispatchClient["schedule"]>, hint = "pass verbose:true for the full schedule") {
+  const summary = summarizeSchedule(schedule);
+  return { id: summary.id, kind: summary.kind, status: summary.status, schedule: summary, compact: true, hint };
 }
 
 export const TOOLS: ToolDef[] = [
@@ -64,6 +75,7 @@ export const TOOLS: ToolDef[] = [
       retries: z.number().optional().describe("max Enter retries if not confirmed; queued Tab delivery is single-shot"),
       mode: z.enum(["auto", "paste", "literal"]).optional().describe("delivery mode"),
       goal: z.boolean().optional().describe("prefix prompt with /goal unless it already starts with /goal"),
+      verbose: z.boolean().optional().describe("return full records instead of compact summaries"),
     },
     handler: (deps, a) => {
       if (a.source || a.targets) {
@@ -88,7 +100,7 @@ export const TOOLS: ToolDef[] = [
           maxConcurrency: a.maxConcurrency as number | undefined,
           jitterMs: a.jitterMs as number | undefined,
           perMachineLimit: a.perMachineLimit as number | undefined,
-        });
+        }).then((result) => (a.verbose === true ? result : summarizeBulk(result)));
       }
       if (typeof a.target !== "string" || a.target.trim().length === 0) {
         throw new Error("dispatch_send requires target, targets, or source=sessions-query");
@@ -109,7 +121,7 @@ export const TOOLS: ToolDef[] = [
         submitDelayMs: a.delayMs as number | undefined,
         maxSubmitRetries: a.retries as number | undefined,
         mode: a.mode as "auto" | "paste" | "literal" | undefined,
-      });
+      }).then((record) => (a.verbose === true ? record : compactRecordResult(record)));
     },
   },
   {
@@ -122,13 +134,14 @@ export const TOOLS: ToolDef[] = [
       target: z.string().describe("tmux target, e.g. session:window or session:window.pane"),
       key: z.string().describe("allowlisted special key name"),
       machine: z.string().optional().describe("target machine id (local when omitted)"),
+      verbose: z.boolean().optional().describe("return the full record instead of a compact summary"),
     },
     handler: (deps, a) =>
       deps.client.key({
         target: a.target as string,
         key: a.key as string,
         machine: a.machine as string | undefined,
-      }),
+      }).then((record) => (a.verbose === true ? record : compactRecordResult(record))),
   },
   {
     name: "dispatch_capture",
@@ -176,6 +189,7 @@ export const TOOLS: ToolDef[] = [
       dryRun: z.boolean().optional().describe("validate and record without sending tmux input"),
       forceInterrupt: z.boolean().optional().describe("send C-c before the command (default false)"),
       policyFile: z.string().optional().describe("reviewed JSON exec policy file, equivalent to CLI --allow"),
+      verbose: z.boolean().optional().describe("return the full record instead of a compact summary"),
     },
     handler: (deps, a) =>
       deps.client.exec({
@@ -185,16 +199,47 @@ export const TOOLS: ToolDef[] = [
         dryRun: a.dryRun as boolean | undefined,
         forceInterrupt: a.forceInterrupt as boolean | undefined,
         policy: a.policyFile ? loadExecPolicy(a.policyFile as string) : undefined,
-      }),
+      }).then((record) => (a.verbose === true ? record : compactRecordResult(record))),
   },
   {
     name: "dispatch_status",
     verb: "status",
     title: "Get a dispatch",
     description: "Look up a previously-recorded dispatch or scheduled dispatch/loop by id.",
-    inputSchema: { id: z.string().describe("dispatch id") },
-    handler: async (deps, a) =>
-      deps.client.status(a.id as string) ?? deps.client.scheduleStatus(a.id as string) ?? { error: "not found", id: a.id },
+    inputSchema: {
+      id: z.string().describe("dispatch id"),
+      verbose: z.boolean().optional().describe("return the full stored object instead of a compact summary"),
+    },
+    handler: async (deps, a) => {
+      const rec = deps.client.status(a.id as string);
+      if (rec) return a.verbose === true ? rec : { ...compactRecordResult(rec), resultKind: "dispatch" };
+      const sched = deps.client.scheduleStatus(a.id as string);
+      if (sched) return a.verbose === true ? sched : { ...compactScheduleResult(sched), resultKind: "schedule" };
+      return { error: "not found", id: a.id };
+    },
+  },
+  {
+    name: "dispatch_show",
+    verb: "show",
+    title: "Show dispatch details",
+    description: "Show a dispatch/schedule/loop by id. Compact by default; pass verbose=true for the full stored object.",
+    inputSchema: {
+      id: z.string().describe("dispatch or schedule id"),
+      verbose: z.boolean().optional().describe("return the full stored object instead of compact details"),
+    },
+    handler: async (deps, a) => {
+      const rec = deps.client.status(a.id as string);
+      if (rec) {
+        const summary = summarizeRecord(rec, { previewChars: 500 });
+        return a.verbose === true ? rec : { id: summary.id, kind: summary.kind, status: summary.status, resultKind: "dispatch", record: summary, compact: true, hint: "pass verbose:true for the full record including full prompt" };
+      }
+      const sched = deps.client.scheduleStatus(a.id as string);
+      if (sched) {
+        const summary = summarizeSchedule(sched, { previewChars: 500 });
+        return a.verbose === true ? sched : { id: summary.id, kind: summary.kind, status: summary.status, resultKind: "schedule", schedule: summary, compact: true, hint: "pass verbose:true for the full schedule including full prompt" };
+      }
+      return { error: "not found", id: a.id };
+    },
   },
   {
     name: "dispatch_list",
@@ -204,9 +249,16 @@ export const TOOLS: ToolDef[] = [
     inputSchema: {
       status: z.string().optional().describe("filter by status"),
       limit: z.number().optional().describe("max rows (default 20)"),
+      verbose: z.boolean().optional().describe("return full records instead of compact summaries"),
     },
-    handler: async (deps, a) =>
-      deps.client.list({ status: a.status as never, limit: (a.limit as number | undefined) ?? 20 }),
+    handler: async (deps, a) => {
+      const limit = (a.limit as number | undefined) ?? 20;
+      const rows = deps.client.list({ status: a.status as never, limit: a.verbose === true ? limit : limit + 1 });
+      const shown = rows.slice(0, limit);
+      return a.verbose === true
+        ? rows
+        : { items: shown.map((row) => summarizeRecord(row)), count: shown.length, limit, hasMore: rows.length > limit, compact: true, hint: "pass verbose:true for full records" };
+    },
   },
   {
     name: "dispatch_schedule",
@@ -226,9 +278,10 @@ export const TOOLS: ToolDef[] = [
       ifIdle: z.boolean().optional().describe("refuse delivery unless target looks idle when fired"),
       queue: z.boolean().optional().describe("queue on active agents that prove Tab queued-message support when fired"),
       forceActive: z.boolean().optional().describe("explicitly override active/unknown target refusal when fired"),
+      verbose: z.boolean().optional().describe("return the full schedule instead of a compact summary"),
     },
-    handler: async (deps, a) =>
-      deps.client.schedule({
+    handler: async (deps, a) => {
+      const sched = deps.client.schedule({
         options: {
           target: a.target as string,
           prompt: a.prompt as string,
@@ -243,7 +296,9 @@ export const TOOLS: ToolDef[] = [
         in: a.in as string | undefined,
         cron: a.cron as string | undefined,
         every: a.every as string | undefined,
-      }),
+      });
+      return a.verbose === true ? sched : compactScheduleResult(sched);
+    },
   },
   {
     name: "dispatch_loop",
@@ -260,9 +315,10 @@ export const TOOLS: ToolDef[] = [
       ifIdle: z.boolean().optional(),
       queue: z.boolean().optional(),
       forceActive: z.boolean().optional(),
+      verbose: z.boolean().optional().describe("return the full loop instead of a compact summary"),
     },
-    handler: async (deps, a) =>
-      deps.client.loop({
+    handler: async (deps, a) => {
+      const loop = deps.client.loop({
         options: {
           target: a.target as string,
           prompt: a.prompt as string,
@@ -274,7 +330,9 @@ export const TOOLS: ToolDef[] = [
         },
         every: a.every as string,
         name: a.name as string | undefined,
-      }),
+      });
+      return a.verbose === true ? loop : compactScheduleResult(loop, "pass verbose:true for the full loop");
+    },
   },
   {
     name: "dispatch_schedules",
@@ -284,16 +342,36 @@ export const TOOLS: ToolDef[] = [
     inputSchema: {
       status: z.enum(["scheduled", "paused", "fired", "cancelled", "failed"]).optional(),
       kind: z.enum(["schedule", "loop"]).optional(),
+      limit: z.number().optional().describe("max rows (default 20)"),
+      verbose: z.boolean().optional().describe("return full schedules instead of compact summaries"),
     },
-    handler: async (deps, a) => deps.client.listSchedules({ status: a.status as never, kind: a.kind as never }),
+    handler: async (deps, a) => {
+      const limit = (a.limit as number | undefined) ?? 20;
+      const rows = deps.client.listSchedules({ status: a.status as never, kind: a.kind as never, limit: a.verbose === true ? limit : limit + 1 });
+      const shown = rows.slice(0, limit);
+      return a.verbose === true
+        ? rows
+        : { items: shown.map((row) => summarizeSchedule(row)), count: shown.length, limit, hasMore: rows.length > limit, compact: true, hint: "pass verbose:true for full schedules" };
+    },
   },
   {
     name: "dispatch_loops",
     verb: "loops",
     title: "List dispatch loops",
     description: "List recurring interval dispatch loops.",
-    inputSchema: { status: z.enum(["scheduled", "paused", "cancelled", "failed"]).optional() },
-    handler: async (deps, a) => deps.client.listLoops({ status: a.status as never }),
+    inputSchema: {
+      status: z.enum(["scheduled", "paused", "cancelled", "failed"]).optional(),
+      limit: z.number().optional().describe("max rows (default 20)"),
+      verbose: z.boolean().optional().describe("return full loops instead of compact summaries"),
+    },
+    handler: async (deps, a) => {
+      const limit = (a.limit as number | undefined) ?? 20;
+      const rows = deps.client.listLoops({ status: a.status as never, limit: a.verbose === true ? limit : limit + 1 });
+      const shown = rows.slice(0, limit);
+      return a.verbose === true
+        ? rows
+        : { items: shown.map((row) => summarizeSchedule(row)), count: shown.length, limit, hasMore: rows.length > limit, compact: true, hint: "pass verbose:true for full loops" };
+    },
   },
   {
     name: "dispatch_cancel",
@@ -332,18 +410,36 @@ export const TOOLS: ToolDef[] = [
     verb: "targets",
     title: "List tmux targets",
     description: "Enumerate dispatchable tmux targets (panes) on a machine, so you can discover where to send.",
-    inputSchema: { machine: z.string().optional() },
+    inputSchema: {
+      machine: z.string().optional(),
+      limit: z.number().optional().describe("max rows (default 50)"),
+      verbose: z.boolean().optional().describe("include full detection metadata"),
+    },
     handler: async (deps, a) => {
       const tmux = await tmuxFor(deps, a.machine as string | undefined);
-      return tmux.listTargets().map((target) => ({
-        ...target,
-        detection: inspectAgentTarget(tmux, target.target, {
+      const limit = (a.limit as number | undefined) ?? 50;
+      const targets = tmux.listTargets();
+      const items = targets.slice(0, limit).map((target) => {
+        const detection = inspectAgentTarget(tmux, target.target, {
           assumeExists: true,
           paneCommand: target.paneCommand,
           cwd: target.cwd,
           panePid: target.panePid,
-        }).detection,
-      }));
+        }).detection;
+        return a.verbose === true
+          ? { ...target, detection }
+          : {
+              target: target.target,
+              window: target.window,
+              active: target.active,
+              paneCommand: target.paneCommand,
+              agentKind: detection?.agentKind,
+              composerState: detection?.composerState,
+              canReceivePrompt: detection?.canReceivePrompt,
+              canQueuePrompt: detection?.canQueuePrompt,
+            };
+      });
+      return { items, count: items.length, total: targets.length, limit, compact: a.verbose !== true, hint: "pass verbose:true for full target detection metadata" };
     },
   },
   {

@@ -45,7 +45,8 @@ dispatch send       Dispatch a prompt to a tmux target and auto-submit it
 dispatch exec       Dispatch a filtered shell command to a shell tmux target
 dispatch key        Send an allowlisted special key to an agent composer
 dispatch capture    Capture a bounded, redacted pane transcript
-dispatch status     Show a recorded dispatch by id
+dispatch status     Show a recorded dispatch, schedule, or loop by id
+dispatch show       Show expanded details for a dispatch, schedule, or loop
 dispatch list       List recorded dispatches (newest first)
 dispatch targets    List dispatchable tmux targets (panes) on a machine
 dispatch schedule   Queue a dispatch to fire later (--at, --in, --cron, or --every)
@@ -58,6 +59,30 @@ dispatch clear      Delete a schedule/loop
 dispatch cancel     Cancel a scheduled dispatch
 dispatch daemon     start | ensure | restart | status | doctor | service | stop
 ```
+
+### Output defaults
+
+Read/list commands are compact by default so agent terminals do not fill context
+with stored prompt bodies or large records:
+
+```bash
+dispatch list                  # compact, 20 rows by default
+dispatch loops                 # compact, 20 rows by default
+dispatch schedules             # compact, 20 rows by default
+dispatch targets               # compact, 50 panes by default
+dispatch status <id>           # one-line status plus next-step hint
+dispatch show <id>             # expanded human-readable details
+dispatch status <id> --verbose # expanded human-readable details
+dispatch list --limit 50       # request more rows explicitly
+dispatch list --limit 50 --json # full stored JSON objects for selected rows
+```
+
+Compact rows include ids, status, target, timing, and short prompt previews. Use
+`show`/`inspect` or `--verbose` for a bounded detail view, and `--json` when you
+really need the full stored object for selected rows. Existing JSON output remains
+the machine-readable path and may include full prompt text by design.
+When more rows exist beyond the current limit, human output says `more available`;
+raise `--limit` deliberately instead of dumping the whole store.
 
 ### Send
 
@@ -112,6 +137,8 @@ only (`sessions live --json --once`, then `sessions status --json`) and filters 
 `--if-idle`, so active targets are skipped unless `--queue` or
 `--force-active` is passed. `--capture-before` stores a bounded redacted transcript
 on each dispatch record for later `dispatch status` / `dispatch list` audit context.
+Plain-text bulk results show the first 20 compact records and an omitted count; use
+`--json` for the full bulk result.
 
 Prompt sends now use native terminal-agent detection before typing. JSON outputs from
 `dispatch targets --json`, `dispatch status --json`, `dispatch capture --json`, and
@@ -238,6 +265,7 @@ records store redacted command placeholders plus the hash rather than the raw co
 
 ```bash
 dispatch targets                 # panes on this machine
+dispatch targets --verbose       # include detection/capability summary
 dispatch targets --machine spark01 --json
 ```
 
@@ -259,7 +287,8 @@ dispatch loop --to work:agent --prompt "capture status and report blockers" --ev
 
 dispatch schedules            # list schedules and loops
 dispatch loops                # list interval loops
-dispatch status <id>          # inspect a dispatch, schedule, or loop
+dispatch show <id>            # inspect a dispatch, schedule, or loop
+dispatch status <id>          # compact status plus detail hint
 dispatch pause <id>           # pause a schedule/loop
 dispatch resume <id>          # resume a paused schedule/loop
 dispatch cancel <id>          # mark cancelled
@@ -383,7 +412,8 @@ Every CLI verb is also an MCP tool, so agents can dispatch over MCP:
 ```jsonc
 // register the server: dispatch-mcp  (stdio)
 // tools:
-//   dispatch_send, dispatch_key, dispatch_capture, dispatch_exec, dispatch_status, dispatch_list, dispatch_targets,
+//   dispatch_send, dispatch_key, dispatch_capture, dispatch_exec, dispatch_status, dispatch_show,
+//   dispatch_list, dispatch_targets,
 //   dispatch_schedule, dispatch_loop, dispatch_schedules, dispatch_loops,
 //   dispatch_cancel, dispatch_pause, dispatch_resume, dispatch_clear,
 //   dispatch_daemon_start, dispatch_daemon_stop, dispatch_daemon_status,
@@ -394,6 +424,14 @@ Every CLI verb is also an MCP tool, so agents can dispatch over MCP:
 ```bash
 dispatch-mcp        # stdio MCP server
 ```
+
+MCP read/list tools also return compact summaries by default. Pass `verbose: true`
+to `dispatch_status`, `dispatch_show`, `dispatch_list`, `dispatch_schedules`,
+`dispatch_loops`, `dispatch_targets`, or dispatch-producing tools when an agent
+explicitly needs full records.
+Compact MCP responses are wrapper objects such as `{ items, count, hasMore }` for
+lists or `{ id, status, record }` for single dispatch results; clients that need
+the historical raw records should pass `verbose: true`.
 
 `dispatch_exec` accepts `policyFile` for the same reviewed JSON policy used by
 CLI `--allow`; it does not accept inline allowlists from the caller.

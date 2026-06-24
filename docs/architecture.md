@@ -27,10 +27,13 @@
 - **SDK** — `DispatchClient` (`send`, `status`, `list`, `schedule`, `loop`,
   `scheduleStatus`, `listSchedules`, `listLoops`, `pauseSchedule`, `resumeSchedule`,
   `cancelSchedule`, `clearSchedule`). The programmatic core; the other surfaces wrap it.
-- **CLI** — `commander` commands; thin adapters over the client. Read/schedule commands
-  are unit-tested with an injected in-memory client; `send` is integration-tested.
+- **CLI** — `commander` commands; thin adapters over the client. Read/list commands
+  use compact defaults with bounded previews and explicit `show`/`--verbose`/`--json`
+  detail paths. They are unit-tested with an injected in-memory client; `send` is
+  integration-tested.
 - **MCP** — every verb defined once in `mcp/tools.ts` (zod schema + handler) and
-  registered on `McpServer`. A parity test keeps the MCP and CLI verb sets identical.
+  registered on `McpServer`. A parity test keeps the MCP and CLI verb sets identical;
+  read/list tools return compact wrapper summaries unless `verbose: true` is requested.
 - **Daemon** — a long-running loop (`daemon/loop.ts`) that runs the scheduler `tick()` on
   an interval, owns the scheduled-dispatch queue, and tracks deliveries. Single-instance
   via an atomic pidfile claim; schedules live in sqlite so they survive restarts. A small

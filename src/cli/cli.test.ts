@@ -3,7 +3,18 @@ import { writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { buildProgram, parseIntegerOption } from "./index.js";
-import { formatRecord, formatSchedule, resolvePrompt } from "./format.js";
+import {
+  formatBulk,
+  formatRecord,
+  formatRecordDetail,
+  formatRecordList,
+  formatSchedule,
+  formatScheduleDetail,
+  resolvePrompt,
+  summarizeBulk,
+  summarizeRecord,
+  summarizeSchedule,
+} from "./format.js";
 import { DispatchClient } from "../sdk/index.js";
 import { Store } from "../lib/store.js";
 import type {
@@ -55,6 +66,124 @@ describe("formatters", () => {
     expect(line).toContain("abc123abc123");
     expect(line).toContain("work:agent");
     expect(line).toContain("do the thing");
+  });
+  test("formatRecord truncates long prompts in compact output", () => {
+    const prompt = Array.from({ length: 40 }, (_, i) => `word${i}`).join(" ");
+    const line = formatRecord({
+      id: "long123",
+      target: "work:agent",
+      machine: "local",
+      prompt,
+      status: "delivered",
+      createdAt: "x",
+      updatedAt: "x",
+    });
+    expect(line).toContain("word0");
+    expect(line).toContain("…");
+    expect(line).not.toContain("word39");
+  });
+  test("detail output still caps prompt text and points to JSON for the full object", () => {
+    const prompt = `${"a".repeat(650)} TAIL_MARKER`;
+    const detail = formatRecordDetail({
+      id: "detail123",
+      target: "work:agent",
+      machine: "local",
+      prompt,
+      status: "delivered",
+      createdAt: "x",
+      updatedAt: "x",
+    });
+    expect(detail).toContain("prompt:");
+    expect(detail).toContain("use --json for the full stored prompt/object");
+    expect(detail).not.toContain("TAIL_MARKER");
+  });
+  test("compact outputs truncate free-text detail and failure fields", () => {
+    const detail = `${"failure detail ".repeat(80)}DETAIL_TAIL`;
+    const rec = {
+      id: "detail-row",
+      target: "work:agent",
+      machine: "local",
+      prompt: "short",
+      detail,
+      status: "failed" as const,
+      createdAt: "x",
+      updatedAt: "x",
+    };
+    expect(formatRecord(rec)).not.toContain("DETAIL_TAIL");
+    expect(formatRecordDetail(rec)).not.toContain("DETAIL_TAIL");
+    expect(summarizeRecord(rec)).toMatchObject({ detailLength: detail.length });
+    expect(summarizeRecord(rec).detailPreview).not.toContain("DETAIL_TAIL");
+
+    const failureReason = `${"schedule failure ".repeat(80)}FAILURE_TAIL`;
+    const sched = {
+      id: "sched-detail",
+      options: { target: "work:agent", prompt: "poll" },
+      every: "5m",
+      intervalMs: 5 * 60_000,
+      nextRun: "2026-06-17T10:05:00.000Z",
+      status: "scheduled" as const,
+      lastFailureAt: "x",
+      lastFailureReason: failureReason,
+      createdAt: "x",
+      updatedAt: "x",
+    };
+    expect(formatScheduleDetail(sched)).not.toContain("FAILURE_TAIL");
+    expect(summarizeSchedule(sched)).toMatchObject({ lastFailureReasonLength: failureReason.length });
+    expect(summarizeSchedule(sched).lastFailureReasonPreview).not.toContain("FAILURE_TAIL");
+  });
+  test("record lists include a compact hint instead of dumping full prompts", () => {
+    const longPrompt = `${Array.from({ length: 80 }, (_, i) => `token${i}`).join(" ")} END_MARKER`;
+    const output = formatRecordList(
+      [
+        {
+          id: "list123",
+          target: "work:agent",
+          machine: "local",
+          prompt: longPrompt,
+          status: "delivered",
+          createdAt: "x",
+          updatedAt: "x",
+        },
+      ],
+      { limit: 20 },
+    );
+    expect(output).toContain("dispatches: showing 1 (limit 20)");
+    expect(output).toContain("dispatch show <id>");
+    expect(output).not.toContain("END_MARKER");
+  });
+  test("bulk summaries cap record rows", () => {
+    const detail = `${"bulk detail ".repeat(120)}BULK_TAIL`;
+    const result = {
+      status: "completed",
+      source: "explicit",
+      requested: 25,
+      planned: 25,
+      delivered: 25,
+      skipped: 0,
+      failed: 0,
+      dryRun: false,
+      maxConcurrency: 1,
+      jitterMs: 0,
+      perMachineLimit: 1,
+      detail,
+      records: Array.from({ length: 25 }, (_, i) => ({
+        id: `bulk-${i}`,
+        target: `s:${i}`,
+        machine: "local",
+        prompt: `prompt ${i}`,
+        status: "delivered" as const,
+        createdAt: "x",
+        updatedAt: "x",
+      })),
+    } satisfies BulkDispatchResult;
+    const output = formatBulk(result);
+    expect(output).toContain("bulk-19");
+    expect(output).not.toContain("bulk-20");
+    expect(output).toContain("5 more record(s) omitted");
+    expect(output).toContain("use --json for full records");
+    expect(output).not.toContain("BULK_TAIL");
+    expect(summarizeBulk(result)).toMatchObject({ detailLength: detail.length, omittedRecords: 5 });
+    expect(summarizeBulk(result).detailPreview).not.toContain("BULK_TAIL");
   });
   test("formatSchedule shows cron and next run", () => {
     const line = formatSchedule({
@@ -108,12 +237,49 @@ describe("CLI read/schedule commands (in-memory client)", () => {
     const rec = store.createDispatch({ target: "s:w", prompt: "hi", status: "delivered" });
     await program.parseAsync(["status", rec.id], { from: "user" });
     expect(out.join("\n")).toContain(rec.id);
+    expect(out.join("\n")).toContain("dispatch show");
 
     process.exitCode = 0;
     await program.parseAsync(["status", "missing"], { from: "user" });
     expect(err.join("\n")).toMatch(/not found/);
     expect(process.exitCode).toBe(1);
     process.exitCode = 0;
+  });
+
+  test("show prints expanded details without requiring raw JSON", async () => {
+    const { store, program, out } = runner();
+    const rec = store.createDispatch({ target: "s:w", prompt: "hi", status: "delivered" });
+    await program.parseAsync(["show", rec.id], { from: "user" });
+    expect(out.join("\n")).toContain("kind: prompt");
+    expect(out.join("\n")).toContain("prompt: \"hi\"");
+  });
+
+  test("list defaults to compact capped output while --json preserves the historical default limit", async () => {
+    const { store, program, out } = runner();
+    for (let i = 0; i < 25; i += 1) {
+      store.createDispatch({
+        target: "s:w",
+        prompt: `dispatch ${i} ${"x".repeat(120)} END_MARKER_${i}`,
+        status: "delivered",
+      });
+    }
+
+    await program.parseAsync(["list"], { from: "user" });
+    const compact = out.join("\n");
+    expect(compact).toContain("dispatches: showing 20 (limit 20; more available)");
+    expect(compact).toContain("dispatch show <id>");
+    expect(compact).not.toContain("END_MARKER_");
+    out.length = 0;
+
+    await program.parseAsync(["list", "--json"], { from: "user" });
+    const parsed = JSON.parse(out.join("\n"));
+    expect(parsed).toHaveLength(20);
+    out.length = 0;
+
+    await program.parseAsync(["list", "--limit", "25", "--json"], { from: "user" });
+    const expanded = JSON.parse(out.join("\n"));
+    expect(expanded).toHaveLength(25);
+    expect(expanded.some((row: { prompt: string }) => row.prompt.includes("END_MARKER_24"))).toBe(true);
   });
 
   test("list --json returns recorded dispatches", async () => {
@@ -184,6 +350,30 @@ describe("CLI read/schedule commands (in-memory client)", () => {
 
     await program.parseAsync(["clear", loop.id], { from: "user" });
     expect(out.join("\n")).toContain("cleared");
+  });
+
+  test("loops defaults to compact capped output", async () => {
+    const { store, program, out } = runner();
+    for (let i = 0; i < 25; i += 1) {
+      store.createSchedule({
+        kind: "loop",
+        name: `loop-${i}`,
+        options: { target: "s:w", prompt: `poll ${i} ${"x".repeat(120)} END_MARKER_${i}` },
+        every: "5m",
+        intervalMs: 5 * 60_000,
+        nextRun: `2099-01-01T00:${String(i).padStart(2, "0")}:00.000Z`,
+      });
+    }
+
+    await program.parseAsync(["loops"], { from: "user" });
+    const compact = out.join("\n");
+    expect(compact).toContain("dispatch loops: showing 20 (limit 20; more available)");
+    expect(compact).toContain("dispatch show <id>");
+    expect(compact).not.toContain("END_MARKER_");
+    out.length = 0;
+
+    await program.parseAsync(["loops", "--limit", "25", "--json"], { from: "user" });
+    expect(JSON.parse(out.join("\n"))).toHaveLength(25);
   });
 
   test("schedule rejects missing timing mode and invalid combinations", async () => {

@@ -2,8 +2,18 @@
 import { Command, InvalidArgumentError } from "commander";
 import { getPackageVersion } from "../lib/version.js";
 import { DispatchClient } from "../sdk/index.js";
-import type { BulkDispatchOptions, CaptureOptions, CaptureTransform, DispatchOptions, ExecOptions, KeyOptions } from "../types.js";
-import { formatBulk, formatCapture, formatRecord, formatSchedule, resolvePrompt } from "./format.js";
+import type { AgentTargetInfo, BulkDispatchOptions, CaptureOptions, CaptureTransform, DispatchOptions, ExecOptions, KeyOptions } from "../types.js";
+import {
+  formatBulk,
+  formatCapture,
+  formatRecord,
+  formatRecordDetail,
+  formatRecordList,
+  formatSchedule,
+  formatScheduleDetail,
+  formatScheduleList,
+  resolvePrompt,
+} from "./format.js";
 import { registerDaemonCommands } from "./daemon-commands.js";
 import { Tmux } from "../lib/tmux.js";
 import { createRunner } from "../lib/runner.js";
@@ -236,11 +246,12 @@ export function buildProgram(deps: CliDeps = {}): Command {
   program
     .command("status <id>")
     .description("Show a recorded dispatch or scheduled dispatch/loop by id")
+    .option("--verbose", "show expanded human-readable fields without dumping raw JSON")
     .option("--json", "output JSON")
     .action(async (id, opts) => {
       const rec = await withClient((c) => c.status(id));
       if (rec) {
-        out(opts.json ? JSON.stringify(rec, null, 2) : formatRecord(rec));
+        out(opts.json ? JSON.stringify(rec, null, 2) : opts.verbose ? formatRecordDetail(rec) : `${formatRecord(rec)}\nhint: use \`dispatch show ${rec.id}\` or \`dispatch status ${rec.id} --verbose\` for details; use --json for the full record`);
         return;
       }
       const sched = await withClient((c) => c.scheduleStatus(id));
@@ -249,23 +260,44 @@ export function buildProgram(deps: CliDeps = {}): Command {
         process.exitCode = 1;
         return;
       }
-      out(opts.json ? JSON.stringify(sched, null, 2) : formatSchedule(sched));
+      out(opts.json ? JSON.stringify(sched, null, 2) : opts.verbose ? formatScheduleDetail(sched) : `${formatSchedule(sched)}\nhint: use \`dispatch show ${sched.id}\` or \`dispatch status ${sched.id} --verbose\` for details; use --json for the full record`);
+    });
+
+  program
+    .command("show <id>")
+    .alias("inspect")
+    .description("Show expanded details for a dispatch, schedule, or loop")
+    .option("--json", "output the full stored JSON object")
+    .action(async (id, opts) => {
+      const rec = await withClient((c) => c.status(id));
+      if (rec) {
+        out(opts.json ? JSON.stringify(rec, null, 2) : formatRecordDetail(rec));
+        return;
+      }
+      const sched = await withClient((c) => c.scheduleStatus(id));
+      if (!sched) {
+        err(`dispatch or schedule not found: ${id}`);
+        process.exitCode = 1;
+        return;
+      }
+      out(opts.json ? JSON.stringify(sched, null, 2) : formatScheduleDetail(sched));
     });
 
   program
     .command("list")
     .description("List recorded dispatches (newest first)")
     .option("-s, --status <status>", "filter by status")
-    .option("-n, --limit <n>", "max rows", (v) => parseInt(v, 10), 20)
+    .option("-n, --limit <n>", "max rows", parseIntegerOption("limit", 1))
+    .option("--verbose", "show expanded human-readable rows")
     .option("--json", "output JSON")
     .action(async (opts) => {
-      const rows = await withClient((c) => c.list({ status: opts.status, limit: opts.limit }));
+      const limit = opts.limit ?? 20;
+      const rows = await withClient((c) => c.list({ status: opts.status, limit: opts.json ? limit : limit + 1 }));
       if (opts.json) {
         out(JSON.stringify(rows, null, 2));
-      } else if (rows.length === 0) {
-        out("no dispatches yet");
       } else {
-        for (const r of rows) out(formatRecord(r));
+        const shown = rows.slice(0, limit);
+        out(formatRecordList(shown, { limit, verbose: opts.verbose === true, hasMore: rows.length > limit }));
       }
     });
 
@@ -273,24 +305,41 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .command("targets")
     .description("List dispatchable tmux targets (panes) on a machine")
     .option("-m, --machine <id>", "machine to enumerate (local when omitted)")
+    .option("-n, --limit <n>", "max rows", parseIntegerOption("limit", 1))
+    .option("--verbose", "include compact detection/capability details")
     .option("--json", "output JSON")
     .action(async (opts) => {
       const tmux = new Tmux(await createRunner(opts.machine));
-      const targets = tmux.listTargets().map((target) => ({
-        ...target,
-        detection: inspectAgentTarget(tmux, target.target, {
-          assumeExists: true,
-          paneCommand: target.paneCommand,
-          cwd: target.cwd,
-          panePid: target.panePid,
-        }).detection,
-      }));
+      const allTargets = tmux.listTargets();
+      const limit = opts.limit ?? (opts.json ? undefined : 50);
+      const selectedTargets = limit === undefined ? allTargets : allTargets.slice(0, limit);
+      const targets = opts.json || opts.verbose
+        ? selectedTargets.map((target) => ({
+            ...target,
+            detection: inspectAgentTarget(tmux, target.target, {
+              assumeExists: true,
+              paneCommand: target.paneCommand,
+              cwd: target.cwd,
+              panePid: target.panePid,
+            }).detection,
+          }))
+        : selectedTargets;
       if (opts.json) {
         out(JSON.stringify(targets, null, 2));
       } else if (targets.length === 0) {
         out("no tmux targets found");
       } else {
-        for (const t of targets) out(`${t.active ? "▸" : " "} ${t.target}  (${t.window})`);
+        out(`targets: showing ${targets.length} of ${allTargets.length}${opts.machine ? ` on ${opts.machine}` : ""}`);
+        for (const t of targets) {
+          const base = `${t.active ? "▸" : " "} ${t.target}  (${t.window})`;
+          if (opts.verbose) {
+            const d = ("detection" in t ? t.detection : undefined) as AgentTargetInfo | undefined;
+            out(`${base}  ${d?.targetKind ?? "unknown"}/${d?.agentKind ?? "unknown"} state=${d?.composerState ?? "unknown"} receive=${d?.canReceivePrompt ?? false} queue=${d?.canQueuePrompt ?? false}`);
+          } else {
+            out(base);
+          }
+        }
+        out("hint: use --verbose for detection details or --json for full target metadata");
       }
     });
 
@@ -375,15 +424,17 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .description("List scheduled dispatches")
     .option("-s, --status <status>", "filter by status (scheduled | paused | fired | cancelled | failed)")
     .option("--kind <kind>", "filter by kind (schedule | loop)")
+    .option("-n, --limit <n>", "max rows", parseIntegerOption("limit", 1))
+    .option("--verbose", "show expanded human-readable rows")
     .option("--json", "output JSON")
     .action(async (opts) => {
-      const rows = await withClient((c) => c.listSchedules({ status: opts.status, kind: opts.kind }));
+      const limit = opts.limit ?? 20;
+      const rows = await withClient((c) => c.listSchedules({ status: opts.status, kind: opts.kind, limit: opts.json ? limit : limit + 1 }));
       if (opts.json) {
         out(JSON.stringify(rows, null, 2));
-      } else if (rows.length === 0) {
-        out("no scheduled dispatches");
       } else {
-        for (const s of rows) out(formatSchedule(s));
+        const shown = rows.slice(0, limit);
+        out(formatScheduleList(shown, { limit, verbose: opts.verbose === true, label: "scheduled dispatches", hasMore: rows.length > limit }));
       }
     });
 
@@ -391,15 +442,17 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .command("loops")
     .description("List recurring interval loops")
     .option("-s, --status <status>", "filter by status (scheduled | paused | cancelled | failed)")
+    .option("-n, --limit <n>", "max rows", parseIntegerOption("limit", 1))
+    .option("--verbose", "show expanded human-readable rows")
     .option("--json", "output JSON")
     .action(async (opts) => {
-      const rows = await withClient((c) => c.listLoops({ status: opts.status }));
+      const limit = opts.limit ?? 20;
+      const rows = await withClient((c) => c.listLoops({ status: opts.status, limit: opts.json ? limit : limit + 1 }));
       if (opts.json) {
         out(JSON.stringify(rows, null, 2));
-      } else if (rows.length === 0) {
-        out("no dispatch loops");
       } else {
-        for (const s of rows) out(formatSchedule(s));
+        const shown = rows.slice(0, limit);
+        out(formatScheduleList(shown, { limit, verbose: opts.verbose === true, label: "dispatch loops", hasMore: rows.length > limit }));
       }
     });
 
