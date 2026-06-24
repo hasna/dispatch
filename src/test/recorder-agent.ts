@@ -33,18 +33,54 @@ if (process.stdin.isTTY && typeof process.stdin.setRawMode === "function") {
 }
 process.stdin.resume();
 
-let sawPasteEnd = false;
 let working = false;
+let inPaste = false;
+let pending = "";
+
+function visiblePending(text: string): string {
+  if (text.length > 200 || text.includes("\n")) {
+    const lines = Math.max(0, text.split("\n").length - 1);
+    return lines > 0 ? `[Pasted text +${lines} lines]` : "[Pasted text]";
+  }
+  return text;
+}
+
+function renderPending(): void {
+  if (working || pending.length === 0) return;
+  process.stdout.write(`\n› ${visiblePending(pending)}\n`);
+}
+
+function submitPending(): void {
+  if (working) return;
+  working = true;
+  process.stdout.write("\n✶ Working… (esc to interrupt)\n");
+}
+
 process.stdin.on("data", (chunk: Buffer) => {
   appendFileSync(file, chunk);
   const s = chunk.toString("utf8");
-  if (s.includes("\x1b[201~")) sawPasteEnd = true;
-  // Enter the working state once we get a submit (a bare CR/LF after the paste,
-  // or any line break for short literal sends).
-  if (!working && (sawPasteEnd ? /[\r\n]/.test(s.replace(/\x1b\[20[01]~/g, "")) : /[\r\n]/.test(s))) {
-    working = true;
-    process.stdout.write("\n✶ Working… (esc to interrupt)\n");
+  let changed = false;
+  for (let i = 0; i < s.length; i += 1) {
+    if (s.startsWith("\x1b[200~", i)) {
+      inPaste = true;
+      i += "\x1b[200~".length - 1;
+      continue;
+    }
+    if (s.startsWith("\x1b[201~", i)) {
+      inPaste = false;
+      i += "\x1b[201~".length - 1;
+      changed = true;
+      continue;
+    }
+    const ch = s[i]!;
+    if (!inPaste && (ch === "\n" || ch === "\r")) {
+      submitPending();
+      continue;
+    }
+    pending += ch;
+    changed = true;
   }
+  if (changed) renderPending();
 });
 
 setInterval(() => {}, 1 << 30);

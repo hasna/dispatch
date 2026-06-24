@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { submit } from "./submit.js";
 import { Tmux } from "./tmux.js";
 import { MockRunner } from "../test/mock-runner.js";
@@ -10,6 +10,12 @@ function enterCount(r: MockRunner): number {
 const noSleep = async () => {};
 
 describe("submit", () => {
+  afterEach(() => {
+    delete process.env.DISPATCH_SETTLE_TIMEOUT_MS;
+    delete process.env.DISPATCH_SUBMIT_TIMEOUT_MS;
+    delete process.env.DISPATCH_SUBMIT_RETRY_INTERVAL_MS;
+  });
+
   test("waits the delay before the first Enter", async () => {
     const r = new MockRunner();
     const slept: number[] = [];
@@ -46,9 +52,28 @@ describe("submit", () => {
       maxSettlePolls: 5,
     });
 
-    expect(res).toEqual({ submitted: true, attempts: 1 });
+    expect(res).toEqual({ submitted: true, attempts: 1, settled: true });
     expect(order).toEqual(["sleep:0", "probe", "sleep:25", "probe", "sleep:25", "probe", "enter"]);
     expect(enterCount(r)).toBe(1);
+  });
+
+  test("does not press Enter when the prompt never settles into the composer", async () => {
+    const r = new MockRunner();
+    const slept: number[] = [];
+    process.env.DISPATCH_SETTLE_TIMEOUT_MS = "50";
+
+    const res = await submit(new Tmux(r), "s:w", {
+      delayMs: 0,
+      settleIntervalMs: 25,
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+      isPromptParked: () => false,
+    });
+
+    expect(res).toMatchObject({ submitted: false, attempts: 0, settled: false });
+    expect(enterCount(r)).toBe(0);
+    expect(slept).toEqual([0, 25, 25]);
   });
 
   test("no probe = single best-effort Enter, reported submitted", async () => {
@@ -109,5 +134,23 @@ describe("submit", () => {
     });
     expect(res.submitted).toBe(true);
     expect(res.attempts).toBe(2);
+  });
+
+  test("uses widened default submit retry timing and idempotent re-Enter", async () => {
+    const r = new MockRunner();
+    const slept: number[] = [];
+    let probes = 0;
+    const res = await submit(new Tmux(r), "s:w", {
+      delayMs: 0,
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+      isPromptParked: () => true,
+      isSubmitted: () => ++probes >= 3,
+    });
+
+    expect(res).toMatchObject({ submitted: true, attempts: 3, settled: true });
+    expect(enterCount(r)).toBe(3);
+    expect(slept).toEqual([0, 2000, 2000, 2000]);
   });
 });

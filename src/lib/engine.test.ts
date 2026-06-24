@@ -131,17 +131,31 @@ describe("applyGoalPrefix", () => {
 function tuiRunner(): MockRunner {
   const r = new MockRunner();
   let submitted = false;
-  r.responder = (argv) => {
+  let bufferText = "";
+  let composerText = "";
+  r.responder = (argv, input) => {
     if (argv[1] === "list-panes") return { stdout: "%1\n", stderr: "", exitCode: 0, source: "local" };
     if (argv[1] === "display-message" && argv.at(-1) === "#{pane_current_command}") {
       return { stdout: "codewith\n", stderr: "", exitCode: 0, source: "local" };
+    }
+    if (argv[1] === "load-buffer") {
+      bufferText = input ?? "";
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    }
+    if (argv[1] === "paste-buffer") {
+      composerText = bufferText;
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    }
+    if (argv[1] === "send-keys" && argv.includes("-l")) {
+      composerText = argv.at(-1) ?? "";
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
     }
     if (argv[1] === "send-keys" && (argv.includes("Enter") || argv.includes("Tab"))) {
       submitted = true;
       return { stdout: "", stderr: "", exitCode: 0, source: "local" };
     }
     if (argv[1] === "capture-pane") {
-      const stdout = submitted ? "✶ Working… (esc to interrupt)" : "> idle composer";
+      const stdout = submitted ? "✶ Working… (esc to interrupt)" : composerText ? `> ${composerText}` : "> idle composer";
       return { stdout, stderr: "", exitCode: 0, source: "local" };
     }
     return { stdout: "", stderr: "", exitCode: 0, source: "local" };
@@ -157,7 +171,9 @@ function composerRunner(
 ): MockRunner {
   const r = new MockRunner();
   let submitted = false;
-  r.responder = (argv) => {
+  let bufferText = "";
+  let composerText = "";
+  r.responder = (argv, input) => {
     if (argv[1] === "list-panes") return { stdout: "%1\n", stderr: "", exitCode: 0, source: "local" };
     if (argv[1] === "display-message" && argv.at(-1) === "#{pane_current_command}") {
       return { stdout: `${command}\n`, stderr: "", exitCode: 0, source: "local" };
@@ -171,12 +187,25 @@ function composerRunner(
     if (argv[0] === "ps") {
       return { stdout: processTree, stderr: "", exitCode: processTree ? 0 : 1, source: "local" };
     }
+    if (argv[1] === "load-buffer") {
+      bufferText = input ?? "";
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    }
+    if (argv[1] === "paste-buffer") {
+      composerText = bufferText;
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    }
+    if (argv[1] === "send-keys" && argv.includes("-l")) {
+      composerText = argv.at(-1) ?? "";
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    }
     if (argv[1] === "send-keys" && (argv.includes("Enter") || argv.includes("Tab"))) {
       submitted = true;
       return { stdout: "", stderr: "", exitCode: 0, source: "local" };
     }
     if (argv[1] === "capture-pane") {
-      return { stdout: submitted ? afterSubmit : idleCapture, stderr: "", exitCode: 0, source: "local" };
+      const stdout = submitted ? afterSubmit : composerText ? `${idleCapture}\n> ${composerText}` : idleCapture;
+      return { stdout, stderr: "", exitCode: 0, source: "local" };
     }
     return { stdout: "", stderr: "", exitCode: 0, source: "local" };
   };
@@ -711,6 +740,134 @@ GET /health 200
     expect(rec.status).toBe("delivered");
     expect(sawParkedBeforeEnter).toBe(true);
     expect(r.argvs().filter((a) => a[1] === "send-keys" && a.includes("Enter"))).toHaveLength(1);
+  });
+
+  test("does not press Enter when a preexisting Claude paste placeholder is unchanged", async () => {
+    const prompt = `${"long hidden prompt body\n".repeat(60)}FINAL_HIDDEN_TAIL`;
+    const stalePlaceholder = "❯ [Pasted text]";
+    const r = new MockRunner();
+
+    r.responder = (argv) => {
+      if (argv[1] === "list-panes") return { stdout: "%1\n", stderr: "", exitCode: 0, source: "local" };
+      if (argv[1] === "display-message") return { stdout: "claude\n", stderr: "", exitCode: 0, source: "local" };
+      if (argv[1] === "load-buffer" || argv[1] === "paste-buffer") {
+        return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "capture-pane") {
+        return { stdout: stalePlaceholder, stderr: "", exitCode: 0, source: "local" };
+      }
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    };
+
+    const rec = await performDispatch(
+      { target: "work:claude", prompt, submitDelayMs: 0 },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("failed");
+    expect(rec.detail).toMatch(/settle|park/i);
+    expect(r.argvs().some((a) => a[1] === "paste-buffer")).toBe(true);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("Enter"))).toBe(false);
+  });
+
+  test("accepts a new Claude pasted-text placeholder as parked before Enter", async () => {
+    const prompt = `${"long hidden prompt body\n".repeat(60)}FINAL_HIDDEN_TAIL`;
+    const r = new MockRunner();
+    let pasted = false;
+    let entered = false;
+
+    r.responder = (argv) => {
+      if (argv[1] === "list-panes") return { stdout: "%1\n", stderr: "", exitCode: 0, source: "local" };
+      if (argv[1] === "display-message") return { stdout: "claude\n", stderr: "", exitCode: 0, source: "local" };
+      if (argv[1] === "load-buffer") return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+      if (argv[1] === "paste-buffer") {
+        pasted = true;
+        return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "send-keys" && argv.includes("Enter")) {
+        entered = true;
+        return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "capture-pane") {
+        const stdout = entered ? "✶ Working… (esc to interrupt)" : pasted ? "❯ [Pasted text #1 +60 lines]" : "❯ ";
+        return { stdout, stderr: "", exitCode: 0, source: "local" };
+      }
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    };
+
+    const rec = await performDispatch(
+      { target: "work:claude", prompt, submitDelayMs: 0 },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("delivered");
+    expect(r.argvs().filter((a) => a[1] === "send-keys" && a.includes("Enter"))).toHaveLength(1);
+  });
+
+  test("waits for a literal prompt tail to park before pressing Enter", async () => {
+    const prompt = "FINAL_LITERAL_TAIL_MARKER";
+    const r = new MockRunner();
+    let typed = false;
+    let entered = false;
+    let postTypeCaptures = 0;
+    let sawParkedBeforeEnter = false;
+
+    r.responder = (argv) => {
+      if (argv[1] === "list-panes") return { stdout: "%1\n", stderr: "", exitCode: 0, source: "local" };
+      if (argv[1] === "display-message") return { stdout: "codewith\n", stderr: "", exitCode: 0, source: "local" };
+      if (argv[1] === "send-keys" && argv.includes("-l")) {
+        typed = true;
+        return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "send-keys" && argv.includes("Enter")) {
+        entered = true;
+        return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "capture-pane") {
+        if (entered) return { stdout: "✶ Working… (esc to interrupt)", stderr: "", exitCode: 0, source: "local" };
+        if (!typed) return { stdout: "> idle composer", stderr: "", exitCode: 0, source: "local" };
+        postTypeCaptures += 1;
+        const stdout = postTypeCaptures >= 2 ? `> ${prompt}` : "> ";
+        if (stdout.includes(prompt)) sawParkedBeforeEnter = true;
+        return { stdout, stderr: "", exitCode: 0, source: "local" };
+      }
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    };
+
+    const rec = await performDispatch(
+      { target: "work:agent", prompt, submitDelayMs: 0 },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("delivered");
+    expect(sawParkedBeforeEnter).toBe(true);
+    expect(r.argvs().filter((a) => a[1] === "send-keys" && a.includes("Enter"))).toHaveLength(1);
+  });
+
+  test("does not press Enter when delivered text never appears parked in the composer", async () => {
+    const r = new MockRunner();
+    let typed = false;
+    r.responder = (argv) => {
+      if (argv[1] === "list-panes") return { stdout: "%1\n", stderr: "", exitCode: 0, source: "local" };
+      if (argv[1] === "display-message") return { stdout: "codewith\n", stderr: "", exitCode: 0, source: "local" };
+      if (argv[1] === "send-keys" && argv.includes("-l")) {
+        typed = true;
+        return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "capture-pane") {
+        return { stdout: typed ? "> " : "> idle composer", stderr: "", exitCode: 0, source: "local" };
+      }
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    };
+
+    const rec = await performDispatch(
+      { target: "work:agent", prompt: "NEVER_VISIBLE_TAIL", submitDelayMs: 0 },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("failed");
+    expect(rec.detail).toMatch(/settle|park/i);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("Enter"))).toBe(false);
   });
 
   test("goal mode records and delivers the prefixed prompt", async () => {

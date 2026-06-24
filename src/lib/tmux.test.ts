@@ -80,6 +80,19 @@ describe("Tmux command construction", () => {
     expect(out).toBe("pane contents\n");
   });
 
+  test("capturePane retries blank stdout before returning", () => {
+    const r = new MockRunner();
+    r.queue.push({ stdout: "\n\n" });
+    r.queue.push({ stdout: "" });
+    r.queue.push({ stdout: "pane contents after repaint\n" });
+
+    const out = new Tmux(r).capturePane("s:w");
+
+    expect(out).toBe("pane contents after repaint\n");
+    expect(r.argvs().filter((argv) => argv[1] === "capture-pane")).toHaveLength(3);
+    expect(r.argvs().every((argv) => !argv.includes("-a"))).toBe(true);
+  });
+
   test("capturePane with scrollback adds -S -N", () => {
     const r = new MockRunner();
     new Tmux(r).capturePane("s:w", { start: 100 });
@@ -138,5 +151,13 @@ describe("Tmux command construction", () => {
     // load and paste reference the same buffer name
     // load: [tmux, load-buffer, -b, <name>, -]; paste: [tmux, paste-buffer, -t, s:w, -b, <name>, ...]
     expect(load![3]).toBe(paste![5]);
+  });
+
+  test("paste strips embedded bracketed-paste boundary markers before load-buffer", () => {
+    const r = new MockRunner();
+    new Tmux(r).paste("s:w", "alpha\x1b[200~beta\x1b[201~gamma");
+
+    const load = r.calls.find((call) => call.argv[1] === "load-buffer");
+    expect(load?.input).toBe("alphabetagamma");
   });
 });
