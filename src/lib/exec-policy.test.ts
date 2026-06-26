@@ -593,6 +593,34 @@ GET /health 200
     ).toBe(false);
   });
 
+  test("recognizes Codewith composer content in best-effort pane checks", () => {
+    const draftPane = `
+╭─────────────────────────────────────────────────────────╮
+│ ⎔  Hasna Codewith (v0.1.42)                             │
+│                                                         │
+│ model:       gpt-5.5 xhigh   fast   /model to change    │
+│ directory:   ~/workspace/hasna/opensource/open-codewith │
+│ permissions: YOLO mode                                  │
+╰─────────────────────────────────────────────────────────╯
+
+› Find and fix a bug in @filename
+
+  gpt-5.5 xhigh fast · account013 · 5h 55% left
+${"\n".repeat(32)}`;
+    const idlePane = draftPane.replace("› Find and fix a bug in @filename", "›");
+
+    expect(looksLikeAgentPane(draftPane)).toBe(true);
+    expect(looksLikeAgentPane(idlePane)).toBe(true);
+  });
+
+  test("does not recognize arbitrary node output as an agent pane", () => {
+    expect(looksLikeAgentPane("Welcome to Node.js v22.0.0.\nType \".help\" for more information.\n> ")).toBe(false);
+    expect(looksLikeAgentPane("Hasna Codewith (v0.1.42)\nserver listening on port 3000")).toBe(false);
+    expect(
+      looksLikeAgentPane("Hasna Codewith (v0.1.42)\nmodel: gpt\npermissions: YOLO mode\ndirectory: /tmp\n› 1. Menu item"),
+    ).toBe(false);
+  });
+
   test("allows builtin safe command prefixes on shell targets", () => {
     const status = evaluateExecPolicy({ target: "open-mailery:01", targetKind: "shell", command: "mailery status" });
     expect(status.allowed).toBe(true);

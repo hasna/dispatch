@@ -508,11 +508,30 @@ export function looksLikeWrappedAgentComposer(text: string, evidence: WrappedAge
 export function looksLikeAgentPane(text: string): boolean {
   return (
     looksLikeWrappedAgentComposer(text) ||
+    looksLikeCodewithComposer(text) ||
     /\b(?:esc to interrupt|working on the previous task|messages to be submitted after next tool call)\b/i.test(text) ||
     /^❯(?:\s|$).*/m.test(text) ||
     /^>\s+(?:awaiting prompt|idle|idle composer)\b/im.test(text) ||
     /[✶✻●]\s*Working/i.test(text)
   );
+}
+
+function looksLikeCodewithComposer(text: string): boolean {
+  const brand =
+    /\b(?:Hasna\s+Codewith|Codewith|Codex)\s+\(v[0-9][^)]+\)/i.test(text) ||
+    /\bAsk\s+(?:Codewith|Codex)\s+to\s+do\s+anything\b/i.test(text);
+  if (!brand) return false;
+
+  const hasStartupFields =
+    /\bmodel:\s*\S+/i.test(text) && /\bdirectory:\s*\S+/i.test(text) && /\bpermissions:\s*\S+/i.test(text);
+  const hasStatusFooter = /^\s*(?:gpt|o[0-9]|claude|gemini|qwen|llama)[^\n]*\s+·\s+[^\n]*(?:account|left|%)/im.test(text);
+  if (!hasStartupFields && !hasStatusFooter) return false;
+
+  const tail = text
+    .split(/\r?\n/)
+    .filter((line) => line.trim().length > 0)
+    .slice(-24);
+  return tail.some((line) => /^\s*›(?:\s*$|\s+(?!\d+\.|\[[^\]]+\])\S)/.test(line));
 }
 
 /** Short stable SHA-256 command hash for audit displays. */
