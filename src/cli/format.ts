@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { BulkDispatchResult, CaptureResult, DispatchRecord, ScheduledDispatch } from "../types.js";
+import type { AgentRecoverResult, AgentTriageResult, BulkDispatchResult, CaptureResult, DispatchRecord, ScheduledDispatch } from "../types.js";
 
 /**
  * Resolve the prompt text from the flags: --prompt wins, else --file, else
@@ -203,6 +203,34 @@ export function formatCapture(result: CaptureResult): string {
     }
   }
   return parts.join("\n");
+}
+
+export function formatTriage(result: AgentTriageResult): string {
+  const d = result.detection;
+  const location = where(result.machine, result.target);
+  const lines = [
+    `${result.status === "ok" ? "✓" : result.status === "blocked" ? "↷" : "✗"} triage ${location}  action=${result.action.kind}${result.action.submitKey ? `/${result.action.submitKey}` : ""}`,
+    `  target: ${d?.targetKind ?? "unknown"}/${d?.agentKind ?? "unknown"} state=${d?.composerState ?? "unknown"} receive=${d?.canReceivePrompt ?? false} queue=${d?.canQueuePrompt ?? false}`,
+    `  capture: ${result.capture.status} lines=${result.capture.lines}/${result.capture.requestedLines} text=${result.capture.textLength}/${result.capture.maxChars} chars${result.capture.truncatedChars ? " truncated" : ""}${result.capture.artifact ? ` artifact=${result.capture.artifact.path}` : ""}`,
+  ];
+  if (result.detail) lines.push(`  detail: ${truncateText(result.detail, 220)}`);
+  if (result.capture.excerpt) lines.push(`  excerpt: ${quotePreview(result.capture.excerpt, 220)}`);
+  lines.push("hint: use --json for the stable schema; pass --artifact <relative-path> for the full redacted capture");
+  return lines.join("\n");
+}
+
+export function formatRecover(result: AgentRecoverResult): string {
+  const location = where(result.machine, result.target);
+  const action = `${result.action.kind}${result.action.submitKey ? `/${result.action.submitKey}` : ""}`;
+  const lines = [
+    `${result.status === "applied" ? "✓" : result.status === "failed" || result.status === "refused" ? "✗" : "↷"} recover ${location}  ${result.status}${result.dryRun ? " dry-run" : ""} action=${action}`,
+    `  prompt: ${quotePreview(result.promptPreview, 160)} (${result.promptLength} chars)`,
+    `  target: ${result.triage.detection?.targetKind ?? "unknown"}/${result.triage.detection?.agentKind ?? "unknown"} state=${result.triage.detection?.composerState ?? "unknown"}`,
+  ];
+  if (result.dispatch) lines.push(`  dispatch: ${result.dispatch.id} ${result.dispatch.status}${result.dispatch.detail ? ` - ${truncateText(result.dispatch.detail, 220)}` : ""}`);
+  if (result.detail) lines.push(`  detail: ${truncateText(result.detail, 220)}`);
+  lines.push(result.dryRun ? "hint: rerun with --apply to send through guarded dispatch" : "hint: use --json for the stable schema");
+  return lines.join("\n");
 }
 
 export function formatBulk(result: BulkDispatchResult): string {

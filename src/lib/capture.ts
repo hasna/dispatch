@@ -7,11 +7,17 @@ import type {
   CaptureTransform,
 } from "../types.js";
 import { nowIso } from "./ids.js";
-import { inspectAgentTarget } from "./agent-target.js";
+import {
+  inspectAgentTarget,
+  TARGET_DISCOVERY_CAPTURE_MAX_CHARS,
+  TARGET_DISCOVERY_PROCESS_MAX_LINE_CHARS,
+  TARGET_DISCOVERY_PROCESS_MAX_LINES,
+} from "./agent-target.js";
 import { Tmux } from "./tmux.js";
 
 export const DEFAULT_CAPTURE_LINES = 200;
 export const MAX_CAPTURE_LINES = 2000;
+export const MAX_CAPTURE_CHARS = 200_000;
 
 const TRANSFORM_PROMPTS: Record<CaptureTransform, string> = {
   summary: "Summarize what the agent did, the current state, and any important outcomes.",
@@ -241,6 +247,7 @@ export async function performCapture(options: CaptureOptions, deps: CaptureDeps)
     requestedLines: requested,
     lines: effective,
     maxLines: MAX_CAPTURE_LINES,
+    maxChars: MAX_CAPTURE_CHARS,
     capturedAt: nowIso(),
     redacted: true,
   };
@@ -258,8 +265,12 @@ export async function performCapture(options: CaptureOptions, deps: CaptureDeps)
   let text: string;
   let detection: CaptureResult["detection"];
   try {
-    detection = inspectAgentTarget(tmux, options.target).detection;
-    text = tailLines(stripTerminalControl(tmux.capturePane(options.target, { start: effective })), effective);
+    detection = inspectAgentTarget(tmux, options.target, {
+      maxCaptureChars: TARGET_DISCOVERY_CAPTURE_MAX_CHARS,
+      maxProcessTreeLines: TARGET_DISCOVERY_PROCESS_MAX_LINES,
+      maxProcessTreeLineChars: TARGET_DISCOVERY_PROCESS_MAX_LINE_CHARS,
+    }).detection;
+    text = tailLines(stripTerminalControl(tmux.capturePane(options.target, { start: effective, maxChars: MAX_CAPTURE_CHARS })), effective);
   } catch (err) {
     return {
       ...base,
@@ -275,6 +286,7 @@ export async function performCapture(options: CaptureOptions, deps: CaptureDeps)
     ...base,
     status: "captured",
     text: redactedText,
+    truncatedChars: text.length >= MAX_CAPTURE_CHARS,
     detection,
   };
 

@@ -10,6 +10,10 @@ import { Mosaic } from "../lib/mosaic.js";
 import { MockRunner } from "../test/mock-runner.js";
 import { buildProgram } from "../cli/index.js";
 import type {
+  AgentRecoverOptions,
+  AgentRecoverResult,
+  AgentTriageOptions,
+  AgentTriageResult,
   BulkDispatchOptions,
   BulkDispatchResult,
   CaptureOptions,
@@ -457,6 +461,104 @@ describe("MCP tool handlers", () => {
       target: "work:agent",
       lines: 120,
       ai: { enabled: true, transform: "blockers", provider: "groq" },
+    });
+  });
+
+  test("triage delegates bounded capture options to the client", async () => {
+    const d = deps();
+    let received: AgentTriageOptions | undefined;
+    d.client.triage = async (opts: AgentTriageOptions): Promise<AgentTriageResult> => {
+      received = opts;
+      return {
+        schemaVersion: "dispatch.agentTriage.v1",
+        status: "ok",
+        target: opts.target,
+        machine: opts.machine ?? "local",
+        generatedAt: "x",
+        action: { kind: "send", submitKey: "Enter", safeToApply: true, reason: "idle" },
+        capture: {
+          status: "captured",
+          requestedLines: opts.lines ?? 200,
+          lines: opts.lines ?? 200,
+          maxLines: 2000,
+          textLength: 10,
+          redacted: true,
+          excerpt: "safe text",
+          excerptChars: opts.excerptChars ?? 1200,
+        },
+      };
+    };
+
+    const result = await tool("dispatch_triage").handler(d, {
+      target: "work:1.0",
+      lines: 42,
+      excerptChars: 300,
+      artifactPath: "/tmp/triage.txt",
+      queue: false,
+    });
+
+    expect(result).toMatchObject({ schemaVersion: "dispatch.agentTriage.v1", status: "ok" });
+    expect(received).toMatchObject({
+      target: "work:1.0",
+      lines: 42,
+      excerptChars: 300,
+      artifactPath: "/tmp/triage.txt",
+      queue: false,
+    });
+  });
+
+  test("recover delegates dry-run/apply options to the client", async () => {
+    const d = deps();
+    let received: AgentRecoverOptions | undefined;
+    d.client.recover = async (opts: AgentRecoverOptions): Promise<AgentRecoverResult> => {
+      received = opts;
+      return {
+        schemaVersion: "dispatch.agentRecover.v1",
+        status: opts.apply ? "applied" : "planned",
+        target: opts.target,
+        machine: "local",
+        dryRun: opts.apply !== true,
+        generatedAt: "x",
+        promptPreview: opts.prompt,
+        promptLength: opts.prompt.length,
+        action: { kind: "queue", submitKey: "Tab", safeToApply: true, reason: "active" },
+        triage: {
+          schemaVersion: "dispatch.agentTriage.v1",
+          status: "ok",
+          target: opts.target,
+          machine: "local",
+          generatedAt: "x",
+          action: { kind: "queue", submitKey: "Tab", safeToApply: true, reason: "active" },
+          capture: {
+            status: "captured",
+            requestedLines: opts.lines ?? 200,
+            lines: opts.lines ?? 200,
+            maxLines: 2000,
+            textLength: 0,
+            redacted: true,
+            excerptChars: opts.excerptChars ?? 1200,
+          },
+        },
+      };
+    };
+
+    const result = await tool("dispatch_recover").handler(d, {
+      target: "work:1.0",
+      prompt: "Continue safely",
+      apply: true,
+      goal: true,
+      lines: 42,
+      delayMs: 0,
+    });
+
+    expect(result).toMatchObject({ schemaVersion: "dispatch.agentRecover.v1", status: "applied", dryRun: false });
+    expect(received).toMatchObject({
+      target: "work:1.0",
+      prompt: "Continue safely",
+      apply: true,
+      goal: true,
+      lines: 42,
+      submitDelayMs: 0,
     });
   });
 

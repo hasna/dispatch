@@ -30,3 +30,8 @@ export function daemonStatePath(): string {
 export function daemonPidLockPath(): string {
   return join(dataDir(), "daemon.pid.lock");
 }
+
+/** Directory for bounded, redacted artifacts written by agent abstractions. */
+export function artifactsDir(): string {
+  return join(dataDir(), "artifacts");
+}
