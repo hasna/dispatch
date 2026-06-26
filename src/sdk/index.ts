@@ -7,6 +7,10 @@
  *   console.log(rec.status, rec.confirm?.reason);
  */
 import type {
+  AgentRecoverOptions,
+  AgentRecoverResult,
+  AgentTriageOptions,
+  AgentTriageResult,
   BulkDispatchOptions,
   BulkDispatchResult,
   CaptureOptions,
@@ -28,6 +32,7 @@ import { performDispatch } from "../lib/engine.js";
 import { performExec } from "../lib/exec.js";
 import { performKeyDispatch } from "../lib/key.js";
 import { performCapture } from "../lib/capture.js";
+import { performAgentRecovery, performAgentTriage } from "../lib/agent-recovery.js";
 import { computeNextRun, parseDurationMs } from "../lib/schedule.js";
 import { performBulkDispatch } from "../lib/bulk.js";
 import { resolveSessionsTargets } from "../lib/sessions-source.js";
@@ -101,6 +106,20 @@ export class DispatchClient {
     }
     const tmux = new Tmux(runner);
     return performCapture(options, { tmux });
+  }
+
+  /** Classify a target agent state and return bounded recovery context. */
+  async triage(options: AgentTriageOptions): Promise<AgentTriageResult> {
+    const runner = await createRunner(options.machine);
+    const tmux = new Tmux(runner);
+    return performAgentTriage(options, { tmux });
+  }
+
+  /** Plan or apply a guarded recovery prompt. Defaults to dry-run planning. */
+  async recover(options: AgentRecoverOptions): Promise<AgentRecoverResult> {
+    const runner = await createRunner(options.machine);
+    const tmux = new Tmux(runner);
+    return performAgentRecovery(options, { tmux, store: this.store });
   }
 
   /** Dispatch one prompt to multiple targets with idle guards/concurrency controls. */
@@ -263,6 +282,26 @@ export async function dispatchCapture(options: CaptureOptions): Promise<CaptureR
   const client = new DispatchClient({ persist: false });
   try {
     return await client.capture(options);
+  } finally {
+    client.close();
+  }
+}
+
+/** One-shot convenience: triage an agent target without managing a client. */
+export async function dispatchTriage(options: AgentTriageOptions): Promise<AgentTriageResult> {
+  const client = new DispatchClient({ persist: false });
+  try {
+    return await client.triage(options);
+  } finally {
+    client.close();
+  }
+}
+
+/** One-shot convenience: plan/apply guarded recovery without managing a client. */
+export async function dispatchRecover(options: AgentRecoverOptions): Promise<AgentRecoverResult> {
+  const client = new DispatchClient({ persist: false });
+  try {
+    return await client.recover(options);
   } finally {
     client.close();
   }

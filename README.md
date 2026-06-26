@@ -25,6 +25,7 @@ dispatch send --to work:agent --prompt "Refactor the parser and add tests"
 | Shell command dispatch needs guardrails | **Exec security filter** — shell targets only, allowlisted command prefixes, destructive/exfiltration blockers, dry-run audit, and no `C-c` unless explicitly requested |
 | Need to press a special key deliberately | **Safe key dispatch** — `dispatch key` only allows named safe keys and still refuses shells / unproven wrapper panes |
 | Need to inspect what happened in a pane | **Bounded capture** — `dispatch capture` captures recent transcript lines, strips terminal controls, and redacts obvious secrets before output or optional AI transforms |
+| Need an agent-ready recovery decision | **Triage/recover** — `dispatch triage` returns compact state + excerpt JSON, and `dispatch recover` plans first, applying only with `--apply` through normal send guards |
 | Need to fan out prompts across live agent sessions | **Bulk/session orchestration** — `dispatch send` supports idle guards, dry-run, jitter/concurrency caps, pre-capture, and fixed `sessions live/status --json` registry probes |
 | Need to know what a pane actually is | **Native agent detection** — Codewith, Codex, Claude Code/Claude, and OpenCode panes are classified from command, process tree, cwd, and live UI proof |
 | "Did it actually go through?" | **Smart delivery confirmation** — diffs the pane before/after and detects the agent's working/`esc to interrupt` state and the composer clearing |
@@ -47,6 +48,8 @@ dispatch send       Dispatch a prompt to a tmux target and auto-submit it
 dispatch exec       Dispatch a filtered shell command to a shell tmux target
 dispatch key        Send an allowlisted special key to an agent composer
 dispatch capture    Capture a bounded, redacted pane transcript
+dispatch triage     Classify an agent target and return bounded recovery context
+dispatch recover    Plan or apply a guarded recovery prompt
 dispatch status     Show a recorded dispatch, schedule, or loop by id
 dispatch show       Show expanded details for a dispatch, schedule, or loop
 dispatch list       List recorded dispatches (newest first)
@@ -72,6 +75,8 @@ dispatch list                  # compact, 20 rows by default
 dispatch loops                 # compact, 20 rows by default
 dispatch schedules             # compact, 20 rows by default
 dispatch targets               # compact, 50 panes by default
+dispatch triage --to <target> --json  # compact deterministic triage schema
+dispatch recover --to <target> --prompt "..." --json # dry-run plan by default
 dispatch status <id>           # one-line status plus next-step hint
 dispatch show <id>             # expanded human-readable details
 dispatch status <id> --verbose # expanded human-readable details
@@ -223,6 +228,40 @@ Provider-specific keys/models are also supported: `GROQ_API_KEY`/`GROQ_MODEL`,
 `CEREBRAS_API_KEY`/`CEREBRAS_MODEL`, and `OPENAI_API_KEY`/`OPENAI_MODEL`. If `--ai`
 is requested without credentials, capture still returns the raw redacted transcript
 and reports an actionable AI failure.
+
+### Triage and Recover
+
+`dispatch triage` is a read-only agent abstraction for loops and workers. It classifies
+the target pane, captures a bounded redacted excerpt, recommends a recovery action, and
+can write the full bounded redacted capture to an artifact path instead of dumping it
+into the terminal.
+
+```bash
+dispatch triage --to open-dispatch:1.1 --json
+dispatch triage --machine spark01 --to open-dispatch:1.1 \
+  --lines 120 --excerpt-chars 800 --artifact open-dispatch-triage.txt --json
+```
+
+The JSON schema is versioned as `dispatch.agentTriage.v1`. Default output includes only
+a bounded excerpt (`1200` chars, max `4000`) and bounded capture metadata. Full redacted
+capture text is available only through `--artifact <relative-path>`, written under
+the dispatch data directory's `artifacts/` folder.
+
+`dispatch recover` uses the same triage result to plan a safe route for a recovery
+prompt. It defaults to dry-run and does not type anything unless `--apply` is passed.
+When applied, it calls the normal guarded prompt-send path: idle agents use `Enter`;
+active Codewith/Claude panes are queued with `Tab` only when detection proves queued
+prompt support; shells, arbitrary `node`/`bun`, stale transcripts, and unknown panes are
+refused.
+
+```bash
+dispatch recover --to open-dispatch:1.1 --prompt "Summarize status and continue safely" --json
+dispatch recover --to open-dispatch:1.1 --prompt "Summarize status and continue safely" --apply --json
+dispatch recover --to open-dispatch:1.1 --file ./recovery.md --goal --apply
+```
+
+Use `--no-queue` to refuse active-agent queued recovery. The MCP tools
+`dispatch_triage` and `dispatch_recover` expose the same schemas for agents.
 
 ### Exec
 

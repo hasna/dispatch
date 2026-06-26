@@ -6,7 +6,7 @@
  * confirmation, scheduled dispatches, and a live daemon.
  */
 export * from "./types.js";
-export { DispatchClient, dispatch, dispatchExec, dispatchKey, dispatchCapture, dispatchBulk } from "./sdk/index.js";
+export { DispatchClient, dispatch, dispatchExec, dispatchKey, dispatchCapture, dispatchTriage, dispatchRecover, dispatchBulk } from "./sdk/index.js";
 export type { DispatchClientOptions } from "./sdk/index.js";
 
 // Building blocks (advanced / programmatic use).
@@ -22,6 +22,16 @@ export {
   DEFAULT_CAPTURE_LINES,
   MAX_CAPTURE_LINES,
 } from "./lib/capture.js";
+export {
+  performAgentTriage,
+  performAgentRecovery,
+  recommendRecoveryAction,
+  normalizeTriageExcerptChars,
+  AGENT_TRIAGE_SCHEMA_VERSION,
+  AGENT_RECOVER_SCHEMA_VERSION,
+  DEFAULT_TRIAGE_EXCERPT_CHARS,
+  MAX_TRIAGE_EXCERPT_CHARS,
+} from "./lib/agent-recovery.js";
 export { performBulkDispatch } from "./lib/bulk.js";
 export {
   Mosaic,

@@ -19,6 +19,10 @@ import { DispatchClient } from "../sdk/index.js";
 import { Store } from "../lib/store.js";
 import { MockRunner } from "../test/mock-runner.js";
 import type {
+  AgentRecoverOptions,
+  AgentRecoverResult,
+  AgentTriageOptions,
+  AgentTriageResult,
   BulkDispatchOptions,
   BulkDispatchResult,
   CaptureOptions,
@@ -646,6 +650,111 @@ describe("CLI read/schedule commands (in-memory client)", () => {
     });
     expect(process.exitCode).toBe(1);
     process.exitCode = 0;
+  });
+
+  test("triage forwards bounded capture and artifact options", async () => {
+    const out: string[] = [];
+    let received: AgentTriageOptions | undefined;
+    const fakeClient = {
+      triage: async (opts: AgentTriageOptions): Promise<AgentTriageResult> => {
+        received = opts;
+        return {
+          schemaVersion: "dispatch.agentTriage.v1",
+          status: "ok",
+          target: opts.target,
+          machine: opts.machine ?? "local",
+          generatedAt: "x",
+          detection: {
+            targetKind: "agent",
+            agentKind: "codewith",
+            composerState: "idle",
+            canReceivePrompt: true,
+            canQueuePrompt: false,
+            submitKeys: ["Enter", "Tab"],
+            recommendedSubmitKey: "Enter",
+            reason: "idle",
+          },
+          action: { kind: "send", submitKey: "Enter", safeToApply: true, reason: "idle" },
+          capture: {
+            status: "captured",
+            requestedLines: 40,
+            lines: 40,
+            maxLines: 2000,
+            textLength: 12,
+            redacted: true,
+            excerpt: "safe excerpt",
+            excerptChars: 300,
+          },
+        };
+      },
+    } as DispatchClient;
+    const program = buildProgram({ clientFactory: () => fakeClient, out: (s) => out.push(s) });
+
+    await program.parseAsync(
+      ["triage", "--to", "work:1.0", "--lines", "40", "--excerpt-chars", "300", "--artifact", "/tmp/triage.txt", "--no-queue", "--json"],
+      { from: "user" },
+    );
+
+    expect(received).toMatchObject({
+      target: "work:1.0",
+      lines: 40,
+      excerptChars: 300,
+      artifactPath: "/tmp/triage.txt",
+      queue: false,
+    });
+    expect(JSON.parse(out.join("\n"))).toMatchObject({ schemaVersion: "dispatch.agentTriage.v1", action: { kind: "send" } });
+  });
+
+  test("recover defaults to dry-run and only applies with --apply", async () => {
+    const out: string[] = [];
+    const received: AgentRecoverOptions[] = [];
+    const fakeClient = {
+      recover: async (opts: AgentRecoverOptions): Promise<AgentRecoverResult> => {
+        received.push(opts);
+        return {
+          schemaVersion: "dispatch.agentRecover.v1",
+          status: opts.apply ? "applied" : "planned",
+          target: opts.target,
+          machine: "local",
+          dryRun: opts.apply !== true,
+          generatedAt: "x",
+          promptPreview: opts.prompt,
+          promptLength: opts.prompt.length,
+          action: { kind: "send", submitKey: "Enter", safeToApply: true, reason: "idle" },
+          triage: {
+            schemaVersion: "dispatch.agentTriage.v1",
+            status: "ok",
+            target: opts.target,
+            machine: "local",
+            generatedAt: "x",
+            action: { kind: "send", submitKey: "Enter", safeToApply: true, reason: "idle" },
+            capture: {
+              status: "captured",
+              requestedLines: opts.lines ?? 200,
+              lines: opts.lines ?? 200,
+              maxLines: 2000,
+              textLength: 0,
+              redacted: true,
+              excerptChars: opts.excerptChars ?? 1200,
+            },
+          },
+        };
+      },
+    } as DispatchClient;
+    const program = buildProgram({ clientFactory: () => fakeClient, out: (s) => out.push(s) });
+
+    await program.parseAsync(["recover", "--to", "work:1.0", "--prompt", "Continue safely", "--lines", "25", "--json"], {
+      from: "user",
+    });
+    await program.parseAsync(["recover", "--to", "work:1.0", "--prompt", "Continue safely", "--apply", "--json"], {
+      from: "user",
+    });
+
+    expect(received[0]).toMatchObject({ target: "work:1.0", prompt: "Continue safely", apply: false, lines: 25 });
+    expect(received[1]).toMatchObject({ target: "work:1.0", prompt: "Continue safely", apply: true });
+    const outputs = out.map((line) => JSON.parse(line));
+    expect(outputs[0]).toMatchObject({ status: "planned", dryRun: true });
+    expect(outputs[1]).toMatchObject({ status: "applied", dryRun: false });
   });
 
   test("send dry-run plans exit successfully when the target would be used", async () => {

@@ -293,12 +293,106 @@ export interface CaptureResult {
   requestedLines: number;
   lines: number;
   maxLines: number;
+  maxChars?: number;
+  truncatedChars?: boolean;
   capturedAt: string;
   text: string;
   redacted: boolean;
   detection?: AgentTargetInfo;
   detail?: string;
   ai?: CaptureAiResult;
+}
+
+export type AgentRecoveryActionKind = "send" | "queue" | "refuse";
+
+export interface AgentRecoveryAction {
+  kind: AgentRecoveryActionKind;
+  submitKey?: SubmitKey;
+  safeToApply: boolean;
+  reason: string;
+}
+
+export interface AgentTriageOptions {
+  target: string;
+  machine?: string;
+  /** Bounded recent transcript lines to inspect and optionally archive. */
+  lines?: number;
+  /** Max redacted transcript chars included directly in the result. */
+  excerptChars?: number;
+  /** Omit the bounded excerpt from compact output. */
+  includeExcerpt?: boolean;
+  /** Optional relative path under the dispatch artifacts directory for the full bounded redacted capture. */
+  artifactPath?: string;
+  /** Whether active queue-capable agents may be recommended for Tab queue recovery. */
+  queue?: boolean;
+}
+
+export interface AgentCaptureArtifact {
+  path: string;
+  bytes: number;
+  lines: number;
+  redacted: true;
+}
+
+export interface AgentTriageResult {
+  schemaVersion: "dispatch.agentTriage.v1";
+  status: "ok" | "blocked" | "failed";
+  target: string;
+  machine: string;
+  generatedAt: string;
+  detection?: AgentTargetInfo;
+  action: AgentRecoveryAction;
+  capture: {
+    status: CaptureResult["status"];
+    requestedLines: number;
+    lines: number;
+    maxLines: number;
+    maxChars: number;
+    textLength: number;
+    truncatedChars: boolean;
+    redacted: boolean;
+    excerpt?: string;
+    excerptChars: number;
+    artifact?: AgentCaptureArtifact;
+    artifactError?: string;
+    detail?: string;
+  };
+  detail?: string;
+}
+
+export interface AgentRecoverOptions extends AgentTriageOptions {
+  prompt: string;
+  promptFile?: string;
+  goal?: boolean;
+  /** Apply the guarded recovery. Defaults to false, returning only a dry-run plan. */
+  apply?: boolean;
+  confirm?: boolean;
+  submitDelayMs?: number;
+  maxSubmitRetries?: number;
+  mode?: DispatchOptions["mode"];
+}
+
+export interface AgentRecoveryDispatchSummary {
+  id: string;
+  status: DispatchStatus;
+  detail?: string;
+  targetState?: AgentActivityState;
+  deliveredAt?: string;
+}
+
+export interface AgentRecoverResult {
+  schemaVersion: "dispatch.agentRecover.v1";
+  status: "planned" | "applied" | "refused" | "failed";
+  target: string;
+  machine: string;
+  dryRun: boolean;
+  generatedAt: string;
+  promptPreview: string;
+  promptLength: number;
+  triage: AgentTriageResult;
+  action: AgentRecoveryAction;
+  dispatch?: AgentRecoveryDispatchSummary;
+  detail?: string;
 }
 
 /** Public Mosaic prompt receipt, schema_version mosaic.control.v1. */

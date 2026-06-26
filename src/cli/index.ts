@@ -2,16 +2,28 @@
 import { Command, InvalidArgumentError } from "commander";
 import { getPackageVersion } from "../lib/version.js";
 import { DispatchClient } from "../sdk/index.js";
-import type { AgentTargetInfo, BulkDispatchOptions, CaptureOptions, CaptureTransform, DispatchOptions, ExecOptions, KeyOptions } from "../types.js";
+import type {
+  AgentRecoverOptions,
+  AgentTargetInfo,
+  AgentTriageOptions,
+  BulkDispatchOptions,
+  CaptureOptions,
+  CaptureTransform,
+  DispatchOptions,
+  ExecOptions,
+  KeyOptions,
+} from "../types.js";
 import {
   formatBulk,
   formatCapture,
+  formatRecover,
   formatRecord,
   formatRecordDetail,
   formatRecordList,
   formatSchedule,
   formatScheduleDetail,
   formatScheduleList,
+  formatTriage,
   resolvePrompt,
 } from "./format.js";
 import { registerDaemonCommands } from "./daemon-commands.js";
@@ -220,6 +232,76 @@ export function buildProgram(deps: CliDeps = {}): Command {
       const result = await withClient((c) => c.capture(options));
       out(opts.json ? JSON.stringify(result, null, 2) : formatCapture(result));
       if (result.status === "failed" || result.ai?.status === "failed") process.exitCode = 1;
+    });
+
+  program
+    .command("triage")
+    .description("Classify a tmux agent target and return bounded redacted recovery context")
+    .requiredOption("-t, --to <target>", "tmux target, e.g. session:window or session:window.pane")
+    .option("-m, --machine <id>", "target machine (via @hasna/machines); local when omitted")
+    .option("-n, --lines <n>", "recent line count to capture (default 200, max 2000)", parseIntegerOption("lines", 1))
+    .option("--excerpt-chars <n>", "max redacted transcript chars in output (default 1200, max 4000)", parseIntegerOption("excerpt-chars", 0))
+    .option("--no-excerpt", "omit the bounded transcript excerpt from output")
+    .option("--artifact <path>", "write the full bounded redacted capture under the dispatch artifacts directory")
+    .option("--no-queue", "do not recommend queued Tab recovery for active queue-capable agents")
+    .option("--json", "output JSON")
+    .action(async (opts) => {
+      const options: AgentTriageOptions = {
+        target: opts.to,
+        machine: opts.machine,
+        lines: opts.lines,
+        excerptChars: opts.excerptChars,
+        includeExcerpt: opts.excerpt,
+        artifactPath: opts.artifact,
+        queue: opts.queue,
+      };
+      const result = await withClient((c) => c.triage(options));
+      out(opts.json ? JSON.stringify(result, null, 2) : formatTriage(result));
+      if (result.status === "failed") process.exitCode = 1;
+    });
+
+  program
+    .command("recover")
+    .description("Plan or apply a guarded recovery prompt for a tmux agent target")
+    .requiredOption("-t, --to <target>", "tmux target, e.g. session:window or session:window.pane")
+    .option("-p, --prompt <text>", "recovery prompt text (or use --file / stdin)")
+    .option("-f, --file <path>", "read the recovery prompt from a file")
+    .option("--goal", "prefix the delivered recovery prompt with /goal unless it already starts with /goal")
+    .option("--apply", "apply the guarded recovery; without this, only return a dry-run plan")
+    .option("-m, --machine <id>", "target machine (via @hasna/machines); local when omitted")
+    .option("-n, --lines <n>", "recent line count to capture (default 200, max 2000)", parseIntegerOption("lines", 1))
+    .option("--excerpt-chars <n>", "max redacted transcript chars in output (default 1200, max 4000)", parseIntegerOption("excerpt-chars", 0))
+    .option("--no-excerpt", "omit the bounded transcript excerpt from output")
+    .option("--artifact <path>", "write the full bounded redacted capture under the dispatch artifacts directory")
+    .option("--no-queue", "refuse queued Tab recovery for active queue-capable agents")
+    .option("--no-confirm", "skip delivery confirmation when --apply is used")
+    .option("--delay <ms>", "override the auto-computed pre-Enter delay", (v) => parseInt(v, 10))
+    .option("--retries <n>", "max Enter retries if not confirmed; queued Tab delivery is single-shot", (v) => parseInt(v, 10))
+    .option("--mode <mode>", "delivery mode: auto | paste | literal", "auto")
+    .option("--json", "output JSON")
+    .action(async (opts) => {
+      const stdin = opts.prompt || opts.file ? deps.stdin : deps.stdin ?? (await readStdinIfPiped());
+      const prompt = resolvePrompt(opts, stdin);
+      const options: AgentRecoverOptions = {
+        target: opts.to,
+        prompt,
+        promptFile: opts.file,
+        goal: opts.goal === true,
+        apply: opts.apply === true,
+        machine: opts.machine,
+        lines: opts.lines,
+        excerptChars: opts.excerptChars,
+        includeExcerpt: opts.excerpt,
+        artifactPath: opts.artifact,
+        queue: opts.queue,
+        confirm: opts.confirm,
+        submitDelayMs: opts.delay,
+        maxSubmitRetries: opts.retries,
+        mode: opts.mode,
+      };
+      const result = await withClient((c) => c.recover(options));
+      out(opts.json ? JSON.stringify(result, null, 2) : formatRecover(result));
+      if (result.status === "failed" || result.status === "refused") process.exitCode = 1;
     });
 
   program
