@@ -331,18 +331,21 @@ export function buildProgram(deps: CliDeps = {}): Command {
       const targets =
         backend === "mosaic"
           ? selectedTargets
-          : opts.json || opts.verbose
-            ? selectedTargets.map((target) => ({
-                ...target,
-                backend: "tmux",
-                detection: inspectListedAgentTarget(tmux!, target.target, {
-                  assumeExists: true,
-                  paneCommand: target.paneCommand,
-                  cwd: target.cwd,
-                  panePid: target.panePid,
-                }).detection,
-              }))
-            : selectedTargets.map((target) => ({ ...target, backend: "tmux" }));
+          : (() => {
+              const tmuxTargets = selectedTargets as ReturnType<Tmux["listTargets"]>;
+              return opts.json || opts.verbose
+                ? tmuxTargets.map((target) => ({
+                    ...target,
+                    backend: "tmux",
+                    detection: inspectListedAgentTarget(tmux!, target.target, {
+                      assumeExists: true,
+                      paneCommand: target.paneCommand,
+                      cwd: target.cwd,
+                      panePid: target.panePid,
+                    }).detection,
+                  }))
+                : tmuxTargets.map((target) => ({ ...target, backend: "tmux" }));
+            })();
       if (opts.json) {
         out(JSON.stringify(targets, null, 2));
       } else if (targets.length === 0) {
