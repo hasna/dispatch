@@ -53,7 +53,13 @@ describe("MCP tool handlers", () => {
   test("status returns the record or a not-found marker", async () => {
     const d = deps();
     const rec = d.store.createDispatch({ target: "s:w", prompt: "hi", status: "delivered" });
-    expect(await tool("dispatch_status").handler(d, { id: rec.id })).toMatchObject({ id: rec.id });
+    expect(await tool("dispatch_status").handler(d, { id: rec.id })).toMatchObject({
+      kind: "prompt",
+      resultKind: "dispatch",
+      compact: true,
+      record: { id: rec.id, promptPreview: "hi", promptLength: 2 },
+    });
+    expect(await tool("dispatch_status").handler(d, { id: rec.id, verbose: true })).toMatchObject({ id: rec.id, prompt: "hi" });
     expect(await tool("dispatch_status").handler(d, { id: "nope" })).toMatchObject({ error: "not found" });
   });
 
@@ -61,7 +67,13 @@ describe("MCP tool handlers", () => {
     const d = deps();
     d.store.createDispatch({ target: "s:w", prompt: "a" });
     d.store.createDispatch({ target: "s:w", prompt: "b" });
-    expect(await tool("dispatch_list").handler(d, {})).toHaveLength(2);
+    expect(await tool("dispatch_list").handler(d, {})).toMatchObject({
+      count: 2,
+      limit: 20,
+      compact: true,
+      items: [{ promptPreview: "b", promptLength: 1 }, { promptPreview: "a", promptLength: 1 }],
+    });
+    expect(await tool("dispatch_list").handler(d, { verbose: true })).toHaveLength(2);
   });
 
   test("schedule + schedules + cancel round-trip", async () => {
@@ -71,11 +83,12 @@ describe("MCP tool handlers", () => {
       prompt: "later",
       in: "30m",
       name: "reminder",
-    })) as { id: string; status: string; name: string };
-    expect(sched.status).toBe("scheduled");
-    expect(sched.name).toBe("reminder");
-    expect(await tool("dispatch_schedules").handler(d, {})).toHaveLength(1);
-    expect(await tool("dispatch_cancel").handler(d, { id: sched.id })).toEqual({ cancelled: true });
+    })) as { schedule: { id: string; status: string; name: string }; compact: true };
+    expect(sched.schedule.status).toBe("scheduled");
+    expect(sched.schedule.name).toBe("reminder");
+    expect(await tool("dispatch_schedules").handler(d, {})).toMatchObject({ count: 1, compact: true });
+    expect(await tool("dispatch_schedules").handler(d, { verbose: true })).toHaveLength(1);
+    expect(await tool("dispatch_cancel").handler(d, { id: sched.schedule.id })).toEqual({ cancelled: true });
   });
 
   test("loop + status + pause + resume + clear round-trip", async () => {
@@ -85,14 +98,23 @@ describe("MCP tool handlers", () => {
       prompt: "poll",
       every: "5m",
       name: "poller",
-    })) as { id: string; kind: string; every: string };
-    expect(loop).toMatchObject({ kind: "loop", every: "5m" });
-    expect(await tool("dispatch_loops").handler(d, {})).toHaveLength(1);
-    expect(await tool("dispatch_status").handler(d, { id: loop.id })).toMatchObject({ id: loop.id, kind: "loop" });
-    expect(await tool("dispatch_pause").handler(d, { id: loop.id })).toEqual({ paused: true });
-    expect(await tool("dispatch_resume").handler(d, { id: loop.id })).toEqual({ resumed: true });
-    expect(await tool("dispatch_clear").handler(d, { id: loop.id })).toEqual({ cleared: true });
-    expect(await tool("dispatch_loops").handler(d, {})).toHaveLength(0);
+    })) as { schedule: { id: string; kind: string; cadence: string }; compact: true };
+    expect(loop.schedule).toMatchObject({ kind: "loop", cadence: "every(5m)" });
+    expect(await tool("dispatch_loops").handler(d, {})).toMatchObject({ count: 1, compact: true });
+    expect(await tool("dispatch_status").handler(d, { id: loop.schedule.id })).toMatchObject({
+      kind: "loop",
+      resultKind: "schedule",
+      compact: true,
+      schedule: { id: loop.schedule.id, kind: "loop" },
+    });
+    expect(await tool("dispatch_status").handler(d, { id: loop.schedule.id, verbose: true })).toMatchObject({
+      id: loop.schedule.id,
+      kind: "loop",
+    });
+    expect(await tool("dispatch_pause").handler(d, { id: loop.schedule.id })).toEqual({ paused: true });
+    expect(await tool("dispatch_resume").handler(d, { id: loop.schedule.id })).toEqual({ resumed: true });
+    expect(await tool("dispatch_clear").handler(d, { id: loop.schedule.id })).toEqual({ cleared: true });
+    expect(await tool("dispatch_loops").handler(d, {})).toMatchObject({ count: 0, items: [] });
   });
 
   test("targets enumerates tmux panes via the injected runner", async () => {
@@ -100,10 +122,15 @@ describe("MCP tool handlers", () => {
     const r = new MockRunner();
     r.queue.push({ stdout: "work:1.0\tagent\t1\nwork:2.0\teditor\t0\n" });
     d.makeTmux = async () => new Tmux(r);
-    const targets = (await tool("dispatch_targets").handler(d, {})) as Array<{ target: string; active: boolean }>;
-    expect(targets).toHaveLength(2);
-    expect(targets[0]).toMatchObject({ target: "work:1.0", window: "agent", active: true } as never);
-    expect(targets[1]!.active).toBe(false);
+    const targets = (await tool("dispatch_targets").handler(d, {})) as {
+      items: Array<{ target: string; active: boolean }>;
+      count: number;
+      total: number;
+      compact: boolean;
+    };
+    expect(targets).toMatchObject({ count: 2, total: 2, compact: true });
+    expect(targets.items[0]).toMatchObject({ target: "work:1.0", window: "agent", active: true } as never);
+    expect(targets.items[1]!.active).toBe(false);
   });
 
   test("targets exposes wrapper Codewith/Codex detection and refuses arbitrary node panes", async () => {
@@ -148,10 +175,13 @@ describe("MCP tool handlers", () => {
     };
     d.makeTmux = async () => new Tmux(r);
 
-    const targets = (await tool("dispatch_targets").handler(d, {})) as Array<{
-      target: string;
-      detection?: { agentKind: string; canReceivePrompt: boolean };
-    }>;
+    const result = (await tool("dispatch_targets").handler(d, { verbose: true })) as {
+      items: Array<{
+        target: string;
+        detection?: { agentKind: string; canReceivePrompt: boolean };
+      }>;
+    };
+    const targets = result.items;
 
     expect(targets.find((t) => t.target === "work:1.0")?.detection).toMatchObject({
       agentKind: "codewith",
@@ -206,7 +236,7 @@ describe("MCP tool handlers", () => {
         policyFile,
       });
 
-      expect(result).toMatchObject({ id: "exec1", kind: "exec" });
+      expect(result).toMatchObject({ compact: true, record: { id: "exec1", kind: "exec" } });
       expect(received).toMatchObject({
         target: "open-mailery:01",
         command: "mailery status",
@@ -278,15 +308,24 @@ describe("MCP tool handlers", () => {
         status: "completed",
         source: "sessions-query",
         requested: 1,
-        planned: 1,
-        delivered: 0,
+        planned: 25,
+        delivered: 20,
         skipped: 1,
         failed: 0,
         dryRun: true,
         maxConcurrency: 2,
         jitterMs: 50,
         perMachineLimit: 1,
-        records: [],
+        records: Array.from({ length: 25 }, (_, i) => ({
+          id: `bulk-${i}`,
+          kind: "prompt",
+          target: `work:${i}`,
+          machine: "local",
+          prompt: `prompt ${i}`,
+          status: "delivered",
+          createdAt: "x",
+          updatedAt: "x",
+        })),
       };
     };
 
@@ -304,7 +343,8 @@ describe("MCP tool handlers", () => {
       perMachineLimit: 1,
     });
 
-    expect(result).toMatchObject({ source: "sessions-query", dryRun: true });
+    expect(result).toMatchObject({ source: "sessions-query", dryRun: true, compact: true, recordCount: 25, shownRecords: 20, omittedRecords: 5 });
+    expect((result as { records: unknown[] }).records).toHaveLength(20);
     expect(received).toMatchObject({
       source: "sessions-query",
       sessionsQuery: "open-router",
@@ -345,7 +385,7 @@ describe("MCP tool handlers", () => {
 
     const result = await tool("dispatch_key").handler(d, { target: "work:agent", key: "Tab" });
 
-    expect(result).toMatchObject({ id: "key1", kind: "key" });
+    expect(result).toMatchObject({ compact: true, record: { id: "key1", kind: "key" } });
     expect(received).toEqual({ target: "work:agent", key: "Tab", machine: undefined });
   });
 

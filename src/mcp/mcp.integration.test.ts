@@ -91,18 +91,23 @@ d("MCP server (in-memory transport, real tmux)", () => {
       name: "dispatch_send",
       arguments: { target: SESSION, prompt: "mcp-driven dispatch to the agent", delayMs: 200 },
     });
-    const rec = textOf(sendRes);
-    expect(rec.status).toBe("delivered");
-    expect(rec.confirm.delivered).toBe(true);
+    const compact = textOf(sendRes);
+    expect(compact).toMatchObject({ compact: true, record: { status: "delivered" } });
+    const id = compact.record.id;
 
-    const statusRes = await client.callTool({ name: "dispatch_status", arguments: { id: rec.id } });
-    expect(textOf(statusRes).id).toBe(rec.id);
+    const statusRes = await client.callTool({ name: "dispatch_status", arguments: { id } });
+    expect(textOf(statusRes)).toMatchObject({ resultKind: "dispatch", compact: true, record: { id } });
+
+    const verboseStatusRes = await client.callTool({ name: "dispatch_status", arguments: { id, verbose: true } });
+    const rec = textOf(verboseStatusRes);
+    expect(rec.id).toBe(id);
+    expect(rec.confirm.delivered).toBe(true);
   }, 20000);
 
   test("dispatch_targets finds the live session", async () => {
     const { client } = await connect({ targetSocket: TARGET_SOCKET });
     const res = await client.callTool({ name: "dispatch_targets", arguments: {} });
-    const targets = textOf(res) as Array<{ target: string }>;
-    expect(targets.some((t) => t.target.startsWith(TARGET_SESSION))).toBe(true);
+    const targets = textOf(res) as { items: Array<{ target: string }> };
+    expect(targets.items.some((t) => t.target.startsWith(TARGET_SESSION))).toBe(true);
   }, 10000);
 });
