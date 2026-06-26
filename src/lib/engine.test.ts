@@ -435,6 +435,24 @@ describe("performDispatch", () => {
     expect(r.argvs().some((a) => a.includes("Enter"))).toBe(false);
   });
 
+  test("accepts a node-launched Codewith composer when node runtime flags precede the entrypoint", async () => {
+    const processTree = `
+1234 1 Ss /usr/bin/bash
+1240 1234 Sl+ node --max-old-space-size=6144 --no-warnings /home/hasna/.bun/bin/codewith --auth-profile account005
+1241 1240 Sl+ /home/hasna/.bun/install/global/node_modules/@hasna/codewith/node_modules/@hasna/codewith-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codewith --auth-profile account005
+`;
+    const r = composerRunner("node", codewithComposerCapture, "✶ Working… (esc to interrupt)", processTree);
+
+    const rec = await performDispatch(
+      { target: "open-codewith-04:1.1", prompt: "Fix the dispatch bug", submit: false },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("delivered");
+    expect(rec.detection).toMatchObject({ agentKind: "codewith", canReceivePrompt: true });
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("-l"))).toBe(true);
+  });
+
   test("accepts a node-launched completed-goal Codewith composer when pane content proves it", async () => {
     const r = composerRunner("node", completedGoalCodewithCapture, "✶ Working… (esc to interrupt)", codewithProcessTree);
 
@@ -634,6 +652,32 @@ Queued follow-up inputs:
     expect(rec.confirm?.workingDetected).toBe(true);
     expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("-l"))).toBe(true);
     expect(r.argvs().some((a) => a.includes("Enter"))).toBe(true);
+  });
+
+  test("accepts a node-launched bannerless Codex composer when process and status footer prove it", async () => {
+    const processTree = `
+1234 1 Ss /usr/bin/bash
+1240 1234 Sl+ node --no-warnings /home/hasna/.bun/bin/codex
+`;
+    const r = composerRunner(
+      "node",
+      `
+› Add a regression test
+
+  gpt-5.1-codex · /home/hasna/workspace/app
+`,
+      "✶ Working… (esc to interrupt)",
+      processTree,
+    );
+
+    const rec = await performDispatch(
+      { target: "work:codex", prompt: "Add regression coverage", submit: false },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("delivered");
+    expect(rec.detection).toMatchObject({ agentKind: "codex", composerState: "idle", canReceivePrompt: true });
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("-l"))).toBe(true);
   });
 
   test("accepts direct agent commands without wrapper content proof", async () => {

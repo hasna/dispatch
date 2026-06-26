@@ -6,15 +6,17 @@ import type { BulkDispatchOptions, CaptureOptions, CaptureTransform, DispatchOpt
 import { formatBulk, formatCapture, formatRecord, formatSchedule, resolvePrompt } from "./format.js";
 import { registerDaemonCommands } from "./daemon-commands.js";
 import { Tmux } from "../lib/tmux.js";
+import type { Runner } from "../lib/runner.js";
 import { createRunner } from "../lib/runner.js";
 import { loadExecPolicy } from "../lib/exec-policy.js";
-import { inspectAgentTarget } from "../lib/agent-target.js";
+import { inspectListedAgentTarget } from "../lib/agent-target.js";
 
 export interface CliDeps {
   /** Factory for the client; when provided, the CLI will NOT close it (tests own it). */
   clientFactory?: () => DispatchClient;
   out?: (s: string) => void;
   err?: (s: string) => void;
+  runnerFactory?: (machine?: string) => Promise<Runner>;
   /** Pre-read stdin content (piped prompt). */
   stdin?: string;
 }
@@ -42,6 +44,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
   const err = deps.err ?? ((s: string) => console.error(s));
   const ownClient = !deps.clientFactory;
   const makeClient = deps.clientFactory ?? (() => new DispatchClient());
+  const makeRunner = deps.runnerFactory ?? createRunner;
 
   async function withClient<T>(fn: (c: DispatchClient) => T | Promise<T>): Promise<T> {
     const client = makeClient();
@@ -275,10 +278,10 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .option("-m, --machine <id>", "machine to enumerate (local when omitted)")
     .option("--json", "output JSON")
     .action(async (opts) => {
-      const tmux = new Tmux(await createRunner(opts.machine));
+      const tmux = new Tmux(await makeRunner(opts.machine));
       const targets = tmux.listTargets().map((target) => ({
         ...target,
-        detection: inspectAgentTarget(tmux, target.target, {
+        detection: inspectListedAgentTarget(tmux, target.target, {
           assumeExists: true,
           paneCommand: target.paneCommand,
           cwd: target.cwd,

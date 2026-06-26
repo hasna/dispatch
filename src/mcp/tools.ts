@@ -5,7 +5,7 @@ import { Store } from "../lib/store.js";
 import { Tmux } from "../lib/tmux.js";
 import { createRunner } from "../lib/runner.js";
 import { loadExecPolicy } from "../lib/exec-policy.js";
-import { inspectAgentTarget } from "../lib/agent-target.js";
+import { inspectListedAgentTarget } from "../lib/agent-target.js";
 import { daemonStatus, stopDaemon } from "../daemon/control.js";
 import { startDaemon } from "../daemon/daemon.js";
 import { serviceAction } from "../daemon/service.js";
@@ -337,7 +337,7 @@ export const TOOLS: ToolDef[] = [
       const tmux = await tmuxFor(deps, a.machine as string | undefined);
       return tmux.listTargets().map((target) => ({
         ...target,
-        detection: inspectAgentTarget(tmux, target.target, {
+        detection: inspectListedAgentTarget(tmux, target.target, {
           assumeExists: true,
           paneCommand: target.paneCommand,
           cwd: target.cwd,

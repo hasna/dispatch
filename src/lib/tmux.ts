@@ -84,7 +84,7 @@ export class Tmux {
    * Capture the visible (or scrollback) contents of a pane as plain text.
    * `start` is the number of scrollback lines to include above the visible area.
    */
-  capturePane(target: string, opts: { start?: number } = {}): string {
+  capturePane(target: string, opts: { start?: number; maxChars?: number } = {}): string {
     const args = ["capture-pane", "-t", target, "-p"];
     if (opts.start && opts.start > 0) args.push("-S", String(-opts.start));
     let lastStdout = "";
@@ -93,8 +93,8 @@ export class Tmux {
       if (res.exitCode !== 0) {
         throw new Error(`capture-pane failed for ${target}: ${res.stderr.trim() || res.stdout.trim()}`);
       }
-      lastStdout = res.stdout;
-      if (res.stdout.trim().length > 0 || attempt === 2) return res.stdout;
+      lastStdout = opts.maxChars && res.stdout.length > opts.maxChars ? res.stdout.slice(-opts.maxChars) : res.stdout;
+      if (lastStdout.trim().length > 0 || attempt === 2) return lastStdout;
       sleepSync(80);
     }
     return lastStdout;
@@ -135,9 +135,25 @@ export class Tmux {
   }
 
   /** Best-effort process tree for the pane's process group. */
-  processTree(target: string, panePid?: string): string {
+  processTree(
+    target: string,
+    panePid?: string,
+    opts: { maxLines?: number; maxLineChars?: number } = {},
+  ): string {
     const pid = panePid ?? this.paneProperty(target, "pane_pid");
     if (!/^\d+$/.test(pid)) return "";
+    const bounded = opts.maxLines || opts.maxLineChars;
+    if (bounded) {
+      const maxLines = String(Math.max(1, Math.trunc(opts.maxLines ?? 80)));
+      const maxLineChars = String(Math.max(80, Math.trunc(opts.maxLineChars ?? 1000)));
+      const script =
+        'ps -o pid=,ppid=,stat=,command= --forest -g "$1" 2>/dev/null | head -n "$2" | cut -c "1-$3"';
+      const group = this.runner.run(["sh", "-c", script, "dispatch-process-tree", pid, maxLines, maxLineChars]);
+      if (group.exitCode === 0 && group.stdout.trim()) return group.stdout;
+      const singleScript = 'ps -o pid=,ppid=,stat=,command= -p "$1" 2>/dev/null | head -n "$2" | cut -c "1-$3"';
+      const single = this.runner.run(["sh", "-c", singleScript, "dispatch-process-tree", pid, maxLines, maxLineChars]);
+      return single.exitCode === 0 ? single.stdout : "";
+    }
     const group = this.runner.run(["ps", "-o", "pid=,ppid=,stat=,command=", "--forest", "-g", pid]);
     if (group.exitCode === 0 && group.stdout.trim()) return group.stdout;
     const single = this.runner.run(["ps", "-o", "pid=,ppid=,stat=,command=", "-p", pid]);

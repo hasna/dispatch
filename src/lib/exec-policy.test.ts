@@ -72,6 +72,38 @@ describe("exec command policy", () => {
     ).toBe(true);
   });
 
+  test("recognizes node runtime flags before Codewith and Codex wrapper entrypoints", () => {
+    expect(
+      detectAgentKindFromProcessTree(`
+1234 1 Ss /usr/bin/bash
+1240 1234 Sl+ node --max-old-space-size=6144 --no-warnings /home/hasna/.bun/bin/codewith --auth-profile account005
+`),
+    ).toBe("codewith");
+
+    expect(
+      detectAgentKindFromProcessTree(`
+1234 1 Ss /usr/bin/bash
+1240 1234 Sl+ node --import tsx -- /home/hasna/.bun/bin/codex
+`),
+    ).toBe("codex");
+  });
+
+  test("stops wrapper evidence at the node entrypoint so arbitrary node args stay refused", () => {
+    expect(
+      detectAgentKindFromProcessTree(`
+1234 1 Ss /usr/bin/bash
+1240 1234 Sl+ node --no-warnings /srv/transcript-viewer.js codewith
+`),
+    ).toBe("unknown");
+
+    expect(
+      detectAgentKindFromProcessTree(`
+1234 1 Ss /usr/bin/bash
+1240 1234 Sl+ node -pe "console.log('codewith')" /home/hasna/.bun/bin/codewith
+`),
+    ).toBe("unknown");
+  });
+
   test("requires matching process evidence even for visible Codewith/Codex banners", () => {
     const spoofedBanner = `
 ╭─────────────────────────────────────────────────────────╮
@@ -89,6 +121,57 @@ describe("exec command policy", () => {
       }),
     ).toBe(false);
     expect(looksLikeWrappedAgentComposer(spoofedBanner)).toBe(false);
+  });
+
+  test("does not accept arbitrary node entrypoint paths named like agents", () => {
+    const codewithSpoof = `
+╭─────────────────────────────────────────────────────────╮
+│ ⎔  Hasna Codewith (v0.1.42)                             │
+│ model:       gpt-5.5 xhigh                              │
+│ directory:   ~/workspace/project                        │
+│ permissions: YOLO mode                                  │
+╰─────────────────────────────────────────────────────────╯
+› copied prompt
+`;
+    const codexSpoof = `
+╭────────────────────────────────────────╮
+│ ✦ OpenAI Codex                         │
+│ model:       gpt-5.1-codex             │
+│ directory:   /tmp                      │
+│ permissions: workspace-write           │
+╰────────────────────────────────────────╯
+› copied prompt
+`;
+
+    expect(
+      detectAgentTargetFromSignals({
+        paneCommand: "node",
+        visible: codewithSpoof,
+        processTree: "1234 1 Sl+ node --no-warnings /tmp/codewith\n",
+      }),
+    ).toMatchObject({ targetKind: "unknown", agentKind: "unknown", canReceivePrompt: false });
+
+    expect(
+      detectAgentTargetFromSignals({
+        paneCommand: "node",
+        visible: codexSpoof,
+        processTree: "1234 1 Sl+ node --no-warnings /tmp/codex/viewer.js\n",
+      }),
+    ).toMatchObject({ targetKind: "unknown", agentKind: "unknown", canReceivePrompt: false });
+
+    for (const processTree of [
+      "1234 1 Sl+ node /tmp/.bun/bin/codewith\n",
+      "1234 1 Sl+ node /tmp/usr/local/bin/codex\n",
+      "1234 1 Sl+ node /tmp/opt/homebrew/bin/codex\n",
+    ]) {
+      expect(
+        detectAgentTargetFromSignals({
+          paneCommand: "node",
+          visible: processTree.includes("codewith") ? codewithSpoof : codexSpoof,
+          processTree,
+        }),
+      ).toMatchObject({ targetKind: "unknown", agentKind: "unknown", canReceivePrompt: false });
+    }
   });
 
   test("recognizes Codewith completed-goal idle composer content without the startup banner", () => {
@@ -216,6 +299,30 @@ Goal active Objective: Add reliable session orchestration to dispatch
       canQueuePrompt: true,
       submitKeys: ["Enter", "Tab"],
       recommendedSubmitKey: "Tab",
+    });
+  });
+
+  test("recognizes bannerless wrapped Codex composer content with process proof", () => {
+    const visible = `
+› Add a regression test
+
+  gpt-5.1-codex · /home/hasna/workspace/app
+`;
+
+    expect(
+      detectAgentTargetFromSignals({
+        paneCommand: "bun",
+        visible,
+        processTree: codexProcessTree,
+        cwd: "/home/hasna/workspace/app",
+      }),
+    ).toMatchObject({
+      targetKind: "agent",
+      agentKind: "codex",
+      composerState: "idle",
+      canReceivePrompt: true,
+      canQueuePrompt: false,
+      recommendedSubmitKey: "Enter",
     });
   });
 

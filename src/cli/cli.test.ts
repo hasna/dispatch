@@ -6,6 +6,7 @@ import { buildProgram, parseIntegerOption } from "./index.js";
 import { formatRecord, formatSchedule, resolvePrompt } from "./format.js";
 import { DispatchClient } from "../sdk/index.js";
 import { Store } from "../lib/store.js";
+import { MockRunner } from "../test/mock-runner.js";
 import type {
   BulkDispatchOptions,
   BulkDispatchResult,
@@ -102,6 +103,16 @@ function runner() {
   return { store, client, out, err, program };
 }
 
+const codewithComposerCapture = `
+╭─────────────────────────────────────────────────────────╮
+│ ⎔  Hasna Codewith (v0.1.42)                             │
+│ model:       gpt-5.5 xhigh   fast   /model to change    │
+│ directory:   ~/workspace/hasna/opensource/open-dispatch │
+│ permissions: YOLO mode                                  │
+╰─────────────────────────────────────────────────────────╯
+› Fix native chat
+`;
+
 describe("CLI read/schedule commands (in-memory client)", () => {
   test("status: found and not-found", async () => {
     const { store, program, out, err } = runner();
@@ -184,6 +195,61 @@ describe("CLI read/schedule commands (in-memory client)", () => {
 
     await program.parseAsync(["clear", loop.id], { from: "user" });
     expect(out.join("\n")).toContain("cleared");
+  });
+
+  test("targets --json reports bounded wrapper detection for Codewith and refuses arbitrary node", async () => {
+    const out: string[] = [];
+    const r = new MockRunner();
+    r.responder = (argv) => {
+      if (argv[1] === "list-panes") {
+        return {
+          stdout: ["work:1.0\tcodewith\t1\tnode\t/repo\t1111", "work:2.0\tserver\t0\tnode\t/srv\t2222"].join("\n"),
+          stderr: "",
+          exitCode: 0,
+          source: "local",
+        };
+      }
+      if (argv[1] === "capture-pane") {
+        const target = argv[argv.indexOf("-t") + 1];
+        return {
+          stdout: target === "work:1.0" ? codewithComposerCapture : "node server.js\nListening\n",
+          stderr: "",
+          exitCode: 0,
+          source: "local",
+        };
+      }
+      if (argv[0] === "sh" && argv[2]?.includes("ps -o pid=,ppid=,stat=,command=")) {
+        const pid = argv[4];
+        return {
+          stdout:
+            pid === "1111"
+              ? "1111 1 Sl+ node --max-old-space-size=6144 /home/hasna/.bun/bin/codewith --auth-profile account005\n"
+              : "2222 1 Sl+ node /srv/server.js codewith\n",
+          stderr: "",
+          exitCode: 0,
+          source: "local",
+        };
+      }
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    };
+    const program = buildProgram({
+      runnerFactory: async () => r,
+      out: (s) => out.push(s),
+    });
+
+    await program.parseAsync(["targets", "--json"], { from: "user" });
+
+    const targets = JSON.parse(out.join("\n"));
+    expect(targets.find((t: { target: string }) => t.target === "work:1.0").detection).toMatchObject({
+      agentKind: "codewith",
+      canReceivePrompt: true,
+    });
+    expect(targets.find((t: { target: string }) => t.target === "work:2.0").detection).toMatchObject({
+      agentKind: "unknown",
+      canReceivePrompt: false,
+    });
+    expect(r.argvs().some((a) => a[0] === "ps")).toBe(false);
+    expect(r.argvs().some((a) => a[0] === "sh" && a[2]?.includes("head -n") && a[2]?.includes("cut -c"))).toBe(true);
   });
 
   test("schedule rejects missing timing mode and invalid combinations", async () => {

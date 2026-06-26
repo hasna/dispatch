@@ -99,10 +99,40 @@ describe("Tmux command construction", () => {
     expect(r.lastArgv()).toEqual(["tmux", "capture-pane", "-t", "s:w", "-p", "-S", "-100"]);
   });
 
+  test("capturePane can retain only the tail characters for classification", () => {
+    const r = new MockRunner();
+    r.queue.push({ stdout: "0123456789" });
+    expect(new Tmux(r).capturePane("s:w", { maxChars: 4 })).toBe("6789");
+  });
+
   test("capturePane throws on failure", () => {
     const r = new MockRunner();
     r.queue.push({ exitCode: 1, stderr: "no pane" });
     expect(() => new Tmux(r).capturePane("s:w")).toThrow(/capture-pane failed/);
+  });
+
+  test("bounded processTree limits process rows and command width through a fixed shell script", () => {
+    const r = new MockRunner();
+    r.responder = (argv) => {
+      if (argv[0] === "sh") {
+        return { stdout: "123 1 Sl+ node /home/hasna/.bun/bin/codewith\n", stderr: "", exitCode: 0, source: "local" };
+      }
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    };
+
+    const out = new Tmux(r).processTree("s:w", "123", { maxLines: 12, maxLineChars: 400 });
+
+    expect(out).toContain("codewith");
+    expect(r.lastArgv()[0]).toBe("sh");
+    expect(r.lastArgv()).toEqual([
+      "sh",
+      "-c",
+      'ps -o pid=,ppid=,stat=,command= --forest -g "$1" 2>/dev/null | head -n "$2" | cut -c "1-$3"',
+      "dispatch-process-tree",
+      "123",
+      "12",
+      "400",
+    ]);
   });
 
   test("hasSession reflects exit code", () => {

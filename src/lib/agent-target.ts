@@ -20,7 +20,17 @@ export interface InspectTargetOptions {
   paneCommand?: string;
   cwd?: string;
   panePid?: string;
+  /** Bound the captured text retained for classification. */
+  maxCaptureChars?: number;
+  /** Bound process-tree probing for target discovery. */
+  maxProcessTreeLines?: number;
+  /** Bound each process-tree command line for target discovery. */
+  maxProcessTreeLineChars?: number;
 }
+
+export const TARGET_DISCOVERY_CAPTURE_MAX_CHARS = 24_000;
+export const TARGET_DISCOVERY_PROCESS_MAX_LINES = 80;
+export const TARGET_DISCOVERY_PROCESS_MAX_LINE_CHARS = 1000;
 
 /** Inspect target kind, agent kind, composer state, and submit capabilities. */
 export function inspectAgentTarget(tmux: Tmux, target: string, options: InspectTargetOptions = {}): AgentComposerTargetResult {
@@ -71,8 +81,13 @@ export function inspectAgentTarget(tmux: Tmux, target: string, options: InspectT
     }
   }
 
-  const visible = tmux.capturePane(target);
-  const processTree = wrapper ? tmux.processTree(target, options.panePid) : "";
+  const visible = tmux.capturePane(target, { maxChars: options.maxCaptureChars });
+  const processTree = wrapper
+    ? tmux.processTree(target, options.panePid, {
+        maxLines: options.maxProcessTreeLines,
+        maxLineChars: options.maxProcessTreeLineChars,
+      })
+    : "";
   const detection = detectAgentTargetFromSignals({ paneCommand, visible, processTree, cwd });
   if (detection.targetKind !== "agent" || detection.agentKind === "unknown") {
     return {
@@ -99,4 +114,18 @@ export function inspectAgentTarget(tmux: Tmux, target: string, options: InspectT
 /** Validate that a tmux pane is a live agent composer, not a shell or stale transcript. */
 export function validateAgentComposerTarget(tmux: Tmux, target: string): AgentComposerTargetResult {
   return inspectAgentTarget(tmux, target, { prepareForDelivery: true });
+}
+
+/** Bounded inspection used by `dispatch targets` and MCP target discovery. */
+export function inspectListedAgentTarget(
+  tmux: Tmux,
+  target: string,
+  options: Omit<InspectTargetOptions, "maxCaptureChars" | "maxProcessTreeLines" | "maxProcessTreeLineChars"> = {},
+): AgentComposerTargetResult {
+  return inspectAgentTarget(tmux, target, {
+    ...options,
+    maxCaptureChars: TARGET_DISCOVERY_CAPTURE_MAX_CHARS,
+    maxProcessTreeLines: TARGET_DISCOVERY_PROCESS_MAX_LINES,
+    maxProcessTreeLineChars: TARGET_DISCOVERY_PROCESS_MAX_LINE_CHARS,
+  });
 }

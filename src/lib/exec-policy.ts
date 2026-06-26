@@ -99,15 +99,95 @@ export function detectAgentKindFromCommand(currentCommand: string): AgentKind {
   return agentKindForName(basename(currentCommand));
 }
 
-function agentKindFromPackageToken(token: string | undefined): AgentKind {
+function agentKindFromPackageToken(
+  token: string | undefined,
+  options: { allowBareName?: boolean; allowTrustedBinPath?: boolean } = {},
+): AgentKind {
   const value = token?.replace(/^["']|["']$/g, "").toLowerCase() ?? "";
   if (!value) return "unknown";
+  const hasPathSeparator = /[\\/]/.test(value);
   const baseKind = agentKindForName(basename(value));
-  if (baseKind !== "unknown") return baseKind;
-  if (/(?:^|\/)@hasna\/codewith(?:@[^/]+)?(?:\/|$)/.test(value)) return "codewith";
-  if (/(?:^|\/)(?:@openai\/)?codex(?:@[^/]+)?(?:\/|$)/.test(value)) return "codex";
-  if (/(?:^|\/)(?:@anthropic-ai\/claude-code|claude-code)(?:@[^/]+)?(?:\/|$)/.test(value)) return "claude";
-  if (/(?:^|\/)(?:opencode|opencode-ai|@opencode\/opencode)(?:@[^/]+)?(?:\/|$)/.test(value)) return "opencode";
+  if (!hasPathSeparator && options.allowBareName !== false && baseKind !== "unknown") return baseKind;
+  if (options.allowTrustedBinPath !== false && baseKind !== "unknown") {
+    const trustedBinPath =
+      /^\/(?:home|users)\/[^/]+\/(?:\.bun\/bin|\.bun\/install\/global\/bin|\.local\/bin|\.npm-global\/bin|\.yarn\/bin)\//.test(
+        value,
+      ) ||
+      /^\/usr\/local\/bin\//.test(value) ||
+      /^\/opt\/homebrew\/bin\//.test(value) ||
+      /^\/home\/linuxbrew\/\.linuxbrew\/bin\//.test(value);
+    if (trustedBinPath) return baseKind;
+  }
+  if (/(?:^|\/)node_modules\/@hasna\/codewith(?:@[^/]+)?(?:\/|$)/.test(value)) return "codewith";
+  if (/(?:^|\/)node_modules\/(?:@openai\/)?codex(?:@[^/]+)?(?:\/|$)/.test(value)) return "codex";
+  if (/(?:^|\/)node_modules\/(?:@anthropic-ai\/claude-code|claude-code)(?:@[^/]+)?(?:\/|$)/.test(value)) return "claude";
+  if (/(?:^|\/)node_modules\/(?:opencode|opencode-ai|@opencode\/opencode)(?:@[^/]+)?(?:\/|$)/.test(value)) return "opencode";
+  if (options.allowBareName !== false) {
+    if (/^@hasna\/codewith(?:@[^/]+)?$/.test(value)) return "codewith";
+    if (/^(?:@openai\/)?codex(?:@[^/]+)?$/.test(value)) return "codex";
+    if (/^(?:@anthropic-ai\/claude-code|claude-code)(?:@[^/]+)?$/.test(value)) return "claude";
+    if (/^(?:opencode|opencode-ai|@opencode\/opencode)(?:@[^/]+)?$/.test(value)) return "opencode";
+  }
+  return "unknown";
+}
+
+const RUNTIME_VALUE_FLAGS = new Set([
+  "-C",
+  "-r",
+  "--conditions",
+  "--env-file",
+  "--experimental-config-file",
+  "--experimental-loader",
+  "--icu-data-dir",
+  "--import",
+  "--inspect-port",
+  "--loader",
+  "--max-old-space-size",
+  "--max-semi-space-size",
+  "--require",
+  "--stack_size",
+  "--title",
+]);
+
+const RUNTIME_CODE_FLAGS = new Set(["-e", "-p", "--eval", "--print", "--test"]);
+
+function runtimeFlagName(token: string): string {
+  return token.split("=")[0] ?? token;
+}
+
+function isRuntimeCodeFlag(flag: string): boolean {
+  return RUNTIME_CODE_FLAGS.has(flag) || /^-[^-]*[ep]/.test(flag);
+}
+
+function firstRuntimeEntrypointToken(tokens: string[]): string | undefined {
+  for (let i = 1; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (!token) continue;
+    if (token === "--") return tokens[i + 1];
+    if (!token.startsWith("-")) return token;
+
+    const flag = runtimeFlagName(token);
+    if (isRuntimeCodeFlag(flag)) return undefined;
+    if (!token.includes("=") && RUNTIME_VALUE_FLAGS.has(flag)) i += 1;
+  }
+  return undefined;
+}
+
+function packageRunnerAgentKind(tokens: string[], start = 1): AgentKind {
+  for (let i = start; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (!token) continue;
+    if (token === "--") continue;
+    const flag = runtimeFlagName(token);
+    if (flag === "--package" || flag === "-p") {
+      const kind = agentKindFromPackageToken(tokens[i + 1], { allowBareName: true });
+      if (kind !== "unknown") return kind;
+      i += 1;
+      continue;
+    }
+    if (token.startsWith("-")) continue;
+    return agentKindFromPackageToken(token, { allowBareName: true });
+  }
   return "unknown";
 }
 
@@ -118,23 +198,20 @@ function detectAgentKindFromProcessLine(line: string): AgentKind {
   if (direct !== "unknown") return direct;
 
   if (firstBase === "node" || firstBase === "bun") {
-    return agentKindFromPackageToken(tokens[1]);
+    return agentKindFromPackageToken(firstRuntimeEntrypointToken(tokens), {
+      allowBareName: false,
+      allowTrustedBinPath: true,
+    });
   }
 
   if (firstBase === "bunx" || firstBase === "npx") {
-    for (const token of tokens.slice(1, 5).filter((t) => !t.startsWith("-"))) {
-      const kind = agentKindFromPackageToken(token);
-      if (kind !== "unknown") return kind;
-    }
+    return packageRunnerAgentKind(tokens, 1);
   }
 
   if (firstBase === "npm" || firstBase === "pnpm" || firstBase === "yarn") {
     const execIndex = tokens.findIndex((t) => /^(?:exec|dlx|x|create)$/.test(t));
     const start = execIndex >= 0 ? execIndex + 1 : 1;
-    for (const token of tokens.slice(start, start + 6).filter((t) => t !== "--" && !t.startsWith("-"))) {
-      const kind = agentKindFromPackageToken(token);
-      if (kind !== "unknown") return kind;
-    }
+    return packageRunnerAgentKind(tokens, start);
   }
 
   return "unknown";
@@ -268,6 +345,19 @@ function hasWrappedAgentLiveUi(text: string, processTree?: string): boolean {
   return hasGoalActivity && (hasComposer || hasModelStatus);
 }
 
+function hasWrappedCodexComposer(text: string, processTree?: string): boolean {
+  if (detectAgentKindFromProcessTree(processTree) !== "codex") return false;
+  const normalized = text
+    .split("\n")
+    .map(stripTuiLineChrome)
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .join("\n");
+  const hasComposer = /^›(?:\s|$).+/m.test(normalized);
+  const hasCodexStatus = /\b(?:gpt|o\d|codex)[\w.+:-]*codex[\w.+:-]*\b/i.test(normalized);
+  const hasBusySignal = /\b(?:esc to interrupt|esc to cancel|ctrl\+c to (?:stop|interrupt|cancel))\b/i.test(normalized);
+  return hasComposer && (hasCodexStatus || hasBusySignal);
+}
+
 /** Best-effort visible-state classifier for agent panes. */
 export function detectAgentActivity(text: string): AgentActivityState {
   const normalized = text
@@ -314,6 +404,7 @@ function liveUiProofForKind(kind: AgentKind, text: string, processTree?: string)
   ) {
     return true;
   }
+  if (kind === "codex" && hasWrappedCodexComposer(text, processTree)) return true;
   return false;
 }
 

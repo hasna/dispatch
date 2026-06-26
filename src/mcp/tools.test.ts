@@ -29,6 +29,26 @@ function tool(name: string) {
   return t;
 }
 
+const codewithComposerCapture = `
+╭─────────────────────────────────────────────────────────╮
+│ ⎔  Hasna Codewith (v0.1.42)                             │
+│ model:       gpt-5.5 xhigh   fast   /model to change    │
+│ directory:   ~/workspace/hasna/opensource/open-dispatch │
+│ permissions: YOLO mode                                  │
+╰─────────────────────────────────────────────────────────╯
+› Fix native chat
+`;
+
+const codexComposerCapture = `
+╭────────────────────────────────────────╮
+│ ✦ OpenAI Codex                         │
+│ model:       gpt-5.1-codex             │
+│ directory:   /home/hasna/workspace/app │
+│ permissions: workspace-write           │
+╰────────────────────────────────────────╯
+› Add a regression test
+`;
+
 describe("MCP tool handlers", () => {
   test("status returns the record or a not-found marker", async () => {
     const d = deps();
@@ -84,6 +104,69 @@ describe("MCP tool handlers", () => {
     expect(targets).toHaveLength(2);
     expect(targets[0]).toMatchObject({ target: "work:1.0", window: "agent", active: true } as never);
     expect(targets[1]!.active).toBe(false);
+  });
+
+  test("targets exposes wrapper Codewith/Codex detection and refuses arbitrary node panes", async () => {
+    const d = deps();
+    const r = new MockRunner();
+    r.responder = (argv) => {
+      if (argv[1] === "list-panes") {
+        return {
+          stdout: [
+            "work:1.0\tcodewith\t1\tnode\t/repo\t1111",
+            "work:2.0\tcodex\t0\tbun\t/repo\t2222",
+            "work:3.0\tserver\t0\tnode\t/srv\t3333",
+          ].join("\n"),
+          stderr: "",
+          exitCode: 0,
+          source: "local",
+        };
+      }
+      if (argv[1] === "capture-pane") {
+        const target = argv[argv.indexOf("-t") + 1];
+        if (target === "work:1.0") return { stdout: codewithComposerCapture, stderr: "", exitCode: 0, source: "local" };
+        if (target === "work:2.0") return { stdout: codexComposerCapture, stderr: "", exitCode: 0, source: "local" };
+        return { stdout: "node server.js\nListening on http://127.0.0.1:3000\n", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[0] === "sh" && argv[2]?.includes("ps -o pid=,ppid=,stat=,command=")) {
+        const pid = argv[4];
+        if (pid === "1111") {
+          return {
+            stdout:
+              "1111 1 Ss /usr/bin/bash\n1112 1111 Sl+ node --max-old-space-size=6144 /home/hasna/.bun/bin/codewith --auth-profile account005\n",
+            stderr: "",
+            exitCode: 0,
+            source: "local",
+          };
+        }
+        if (pid === "2222") {
+          return { stdout: "2222 1 Sl+ bun /home/hasna/.bun/bin/codex\n", stderr: "", exitCode: 0, source: "local" };
+        }
+        return { stdout: "3333 1 Sl+ node /srv/server.js codewith\n", stderr: "", exitCode: 0, source: "local" };
+      }
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    };
+    d.makeTmux = async () => new Tmux(r);
+
+    const targets = (await tool("dispatch_targets").handler(d, {})) as Array<{
+      target: string;
+      detection?: { agentKind: string; canReceivePrompt: boolean };
+    }>;
+
+    expect(targets.find((t) => t.target === "work:1.0")?.detection).toMatchObject({
+      agentKind: "codewith",
+      canReceivePrompt: true,
+    });
+    expect(targets.find((t) => t.target === "work:2.0")?.detection).toMatchObject({
+      agentKind: "codex",
+      canReceivePrompt: true,
+    });
+    expect(targets.find((t) => t.target === "work:3.0")?.detection).toMatchObject({
+      agentKind: "unknown",
+      canReceivePrompt: false,
+    });
+    expect(r.argvs().some((a) => a[0] === "ps")).toBe(false);
+    expect(r.argvs().some((a) => a[0] === "sh" && a[2]?.includes("head -n") && a[2]?.includes("cut -c"))).toBe(true);
   });
 
   test("daemon_status reports queue counts", async () => {
