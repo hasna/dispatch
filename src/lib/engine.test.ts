@@ -89,6 +89,74 @@ describe("performDispatch", () => {
     expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
   });
 
+  for (const wrapperCommand of ["node", "bun"]) {
+    test(`delivers to an idle Codewith composer running under a ${wrapperCommand} wrapper`, async () => {
+      const r = new MockRunner();
+      const codewithPane = `
+╭─────────────────────────────────────────────────────────╮
+│ ⎔  Hasna Codewith (v0.1.42)                             │
+│                                                         │
+│ model:       gpt-5.5 xhigh   fast   /model to change    │
+│ directory:   ~/workspace/hasna/opensource/open-codewith │
+│ permissions: YOLO mode                                  │
+╰─────────────────────────────────────────────────────────╯
+
+›
+
+  gpt-5.5 xhigh fast · account013 · 5h 55% left
+${"\n".repeat(32)}`;
+
+      r.responder = (argv) => {
+        if (argv[1] === "list-panes") return { stdout: "%1\n", stderr: "", exitCode: 0, source: "local" };
+        if (argv[1] === "display-message" && argv.at(-1) === "#{pane_current_command}") {
+          return { stdout: `${wrapperCommand}\n`, stderr: "", exitCode: 0, source: "local" };
+        }
+        if (argv[1] === "display-message" && argv.at(-1) === "#{pane_in_mode}") {
+          return { stdout: "0\n", stderr: "", exitCode: 0, source: "local" };
+        }
+        if (argv[1] === "capture-pane") return { stdout: codewithPane, stderr: "", exitCode: 0, source: "local" };
+        return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+      };
+
+      const rec = await performDispatch(
+        { target: "open-codewith-04:1.1", prompt: "Harmless smoke prompt", submit: false },
+        { tmux: new Tmux(r), sleep: noSleep },
+      );
+
+      expect(rec.status).toBe("delivered");
+      expect(rec.detail).toMatch(/without submitting/);
+      expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("-l"))).toBe(true);
+    });
+  }
+
+  test("still refuses arbitrary node panes", async () => {
+    const r = new MockRunner();
+    r.responder = (argv) => {
+      if (argv[1] === "list-panes") return { stdout: "%1\n", stderr: "", exitCode: 0, source: "local" };
+      if (argv[1] === "display-message" && argv.at(-1) === "#{pane_current_command}") {
+        return { stdout: "node\n", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "capture-pane") {
+        return {
+          stdout: 'Welcome to Node.js v22.0.0.\nType ".help" for more information.\n> ',
+          stderr: "",
+          exitCode: 0,
+          source: "local",
+        };
+      }
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    };
+
+    const rec = await performDispatch(
+      { target: "work:node", prompt: "Do not type this", submit: false },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("failed");
+    expect(rec.detail).toMatch(/not a recognized agent composer.*node/i);
+    expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
+  });
+
   test("delivers + confirms against a simulated TUI and records it", async () => {
     const r = tuiRunner();
     const store = new Store(":memory:");

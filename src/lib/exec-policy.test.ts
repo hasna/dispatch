@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { classifyPaneCommand, evaluateExecPolicy } from "./exec-policy.js";
+import { classifyPaneCommand, evaluateExecPolicy, looksLikeAgentPane } from "./exec-policy.js";
 
 describe("exec command policy", () => {
   test("classifies shells and agent composers", () => {
@@ -8,6 +8,34 @@ describe("exec command policy", () => {
     expect(classifyPaneCommand("codewith")).toBe("agent");
     expect(classifyPaneCommand("claude")).toBe("agent");
     expect(classifyPaneCommand("vim")).toBe("unknown");
+  });
+
+  test("recognizes Codewith composers launched through node wrappers by content", () => {
+    const draftPane = `
+╭─────────────────────────────────────────────────────────╮
+│ ⎔  Hasna Codewith (v0.1.42)                             │
+│                                                         │
+│ model:       gpt-5.5 xhigh   fast   /model to change    │
+│ directory:   ~/workspace/hasna/opensource/open-codewith │
+│ permissions: YOLO mode                                  │
+╰─────────────────────────────────────────────────────────╯
+
+› Find and fix a bug in @filename
+
+  gpt-5.5 xhigh fast · account013 · 5h 55% left
+${"\n".repeat(32)}`;
+    const idlePane = draftPane.replace("› Find and fix a bug in @filename", "›");
+
+    expect(looksLikeAgentPane(draftPane)).toBe(true);
+    expect(looksLikeAgentPane(idlePane)).toBe(true);
+  });
+
+  test("does not recognize arbitrary node output as an agent pane", () => {
+    expect(looksLikeAgentPane("Welcome to Node.js v22.0.0.\nType \".help\" for more information.\n> ")).toBe(false);
+    expect(looksLikeAgentPane("Hasna Codewith (v0.1.42)\nserver listening on port 3000")).toBe(false);
+    expect(
+      looksLikeAgentPane("Hasna Codewith (v0.1.42)\nmodel: gpt\npermissions: YOLO mode\ndirectory: /tmp\n› 1. Menu item"),
+    ).toBe(false);
   });
 
   test("allows builtin safe command prefixes on shell targets", () => {

@@ -11,7 +11,8 @@ export const DEFAULT_WORKING_PATTERNS: RegExp[] = [
   /esc to interrupt/i,
   /esc to cancel/i,
   /ctrl\+c to (stop|interrupt|cancel)/i,
-  /\b(thinking|working|generating|processing|crunching|pondering|forming|cooking)\b/i,
+  /(?:^|\n)\s*(?:[•*✶✻●]\s*)?Working(?:…|\.{3}|\s*\(|\s*$)/i,
+  /\b(thinking|generating|processing|crunching|pondering|forming|cooking)\b/i,
   /\besc\b.*\binterrupt\b/i,
   /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/, // braille spinner frames
   /[▰▱]/, // bar spinner

@@ -20,6 +20,7 @@ describe("detectWorking", () => {
   test("does not match an idle composer", () => {
     expect(detectWorking("> \n  /help for commands")).toBe(false);
     expect(detectWorking("$ ")).toBe(false);
+    expect(detectWorking("Working with untrusted contents comes with higher risk.")).toBe(false);
   });
 });
 
@@ -208,6 +209,40 @@ describe("evaluateDelivery", () => {
       prompt: "dispatched prompt tail",
     });
     expect(res.delivered).toBe(true);
+  });
+
+  test("Codewith transcript echo plus working footer is delivered, not parked", () => {
+    const prompt =
+      "Adversarial review only; do not modify files. Include an adversarial self-review before concluding and report blocking findings first.";
+    const before = `
+> You are in /home/hasna/workspace/hasna/opensource/open-dispatch
+
+  Do you trust the contents of this directory? Working with untrusted contents
+  comes with higher risk of prompt injection.
+
+╭─────────────────────────────────────────────────────────╮
+│ ⎔  Hasna Codewith (v0.1.42)                             │
+╰─────────────────────────────────────────────────────────╯
+
+› Implement {feature}
+
+  gpt-5.5 xhigh fast · 5h 6% left
+`;
+    const afterTyped = `${before}\n› ${prompt}`;
+    const after = `${before}
+› ${prompt}
+
+
+• Working (20s • esc to interrupt)
+
+
+› Implement {feature}
+
+  gpt-5.5 xhigh fast · 5h 6% left
+`;
+    const res = evaluateDelivery({ before, afterTyped, after, prompt });
+    expect(res.delivered).toBe(true);
+    expect(res.reason).toMatch(/advanced|acted on|working/i);
   });
 
   test("genuine unsent: Enter was a no-op, pane unchanged => not delivered", () => {
