@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { z } from "zod";
 import { TOOLS, VERBS, type ToolDeps } from "./tools.js";
 import { DispatchClient } from "../sdk/index.js";
 import { Store } from "../lib/store.js";
@@ -198,6 +199,74 @@ describe("MCP tool handlers", () => {
     });
     expect(r.argvs().some((a) => a[0] === "ps")).toBe(false);
     expect(r.argvs().some((a) => a[0] === "sh" && a[2]?.includes("head -n") && a[2]?.includes("cut -c"))).toBe(true);
+  });
+
+  test("fleet_summary returns compact bounded pane classifications", async () => {
+    const d = deps();
+    const r = new MockRunner();
+    r.responder = (argv) => {
+      if (argv[1] === "list-panes") {
+        return {
+          stdout: ["work:1.0\tcodewith\t1\tnode\t/repo\t1111", "work:2.0\tserver\t0\tnode\t/srv\t2222"].join("\n"),
+          stderr: "",
+          exitCode: 0,
+          source: "local",
+        };
+      }
+      if (argv[1] === "capture-pane") {
+        const target = argv[argv.indexOf("-t") + 1];
+        return {
+          stdout: target === "work:1.0" ? codewithComposerCapture : "node server.js\nListening\n",
+          stderr: "",
+          exitCode: 0,
+          source: "local",
+        };
+      }
+      if (argv[0] === "sh" && argv[2]?.includes("ps -o pid=,ppid=,stat=,command=")) {
+        const pid = argv[4];
+        return {
+          stdout:
+            pid === "1111"
+              ? "1111 1 Sl+ node --max-old-space-size=6144 /home/hasna/.bun/bin/codewith --auth-profile account010\n"
+              : "2222 1 Sl+ node /srv/server.js codewith\n",
+          stderr: "",
+          exitCode: 0,
+          source: "local",
+        };
+      }
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    };
+    d.makeTmux = async () => new Tmux(r);
+
+    const result = (await tool("dispatch_fleet_summary").handler(d, {
+      targets: ["work:*"],
+      maxPaneChars: 100,
+      limit: 2,
+    })) as { items: Array<{ target: string; classification: { state: string }; detection?: { agentKind: string } }> };
+
+    expect(result).toMatchObject({
+      schemaVersion: "dispatch.fleet_summary.v1",
+      status: "completed",
+      inspectedTargets: 2,
+      totals: { idle: 1, blocked: 1 },
+    });
+    expect(result.items.find((item) => item.target === "work:1.0")).toMatchObject({
+      detection: { agentKind: "codewith" },
+      classification: { state: "idle" },
+    });
+    expect(result.items.find((item) => item.target === "work:2.0")).toMatchObject({
+      classification: { state: "blocked" },
+    });
+  });
+
+  test("fleet_summary MCP schema accepts target arrays and rejects invalid numeric bounds", () => {
+    const schema = z.object(tool("dispatch_fleet_summary").inputSchema);
+
+    expect(schema.safeParse({ targets: ["work:*", "other:*"], limit: 2, maxPaneChars: 100 }).success).toBe(true);
+    expect(schema.safeParse({ limit: 0 }).success).toBe(false);
+    expect(schema.safeParse({ limit: 201 }).success).toBe(false);
+    expect(schema.safeParse({ maxPaneChars: 12_001 }).success).toBe(false);
+    expect(schema.safeParse({ changedSinceMs: -1 }).success).toBe(false);
   });
 
   test("daemon_status reports queue counts", async () => {
@@ -493,9 +562,10 @@ describe("CLI/MCP parity", () => {
     const program = buildProgram();
     const cliVerbs = new Set<string>();
     for (const cmd of program.commands) {
-      if (cmd.name() === "daemon") {
+      if (cmd.commands.length > 0) {
         for (const sub of cmd.commands) {
-          if (sub.name() !== "run") cliVerbs.add(`daemon_${sub.name()}`);
+          if (cmd.name() === "daemon" && sub.name() === "run") continue;
+          cliVerbs.add(`${cmd.name()}_${sub.name()}`);
         }
       } else {
         cliVerbs.add(cmd.name());

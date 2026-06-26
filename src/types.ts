@@ -273,6 +273,16 @@ export interface CaptureAiResult {
   detail?: string;
 }
 
+/** Non-secret AI provider readiness result for read-only preflight checks. */
+export interface CaptureAiPreflight {
+  ok: boolean;
+  provider: CaptureAiProvider;
+  endpoint?: string;
+  keyEnv?: string;
+  model?: string;
+  detail?: string;
+}
+
 /** Options for capturing recent target pane output. */
 export interface CaptureOptions {
   target: string;
@@ -299,6 +309,77 @@ export interface CaptureResult {
   detection?: AgentTargetInfo;
   detail?: string;
   ai?: CaptureAiResult;
+}
+
+export type FleetPaneState = "working" | "idle" | "stuck" | "error" | "blocked";
+
+export type FleetPaneUncertainty = "low" | "medium" | "high";
+
+export interface FleetPaneClassification {
+  state: FleetPaneState;
+  uncertainty: FleetPaneUncertainty;
+  reasons: string[];
+  observedActivityAgeMs?: number;
+}
+
+export interface FleetSummaryItem {
+  backend: "tmux";
+  target: string;
+  machine: string;
+  window: string;
+  active: boolean;
+  paneCommand?: string;
+  cwd?: string;
+  detection?: AgentTargetInfo;
+  classification: FleetPaneClassification;
+  excerpt: string;
+  excerptChars: number;
+  excerptTruncated: boolean;
+  error?: string;
+}
+
+export interface FleetSummaryOptions {
+  /** Target machine to inspect (local when omitted). */
+  machine?: string;
+  /** Glob or comma-separated globs matched against target and machine/target. Defaults to `*`. */
+  targets?: string | string[];
+  /** Duration string such as `5m` used as a stuck threshold for visible activity age. */
+  changedSince?: string;
+  /** Already-parsed stuck threshold; wins over changedSince when provided. */
+  changedSinceMs?: number;
+  /** Max redacted excerpt characters retained per pane. */
+  maxPaneChars?: number;
+  /** Max matched panes to inspect. */
+  limit?: number;
+  /** Fail before tmux probing unless an AI transform provider is configured. */
+  preflightAi?: boolean;
+  /** Optional provider/model overrides for preflightAi. */
+  ai?: CaptureAiRequest;
+}
+
+export type FleetSummarySchemaVersion = "dispatch.fleet_summary.v1";
+
+export interface FleetSummaryResult {
+  schemaVersion: FleetSummarySchemaVersion;
+  status: "completed" | "failed";
+  machine: string;
+  generatedAt: string;
+  targetGlobs: string[];
+  changedSinceMs?: number;
+  limit: number;
+  maxLimit: number;
+  requestedMaxPaneChars: number;
+  maxPaneChars: number;
+  maxAllowedPaneChars: number;
+  totalTargets: number;
+  matchedTargets: number;
+  inspectedTargets: number;
+  omittedTargets: number;
+  totals: Record<FleetPaneState, number>;
+  preflight?: CaptureAiPreflight;
+  items: FleetSummaryItem[];
+  detail?: string;
+  compact: true;
 }
 
 /** Public Mosaic prompt receipt, schema_version mosaic.control.v1. */

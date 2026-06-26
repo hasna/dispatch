@@ -418,6 +418,118 @@ describe("CLI read/schedule commands (in-memory client)", () => {
     expect(r.argvs().some((a) => a[0] === "sh" && a[2]?.includes("head -n") && a[2]?.includes("cut -c"))).toBe(true);
   });
 
+  test("targets --json is bounded by default and --all opts into full enumeration", async () => {
+    const out: string[] = [];
+    const r = new MockRunner();
+    r.responder = (argv) => {
+      if (argv[1] === "list-panes") {
+        return {
+          stdout: Array.from({ length: 55 }, (_, i) => `work:${i}.0\tagent-${i}\t0\tnode\t/repo\t${1000 + i}`).join("\n"),
+          stderr: "",
+          exitCode: 0,
+          source: "local",
+        };
+      }
+      if (argv[1] === "capture-pane") {
+        return { stdout: "node server.js\nListening\n", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[0] === "sh" && argv[2]?.includes("ps -o pid=,ppid=,stat=,command=")) {
+        return { stdout: "1000 1 Sl+ node /srv/server.js\n", stderr: "", exitCode: 0, source: "local" };
+      }
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    };
+    const program = buildProgram({
+      runnerFactory: async () => r,
+      out: (s) => out.push(s),
+    });
+
+    await program.parseAsync(["targets", "--json"], { from: "user" });
+    expect(JSON.parse(out.join("\n"))).toHaveLength(50);
+    expect(r.argvs().filter((argv) => argv[1] === "capture-pane")).toHaveLength(50);
+    out.length = 0;
+
+    await program.parseAsync(["targets", "--json", "--all"], { from: "user" });
+    expect(JSON.parse(out.join("\n"))).toHaveLength(55);
+  });
+
+  test("fleet summary --json returns bounded pane classification", async () => {
+    const out: string[] = [];
+    const r = new MockRunner();
+    r.responder = (argv) => {
+      if (argv[1] === "list-panes") {
+        return {
+          stdout: ["work:1.0\tcodewith\t1\tnode\t/repo\t1111", "other:1.0\tserver\t0\tnode\t/srv\t2222"].join("\n"),
+          stderr: "",
+          exitCode: 0,
+          source: "local",
+        };
+      }
+      if (argv[1] === "capture-pane") {
+        return { stdout: codewithComposerCapture, stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[0] === "sh" && argv[2]?.includes("ps -o pid=,ppid=,stat=,command=")) {
+        const pid = argv[4];
+        return {
+          stdout:
+            pid === "1111"
+              ? "1111 1 Sl+ node --max-old-space-size=6144 /home/hasna/.bun/bin/codewith --auth-profile account010\n"
+              : "2222 1 Sl+ node /srv/server.js codewith\n",
+          stderr: "",
+          exitCode: 0,
+          source: "local",
+        };
+      }
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    };
+    const program = buildProgram({
+      runnerFactory: async () => r,
+      out: (s) => out.push(s),
+    });
+
+    await program.parseAsync(["fleet", "summary", "--targets", "work:*", "--max-pane-chars", "90", "--json"], {
+      from: "user",
+    });
+
+    const result = JSON.parse(out.join("\n"));
+    expect(result).toMatchObject({
+      schemaVersion: "dispatch.fleet_summary.v1",
+      status: "completed",
+      matchedTargets: 1,
+      inspectedTargets: 1,
+      maxPaneChars: 90,
+      totals: { idle: 1 },
+    });
+    expect(result.items[0]).toMatchObject({
+      target: "work:1.0",
+      classification: { state: "idle" },
+      detection: { agentKind: "codewith", canReceivePrompt: true },
+    });
+    expect(result.items[0].excerpt.length).toBeLessThanOrEqual(90);
+  });
+
+  test("fleet summary --json returns failed schema for invalid changed-since", async () => {
+    const out: string[] = [];
+    const r = new MockRunner();
+    const program = buildProgram({
+      runnerFactory: async () => r,
+      out: (s) => out.push(s),
+    });
+
+    process.exitCode = 0;
+    await program.parseAsync(["fleet", "summary", "--changed-since", "soon", "--json"], { from: "user" });
+
+    const result = JSON.parse(out.join("\n"));
+    expect(result).toMatchObject({
+      schemaVersion: "dispatch.fleet_summary.v1",
+      status: "failed",
+      inspectedTargets: 0,
+      items: [],
+    });
+    expect(process.exitCode).toBe(1);
+    expect(r.argvs()).toHaveLength(0);
+    process.exitCode = 0;
+  });
+
   test("loops defaults to compact capped output", async () => {
     const { store, program, out } = runner();
     for (let i = 0; i < 25; i += 1) {

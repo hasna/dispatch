@@ -1,5 +1,6 @@
 import type {
   CaptureAiProvider,
+  CaptureAiPreflight,
   CaptureAiRequest,
   CaptureAiResult,
   CaptureOptions,
@@ -168,6 +169,19 @@ function resolveProvider(input: CaptureAiRequest | undefined, env: NodeJS.Proces
     };
   }
   return { provider, endpoint, apiKey, keyEnv, model };
+}
+
+/** Check AI transform provider readiness without exposing credentials or making a network call. */
+export function preflightCaptureAi(input: CaptureAiRequest | undefined, env: NodeJS.ProcessEnv = process.env): CaptureAiPreflight {
+  const resolved = resolveProvider(input, env);
+  return {
+    ok: !resolved.detail && resolved.provider !== "none",
+    provider: resolved.provider,
+    endpoint: resolved.endpoint,
+    keyEnv: resolved.keyEnv,
+    model: resolved.model,
+    detail: resolved.detail,
+  };
 }
 
 async function runAiTransform(input: {
