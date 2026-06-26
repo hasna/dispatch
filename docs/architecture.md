@@ -8,11 +8,14 @@
                    \                  |                       /
                           SDK  ──  DispatchClient
                                        |
-                                  performDispatch (engine)
-                    ┌──────────────────┼───────────────────┐
-                 deliver            submit               confirm
-                (tmux paste/      (delay + Enter      (pane-diff:
-                 send-keys)        + retry)            working/cleared)
+                         ┌─────────────┴─────────────┐
+                    tmux backend              Mosaic backend
+                 performDispatch              native mosaic CLI
+                    ┌────┼────┐              sessions/panes/tabs,
+                 deliver submit confirm      prompt receipts, capture
+                (tmux    (delay (pane-diff
+                 paste/  + Enter working/
+                 keys)   retry) cleared)
                                        |
                                   Runner (argv executor)
                           ┌────────────┴────────────┐
@@ -41,17 +44,24 @@
 
 ## The Runner abstraction
 
-`Runner.run(argv, input?)` executes a command. Tmux operations are built as argv arrays
-(never shell strings), which keeps prompt text safe from quoting. `RemoteRunner` quotes
-the argv into a single command and routes it through `@hasna/machines` to a remote host;
-that's the *only* thing that changes for cross-machine dispatch.
+`Runner.run(argv, input?)` executes a command. Tmux and Mosaic operations are built as
+argv arrays (never shell strings), which keeps prompt text safe from quoting.
+`RemoteRunner` quotes the argv into a single command and routes it through
+`@hasna/machines` to a remote host; that's the *only* thing that changes for
+cross-machine dispatch.
+
+tmux is the default backend. The optional Mosaic backend is selected through
+`DispatchOptions.backend`, `--backend mosaic`, or `DISPATCH_BACKEND=mosaic`. It calls
+the public `mosaic` binary directly (`mosaic.control.v1` JSON receipts/envelopes)
+rather than using tmux compatibility shims.
 
 ## State
 
 Everything lives in sqlite at `~/.hasna/dispatch/dispatch.db` (override with
 `DISPATCH_DATA_DIR`):
 
-- `dispatches` — every dispatch with status, confirmation result, computed delay, timestamps.
+- `dispatches` — every dispatch with backend, status, confirmation result, computed
+  delay, timestamps, and optional native backend receipt metadata.
 - `schedules` — one-shot (`at` or relative `in`), recurring cron (`cron`), and
   interval loop (`every`/`interval_ms`) dispatches with kind/name, next run time,
   lifecycle status, last fired dispatch, and failure audit fields

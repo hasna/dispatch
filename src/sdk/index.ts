@@ -11,6 +11,7 @@ import type {
   BulkDispatchResult,
   CaptureOptions,
   CaptureResult,
+  DispatchBackend,
   DispatchOptions,
   DispatchRecord,
   DispatchStatus,
@@ -30,6 +31,8 @@ import { performCapture } from "../lib/capture.js";
 import { computeNextRun, parseDurationMs } from "../lib/schedule.js";
 import { performBulkDispatch } from "../lib/bulk.js";
 import { resolveSessionsTargets } from "../lib/sessions-source.js";
+import { normalizeBackend } from "../lib/backend.js";
+import { Mosaic, performMosaicCapture, performMosaicDispatch } from "../lib/mosaic.js";
 
 export interface DispatchClientOptions {
   /** Use an explicit store; otherwise the default sqlite store is opened. */
@@ -38,14 +41,18 @@ export interface DispatchClientOptions {
   dbPath?: string;
   /** Persist dispatches. Default true. */
   persist?: boolean;
+  /** Default backend. Defaults to DISPATCH_BACKEND or tmux. */
+  backend?: DispatchBackend;
 }
 
 /** High-level programmatic client for dispatching prompts to tmux agents. */
 export class DispatchClient {
   private readonly store?: Store;
   private readonly ownsStore: boolean;
+  private readonly defaultBackend?: DispatchBackend;
 
   constructor(opts: DispatchClientOptions = {}) {
+    this.defaultBackend = opts.backend;
     if (opts.persist === false) {
       this.store = undefined;
       this.ownsStore = false;
@@ -58,9 +65,16 @@ export class DispatchClient {
     }
   }
 
+  private backend(input?: DispatchBackend): DispatchBackend {
+    return normalizeBackend(input ?? this.defaultBackend);
+  }
+
   /** Dispatch a prompt to a tmux target (local or, via `machine`, remote). */
   async send(options: DispatchOptions): Promise<DispatchRecord> {
     const runner = await createRunner(options.machine);
+    if (this.backend(options.backend) === "mosaic") {
+      return performMosaicDispatch(options, { mosaic: new Mosaic(runner), store: this.store });
+    }
     const tmux = new Tmux(runner);
     return performDispatch(options, { tmux, store: this.store });
   }
@@ -82,12 +96,18 @@ export class DispatchClient {
   /** Capture a bounded, redacted pane transcript, optionally with an AI transform. */
   async capture(options: CaptureOptions): Promise<CaptureResult> {
     const runner = await createRunner(options.machine);
+    if (this.backend(options.backend) === "mosaic") {
+      return performMosaicCapture(options, { mosaic: new Mosaic(runner) });
+    }
     const tmux = new Tmux(runner);
     return performCapture(options, { tmux });
   }
 
   /** Dispatch one prompt to multiple targets with idle guards/concurrency controls. */
   async bulkSend(options: BulkDispatchOptions): Promise<BulkDispatchResult> {
+    if (this.backend(options.backend) === "mosaic") {
+      throw new Error("bulk Mosaic dispatch is not supported in this backend slice; send one Mosaic target at a time");
+    }
     let targets = options.targets ?? [];
     if (options.source === "sessions-query") {
       const runner = await createRunner(options.machine);

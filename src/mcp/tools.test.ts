@@ -6,6 +6,7 @@ import { TOOLS, VERBS, type ToolDeps } from "./tools.js";
 import { DispatchClient } from "../sdk/index.js";
 import { Store } from "../lib/store.js";
 import { Tmux } from "../lib/tmux.js";
+import { Mosaic } from "../lib/mosaic.js";
 import { MockRunner } from "../test/mock-runner.js";
 import { buildProgram } from "../cli/index.js";
 import type {
@@ -271,6 +272,42 @@ describe("MCP tool handlers", () => {
     expect(received).toMatchObject({ target: "work:agent", prompt: "Fix native chat", goal: true });
   });
 
+  test("send forwards Mosaic backend and prompt file options to the client", async () => {
+    const d = deps();
+    let received: DispatchOptions | undefined;
+    d.client.send = async (opts: DispatchOptions): Promise<DispatchRecord> => {
+      received = opts;
+      return {
+        id: "send-mosaic",
+        kind: "prompt",
+        backend: "mosaic",
+        target: opts.target,
+        machine: "local",
+        prompt: opts.prompt,
+        status: "skipped",
+        dryRun: true,
+        createdAt: "x",
+        updatedAt: "x",
+      };
+    };
+
+    await tool("dispatch_send").handler(d, {
+      target: "work:terminal_1",
+      prompt: "Fix native chat",
+      promptFile: "prompt.md",
+      backend: "mosaic",
+      dryRun: true,
+    });
+
+    expect(received).toMatchObject({
+      target: "work:terminal_1",
+      prompt: "Fix native chat",
+      promptFile: "prompt.md",
+      backend: "mosaic",
+      dryRun: true,
+    });
+  });
+
   test("send forwards submit-key selection to the client", async () => {
     const d = deps();
     let received: DispatchOptions | undefined;
@@ -421,6 +458,33 @@ describe("MCP tool handlers", () => {
       lines: 120,
       ai: { enabled: true, transform: "blockers", provider: "groq" },
     });
+  });
+
+  test("targets enumerates Mosaic panes via the injected runner", async () => {
+    const d = deps();
+    const r = new MockRunner();
+    r.responder = (argv) => {
+      if (argv.join(" ") === "mosaic sessions list") {
+        return { stdout: JSON.stringify({ data: [{ name: "work" }] }), stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv.join(" ") === "mosaic --session work tabs list --all") {
+        return { stdout: JSON.stringify({ data: [{ tab_id: "tab_1", name: "Agent" }] }), stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv.join(" ") === "mosaic --session work panes list --all") {
+        return { stdout: JSON.stringify({ data: [{ pane_id: "terminal_1", tab_id: "tab_1" }] }), stderr: "", exitCode: 0, source: "local" };
+      }
+      return { stdout: "", stderr: "unexpected", exitCode: 1, source: "local" };
+    };
+    d.makeMosaic = async () => new Mosaic(r);
+
+    const targets = (await tool("dispatch_targets").handler(d, { backend: "mosaic" })) as {
+      items: Array<{ target: string; backend: string }>;
+      count: number;
+      compact: boolean;
+    };
+
+    expect(targets).toMatchObject({ count: 1, compact: true });
+    expect(targets.items[0]).toMatchObject({ backend: "mosaic", target: "work:terminal_1", window: "Agent" });
   });
 });
 

@@ -15,6 +15,9 @@ export type DispatchStatus =
 /** What kind of payload a dispatch record represents. */
 export type DispatchKind = "prompt" | "exec" | "key";
 
+/** Terminal control backend. tmux remains the default. */
+export type DispatchBackend = "tmux" | "mosaic";
+
 /** Runtime class of a target pane, based on tmux pane_current_command. */
 export type ExecTargetKind = "shell" | "agent" | "unknown";
 
@@ -131,8 +134,12 @@ export interface ConfirmResult {
 export interface DispatchOptions {
   /** Target tmux address, e.g. "session:window" or "session:window.pane". */
   target: string;
+  /** Backend to use. Defaults to DISPATCH_BACKEND or tmux. */
+  backend?: DispatchBackend;
   /** The prompt text to deliver. */
   prompt: string;
+  /** Optional original prompt file path; Mosaic can send files natively. */
+  promptFile?: string;
   /**
    * Prefix the delivered prompt with `/goal ` unless it already starts with
    * `/goal`. Useful for making Codewith create a durable goal from the prompt.
@@ -269,6 +276,8 @@ export interface CaptureAiResult {
 /** Options for capturing recent target pane output. */
 export interface CaptureOptions {
   target: string;
+  /** Backend to use. Defaults to DISPATCH_BACKEND or tmux. */
+  backend?: DispatchBackend;
   machine?: string;
   /** Requested recent line count. Defaults and maximum are enforced by the library. */
   lines?: number;
@@ -278,6 +287,7 @@ export interface CaptureOptions {
 /** Result of a bounded pane transcript capture. */
 export interface CaptureResult {
   status: "captured" | "failed";
+  backend?: DispatchBackend;
   target: string;
   machine: string;
   requestedLines: number;
@@ -291,6 +301,20 @@ export interface CaptureResult {
   ai?: CaptureAiResult;
 }
 
+/** Public Mosaic prompt receipt, schema_version mosaic.control.v1. */
+export interface MosaicPromptReceipt {
+  schema_version?: "mosaic.control.v1" | string;
+  event?: "receipt" | string;
+  id?: string;
+  operation?: string;
+  session?: string;
+  pane_id?: string;
+  status?: string;
+  ack?: string;
+  timestamp_ms?: number;
+  error?: unknown;
+}
+
 /** User-facing kind of a persisted scheduled prompt. */
 export type ScheduleKind = "schedule" | "loop";
 
@@ -302,6 +326,8 @@ export interface DispatchRecord {
   id: string;
   /** `prompt` for agent prompts, `exec` for shell command records. Defaults to `prompt` for older records. */
   kind?: DispatchKind;
+  /** Backend used for this record. Older records default to tmux. */
+  backend?: DispatchBackend;
   target: string;
   machine: string;
   prompt: string;
@@ -326,6 +352,8 @@ export interface DispatchRecord {
   detection?: AgentTargetInfo;
   /** Optional pre-delivery transcript capture requested by `captureBeforeLines`. */
   captureBefore?: CaptureResult;
+  /** Native backend receipt, currently used by Mosaic prompt delivery. */
+  receipt?: MosaicPromptReceipt;
   /** Exact tmux input that would be or was sent for exec records. */
   execPlan?: ExecDeliveryPlan;
   createdAt: string;

@@ -20,6 +20,8 @@ import type { Runner } from "../lib/runner.js";
 import { createRunner } from "../lib/runner.js";
 import { loadExecPolicy } from "../lib/exec-policy.js";
 import { inspectListedAgentTarget } from "../lib/agent-target.js";
+import { normalizeBackend } from "../lib/backend.js";
+import { Mosaic } from "../lib/mosaic.js";
 
 export interface CliDeps {
   /** Factory for the client; when provided, the CLI will NOT close it (tests own it). */
@@ -95,6 +97,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .option("--delay <ms>", "override the auto-computed pre-Enter delay", (v) => parseInt(v, 10))
     .option("--retries <n>", "max Enter retries if not confirmed; queued Tab delivery is single-shot", (v) => parseInt(v, 10))
     .option("--mode <mode>", "delivery mode: auto | paste | literal", "auto")
+    .option("--backend <backend>", "backend: tmux | mosaic (default DISPATCH_BACKEND or tmux)")
     .option("--json", "output JSON")
     .action(async (opts) => {
       const stdin = opts.prompt || opts.file ? deps.stdin : deps.stdin ?? (await readStdinIfPiped());
@@ -114,6 +117,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
           targets: opts.from === "sessions-query" ? undefined : targets,
           sessionsQuery: opts.sessionsQuery,
           prompt,
+          promptFile: opts.file,
           goal: opts.goal === true,
           machine: opts.machine,
           submit: opts.submit,
@@ -122,6 +126,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
           submitDelayMs: opts.delay,
           maxSubmitRetries: opts.retries,
           mode: opts.mode,
+          backend: normalizeBackend(opts.backend),
           ifIdle: opts.ifIdle === true || (opts.queue !== true && opts.forceActive !== true),
           queue: opts.queue === true,
           forceActive: opts.forceActive === true,
@@ -142,6 +147,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
       const options: DispatchOptions = {
         target: targets[0]!.target,
         prompt,
+        promptFile: opts.file,
         goal: opts.goal === true,
         machine: opts.machine,
         submitKey: normalizeSubmitKeyOption(opts.submitKey),
@@ -155,6 +161,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
         submitDelayMs: opts.delay,
         maxSubmitRetries: opts.retries,
         mode: opts.mode,
+        backend: normalizeBackend(opts.backend),
       };
       const rec = await withClient((c) => c.send(options));
       out(opts.json ? JSON.stringify(rec, null, 2) : formatRecord(rec));
@@ -191,11 +198,13 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .option("--prompt <text>", "custom AI transform prompt")
     .option("--provider <name>", "AI provider: groq | cerebras | openai | none")
     .option("--model <model>", "AI model override")
+    .option("--backend <backend>", "backend: tmux | mosaic (default DISPATCH_BACKEND or tmux)")
     .option("--json", "output JSON")
     .action(async (opts) => {
       const aiRequested = opts.ai === true || opts.transform !== undefined || opts.prompt !== undefined;
       const options: CaptureOptions = {
         target: opts.to,
+        backend: normalizeBackend(opts.backend),
         machine: opts.machine,
         lines: opts.lines,
         ai: aiRequested
@@ -306,31 +315,38 @@ export function buildProgram(deps: CliDeps = {}): Command {
 
   program
     .command("targets")
-    .description("List dispatchable tmux targets (panes) on a machine")
+    .description("List dispatchable targets (panes) on a machine")
     .option("-m, --machine <id>", "machine to enumerate (local when omitted)")
     .option("-n, --limit <n>", "max rows", parseIntegerOption("limit", 1))
+    .option("--backend <backend>", "backend: tmux | mosaic (default DISPATCH_BACKEND or tmux)")
     .option("--verbose", "include compact detection/capability details")
     .option("--json", "output JSON")
     .action(async (opts) => {
-      const tmux = new Tmux(await makeRunner(opts.machine));
-      const allTargets = tmux.listTargets();
+      const backend = normalizeBackend(opts.backend);
+      const runner = await makeRunner(opts.machine);
+      const tmux = backend === "tmux" ? new Tmux(runner) : undefined;
+      const allTargets = backend === "mosaic" ? new Mosaic(runner).listTargets() : tmux!.listTargets();
       const limit = opts.limit ?? (opts.json ? undefined : 50);
       const selectedTargets = limit === undefined ? allTargets : allTargets.slice(0, limit);
-      const targets = opts.json || opts.verbose
-        ? selectedTargets.map((target) => ({
-            ...target,
-            detection: inspectListedAgentTarget(tmux, target.target, {
-              assumeExists: true,
-              paneCommand: target.paneCommand,
-              cwd: target.cwd,
-              panePid: target.panePid,
-            }).detection,
-          }))
-        : selectedTargets;
+      const targets =
+        backend === "mosaic"
+          ? selectedTargets
+          : opts.json || opts.verbose
+            ? selectedTargets.map((target) => ({
+                ...target,
+                backend: "tmux",
+                detection: inspectListedAgentTarget(tmux!, target.target, {
+                  assumeExists: true,
+                  paneCommand: target.paneCommand,
+                  cwd: target.cwd,
+                  panePid: target.panePid,
+                }).detection,
+              }))
+            : selectedTargets.map((target) => ({ ...target, backend: "tmux" }));
       if (opts.json) {
         out(JSON.stringify(targets, null, 2));
       } else if (targets.length === 0) {
-        out("no tmux targets found");
+        out(`no ${backend} targets found`);
       } else {
         out(`targets: showing ${targets.length} of ${allTargets.length}${opts.machine ? ` on ${opts.machine}` : ""}`);
         for (const t of targets) {
@@ -362,6 +378,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .option("--if-idle", "refuse delivery unless the target looks idle when fired")
     .option("--queue", "queue on active agents that prove Tab queued-message support when fired")
     .option("--force-active", "explicitly override active/unknown target refusal when fired")
+    .option("--backend <backend>", "backend: tmux | mosaic (default DISPATCH_BACKEND or tmux)")
     .option("--json", "output JSON")
     .action(async (opts) => {
       const stdin = opts.prompt || opts.file ? deps.stdin : deps.stdin ?? (await readStdinIfPiped());
@@ -370,7 +387,9 @@ export function buildProgram(deps: CliDeps = {}): Command {
         c.schedule({
           options: {
             target: opts.to,
+            backend: normalizeBackend(opts.backend),
             prompt,
+            promptFile: opts.file,
             goal: opts.goal === true,
             machine: opts.machine,
             ifIdle: opts.ifIdle === true,
@@ -400,6 +419,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .option("--if-idle", "refuse delivery unless the target looks idle when fired")
     .option("--queue", "queue on active agents that prove Tab queued-message support when fired")
     .option("--force-active", "explicitly override active/unknown target refusal when fired")
+    .option("--backend <backend>", "backend: tmux | mosaic (default DISPATCH_BACKEND or tmux)")
     .option("--json", "output JSON")
     .action(async (opts) => {
       const stdin = opts.prompt || opts.file ? deps.stdin : deps.stdin ?? (await readStdinIfPiped());
@@ -408,7 +428,9 @@ export function buildProgram(deps: CliDeps = {}): Command {
         c.loop({
           options: {
             target: opts.to,
+            backend: normalizeBackend(opts.backend),
             prompt,
+            promptFile: opts.file,
             goal: opts.goal === true,
             machine: opts.machine,
             ifIdle: opts.ifIdle === true,

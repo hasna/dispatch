@@ -7,6 +7,8 @@ Driving coding agents (Claude Code, Codex, …) that live in tmux windows by han
 composer), long prompts get mangled, there's no delivery confirmation, and it doesn't
 work across machines. `dispatch` makes this a first-class, reliable tool — with a **CLI**,
 an **MCP server**, a programmatic **SDK**, and a **live daemon** for scheduled dispatches.
+tmux is the default backend; an optional Open Mosaic backend is available for Mosaic
+sessions without changing existing tmux behavior.
 
 ```bash
 bun install -g @hasna/dispatch        # or: npm install -g @hasna/dispatch
@@ -35,7 +37,7 @@ See [docs/reliability.md](docs/reliability.md) for the full mechanism.
 
 ```bash
 bun install -g @hasna/dispatch
-# requires tmux on the target host; Bun >= 1.0
+# requires tmux on the target host for the default backend; Bun >= 1.0
 ```
 
 ## CLI
@@ -122,7 +124,7 @@ dispatch send --machine spark01 --to work:agent.1 --prompt "build it" --json
 
 Key flags: `--to <session:window[.pane]>`, `--prompt`/`--file`/stdin, `--machine`,
 `--goal`, `--submit-key Enter|Tab`, `--queue`, `--no-submit`, `--no-confirm`, `--delay <ms>`, `--retries <n>`,
-`--mode auto|paste|literal`, `--json`.
+`--mode auto|paste|literal`, `--backend tmux|mosaic`, `--json`.
 
 `--goal` prefixes the delivered prompt with `/goal ` unless it already starts with
 `/goal`. The prefix happens after `--prompt`/`--file`/stdin resolution and before
@@ -272,6 +274,53 @@ dispatch targets --verbose       # include detection/capability summary
 dispatch targets --machine spark01 --json
 ```
 
+### Optional Open Mosaic Backend
+
+tmux remains the default backend. To use Open Mosaic, install a `mosaic` binary on
+`PATH` and select it explicitly with `--backend mosaic` or set
+`DISPATCH_BACKEND=mosaic`. The backend uses the native Mosaic control CLI directly;
+it does not use tmux shims. You can override the binary path with
+`DISPATCH_MOSAIC_BIN=/path/to/mosaic`.
+
+Mosaic targets use `<session>:<pane_id>` because native prompt delivery requires a
+session and pane id. Discover them with:
+
+```bash
+dispatch targets --backend mosaic
+dispatch targets --backend mosaic --json
+```
+
+Examples:
+
+```bash
+# Send text through native Mosaic prompt delivery.
+dispatch send --backend mosaic --to work:terminal_1 --prompt "status?"
+
+# File input is read by dispatch and delivered as resolved text so the recorded
+# prompt always matches what Mosaic receives.
+dispatch send --backend mosaic --to work:terminal_1 --file ./prompt.md
+
+# Queue or type without submitting using Mosaic-native flags.
+dispatch send --backend mosaic --to work:terminal_1 --prompt "next task" --queue
+dispatch send --backend mosaic --to work:terminal_1 --prompt "draft" --no-submit
+
+# Validate via Mosaic's top-level dry-run mode.
+dispatch send --backend mosaic --to work:terminal_1 --prompt "status?" --dry-run --json
+
+# Capture recent output through Mosaic.
+dispatch capture --backend mosaic --to work:terminal_1 --lines 120
+```
+
+Mosaic prompt records include `backend: "mosaic"` and the native receipt in JSON
+status/list output. Receipt status `accepted` means the Mosaic server accepted the
+write, queue, or no-submit action; it does not prove that the terminal process has
+consumed the bytes or completed work. Queued sends preserve queued semantics in the
+record confirmation (`confirm.queued: true`), and `--submit-key Tab` maps to Mosaic
+queue mode. This first slice supports single-target Mosaic sends and capture; bulk
+Mosaic fan-out, `--if-idle` active-state proof, and AI transforms over Mosaic captures
+are intentionally left out until the native API stabilizes further. Mosaic `--if-idle`
+fails closed unless `--queue` or `--force-active` is passed deliberately.
+
 ### Schedule
 
 ```bash
@@ -287,6 +336,9 @@ dispatch schedule --to work:agent --prompt "run nightly suite" --cron "0 2 * * *
 
 # Recurring interval loop
 dispatch loop --to work:agent --prompt "capture status and report blockers" --every 5m --name status-loop
+
+# Mosaic schedules carry the backend option and fire through Mosaic when due.
+dispatch schedule --backend mosaic --to work:terminal_1 --prompt "later" --in 30m
 
 dispatch schedules            # list schedules and loops
 dispatch loops                # list interval loops
