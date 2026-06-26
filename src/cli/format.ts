@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { BulkDispatchResult, CaptureResult, DispatchRecord, ScheduledDispatch } from "../types.js";
+import type { BulkDispatchResult, CaptureResult, DispatchRecord, FleetSummaryResult, ScheduledDispatch } from "../types.js";
 
 /**
  * Resolve the prompt text from the flags: --prompt wins, else --file, else
@@ -215,6 +215,33 @@ export function formatBulk(result: BulkDispatchResult): string {
   const omitted = result.records.length - shown.length;
   if (omitted > 0) lines.push(`… ${omitted} more record(s) omitted`);
   lines.push("hint: use --json for full records");
+  return lines.join("\n");
+}
+
+export function formatFleetSummary(result: FleetSummaryResult): string {
+  const lines = [
+    `${result.status === "completed" ? "OK" : "FAIL"} fleet summary machine=${result.machine} matched=${result.matchedTargets} inspected=${result.inspectedTargets} limit=${result.limit} maxPaneChars=${result.maxPaneChars}`,
+    `states working=${result.totals.working} idle=${result.totals.idle} stuck=${result.totals.stuck} error=${result.totals.error} blocked=${result.totals.blocked}`,
+  ];
+  if (result.preflight) {
+    lines.push(
+      `preflight ai=${result.preflight.ok ? "ok" : "failed"} provider=${result.preflight.provider}${result.preflight.model ? ` model=${result.preflight.model}` : ""}${result.preflight.detail ? ` detail=${truncateText(result.preflight.detail, 220)}` : ""}`,
+    );
+  }
+  if (result.detail) lines.push(truncateText(result.detail, 500));
+  for (const item of result.items) {
+    const detection = item.detection
+      ? `${item.detection.agentKind}/${item.detection.composerState} receive=${item.detection.canReceivePrompt} queue=${item.detection.canQueuePrompt}`
+      : "unknown/unknown receive=false queue=false";
+    lines.push(
+      `- ${item.target} ${item.classification.state} uncertainty=${item.classification.uncertainty} ${detection} reason=${truncateText(item.classification.reasons.join("; "), 180)}`,
+    );
+    if (item.excerpt) {
+      lines.push(`  excerpt: ${quotePreview(item.excerpt, 180)}${item.excerptTruncated ? " (truncated)" : ""}`);
+    }
+  }
+  if (result.omittedTargets > 0) lines.push(`... ${result.omittedTargets} matched target(s) omitted by limit`);
+  lines.push("hint: use --json for the stable compact schema; raise --limit/--max-pane-chars deliberately for more");
   return lines.join("\n");
 }
 

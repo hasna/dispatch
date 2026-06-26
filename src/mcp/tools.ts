@@ -12,6 +12,7 @@ import { serviceAction } from "../daemon/service.js";
 import { summarizeBulk, summarizeRecord, summarizeSchedule } from "../cli/format.js";
 import { normalizeBackend } from "../lib/backend.js";
 import { Mosaic } from "../lib/mosaic.js";
+import { MAX_FLEET_MAX_PANE_CHARS, MAX_FLEET_SUMMARY_LIMIT, performFleetSummary } from "../lib/fleet-summary.js";
 
 export interface ToolDeps {
   client: DispatchClient;
@@ -475,6 +476,60 @@ export const TOOLS: ToolDef[] = [
       });
       return { items, count: items.length, total: targets.length, limit, compact: !fullDetection, hint: "pass verbose:true for full target detection metadata" };
     },
+  },
+  {
+    name: "dispatch_fleet_summary",
+    verb: "fleet_summary",
+    title: "Summarize fleet state",
+    description:
+      "Build a bounded tmux target summary with pane classification, redacted excerpts, target globs, and optional AI provider preflight.",
+    inputSchema: {
+      machine: z.string().optional().describe("machine to inspect (local when omitted)"),
+      targets: z
+        .union([z.string(), z.array(z.string())])
+        .optional()
+        .describe("target glob(s) or comma-separated globs matched against target and machine/target"),
+      changedSince: z.string().optional().describe("duration threshold, e.g. 5m, for classifying visible active panes as stuck"),
+      changedSinceMs: z.number().int().positive().optional().describe("already-parsed changed-since threshold in milliseconds"),
+      maxPaneChars: z
+        .number()
+        .int()
+        .positive()
+        .max(MAX_FLEET_MAX_PANE_CHARS)
+        .optional()
+        .describe("max redacted excerpt characters per pane (default 1200, capped)"),
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .max(MAX_FLEET_SUMMARY_LIMIT)
+        .optional()
+        .describe("max matched panes to inspect (default 50, capped)"),
+      preflightAi: z.boolean().optional().describe("fail before tmux probing unless an AI transform provider is configured"),
+      provider: z.enum(["groq", "cerebras", "openai", "none"]).optional().describe("AI provider for preflight"),
+      model: z.string().optional().describe("AI model override for preflight"),
+    },
+    handler: async (deps, a) =>
+      performFleetSummary(
+        {
+          machine: a.machine as string | undefined,
+          targets: a.targets as string | string[] | undefined,
+          changedSince: a.changedSince as string | undefined,
+          changedSinceMs: a.changedSinceMs as number | undefined,
+          maxPaneChars: a.maxPaneChars as number | undefined,
+          limit: a.limit as number | undefined,
+          preflightAi: a.preflightAi as boolean | undefined,
+          ai:
+            a.preflightAi || a.provider || a.model
+              ? {
+                  enabled: true,
+                  provider: a.provider as never,
+                  model: a.model as string | undefined,
+                }
+              : undefined,
+        },
+        { tmux: await tmuxFor(deps, a.machine as string | undefined) },
+      ),
   },
   {
     name: "dispatch_daemon_start",

@@ -16,6 +16,8 @@ import type {
   DispatchRecord,
   DispatchStatus,
   ExecOptions,
+  FleetSummaryOptions,
+  FleetSummaryResult,
   KeyOptions,
   ScheduledDispatch,
   ScheduleKind,
@@ -33,6 +35,7 @@ import { performBulkDispatch } from "../lib/bulk.js";
 import { resolveSessionsTargets } from "../lib/sessions-source.js";
 import { normalizeBackend } from "../lib/backend.js";
 import { Mosaic, performMosaicCapture, performMosaicDispatch } from "../lib/mosaic.js";
+import { performFleetSummary } from "../lib/fleet-summary.js";
 
 export interface DispatchClientOptions {
   /** Use an explicit store; otherwise the default sqlite store is opened. */
@@ -120,6 +123,12 @@ export class DispatchClient {
         makeTmux: async (machine?: string) => new Tmux(await createRunner(machine)),
       },
     );
+  }
+
+  /** Build a bounded summary of tmux fleet targets and pane classifications. */
+  async fleetSummary(options: FleetSummaryOptions = {}): Promise<FleetSummaryResult> {
+    const runner = await createRunner(options.machine);
+    return performFleetSummary(options, { tmux: new Tmux(runner) });
   }
 
   /** Look up a previously-recorded dispatch by id. */

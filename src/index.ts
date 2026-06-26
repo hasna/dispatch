@@ -16,6 +16,7 @@ export { performKeyDispatch, normalizeSpecialKey, ALLOWED_SPECIAL_KEYS } from ".
 export {
   performCapture,
   normalizeCaptureLines,
+  preflightCaptureAi,
   stripTerminalControl,
   redactSecrets,
   buildAiTransformPrompt,
@@ -23,6 +24,16 @@ export {
   MAX_CAPTURE_LINES,
 } from "./lib/capture.js";
 export { performBulkDispatch } from "./lib/bulk.js";
+export {
+  performFleetSummary,
+  classifyFleetPane,
+  normalizeTargetGlobs,
+  FLEET_SUMMARY_SCHEMA_VERSION,
+  DEFAULT_FLEET_SUMMARY_LIMIT,
+  MAX_FLEET_SUMMARY_LIMIT,
+  DEFAULT_FLEET_MAX_PANE_CHARS,
+  MAX_FLEET_MAX_PANE_CHARS,
+} from "./lib/fleet-summary.js";
 export {
   Mosaic,
   MosaicControlError,

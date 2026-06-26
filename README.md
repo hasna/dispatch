@@ -27,6 +27,7 @@ dispatch send --to work:agent --prompt "Refactor the parser and add tests"
 | Need to inspect what happened in a pane | **Bounded capture** — `dispatch capture` captures recent transcript lines, strips terminal controls, and redacts obvious secrets before output or optional AI transforms |
 | Need to fan out prompts across live agent sessions | **Bulk/session orchestration** — `dispatch send` supports idle guards, dry-run, jitter/concurrency caps, pre-capture, and fixed `sessions live/status --json` registry probes |
 | Need to know what a pane actually is | **Native agent detection** — Codewith, Codex, Claude Code/Claude, and OpenCode panes are classified from command, process tree, cwd, and live UI proof |
+| Need a token-bounded fleet snapshot | **Fleet summary** — `dispatch fleet summary` filters targets first, captures bounded redacted excerpts, classifies panes, and can fail fast on missing AI provider config |
 | "Did it actually go through?" | **Smart delivery confirmation** — diffs the pane before/after and detects the agent's working/`esc to interrupt` state and the composer clearing |
 | Doesn't work across machines | **Cross-machine** routing through [`@hasna/machines`](https://github.com/hasna/machines) (Tailscale / LAN / SSH) |
 | Fire-and-forget / later | **Scheduled dispatches and loops** (`--at` / `--in` / `--cron` / `--every`) owned by a **persistent daemon** that survives restarts |
@@ -51,6 +52,7 @@ dispatch status     Show a recorded dispatch, schedule, or loop by id
 dispatch show       Show expanded details for a dispatch, schedule, or loop
 dispatch list       List recorded dispatches (newest first)
 dispatch targets    List dispatchable tmux targets (panes) on a machine
+dispatch fleet summary  Summarize bounded fleet and pane state
 dispatch schedule   Queue a dispatch to fire later (--at, --in, --cron, or --every)
 dispatch loop       Create a recurring interval loop (--every)
 dispatch schedules  List scheduled dispatches
@@ -72,6 +74,9 @@ dispatch list                  # compact, 20 rows by default
 dispatch loops                 # compact, 20 rows by default
 dispatch schedules             # compact, 20 rows by default
 dispatch targets               # compact, 50 panes by default
+dispatch targets --json        # JSON, also bounded to 50 panes by default
+dispatch targets --json --all  # explicit full target enumeration
+dispatch fleet summary --json  # compact bounded pane classification
 dispatch status <id>           # one-line status plus next-step hint
 dispatch show <id>             # expanded human-readable details
 dispatch status <id> --verbose # expanded human-readable details
@@ -272,7 +277,18 @@ records store redacted command placeholders plus the hash rather than the raw co
 dispatch targets                 # panes on this machine
 dispatch targets --verbose       # include detection/capability summary
 dispatch targets --machine spark01 --json
+dispatch targets --machine spark01 --json --all   # deliberately inspect every pane
+
+dispatch fleet summary --targets "open-*:*" --changed-since 5m --max-pane-chars 1200 --json
+dispatch fleet summary --machine spark01 --targets "open-dispatch:*" --preflight-ai --json
 ```
+
+`fleet summary` is read-only. It applies `--targets` and `--limit` before pane
+inspection, uses bounded process-tree and pane captures for wrapper Codewith/Codex
+detection, redacts obvious secrets, and returns classifications as
+`working | idle | stuck | error | blocked` with an uncertainty level and reasons.
+`--preflight-ai` checks provider configuration before tmux probing so agent loops can
+fail fast when AI transforms would be unavailable.
 
 ### Optional Open Mosaic Backend
 
@@ -468,7 +484,7 @@ Every CLI verb is also an MCP tool, so agents can dispatch over MCP:
 // register the server: dispatch-mcp  (stdio)
 // tools:
 //   dispatch_send, dispatch_key, dispatch_capture, dispatch_exec, dispatch_status, dispatch_show,
-//   dispatch_list, dispatch_targets,
+//   dispatch_list, dispatch_targets, dispatch_fleet_summary,
 //   dispatch_schedule, dispatch_loop, dispatch_schedules, dispatch_loops,
 //   dispatch_cancel, dispatch_pause, dispatch_resume, dispatch_clear,
 //   dispatch_daemon_start, dispatch_daemon_stop, dispatch_daemon_status,

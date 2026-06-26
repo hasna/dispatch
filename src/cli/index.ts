@@ -6,6 +6,7 @@ import type { AgentTargetInfo, BulkDispatchOptions, CaptureOptions, CaptureTrans
 import {
   formatBulk,
   formatCapture,
+  formatFleetSummary,
   formatRecord,
   formatRecordDetail,
   formatRecordList,
@@ -22,6 +23,7 @@ import { loadExecPolicy } from "../lib/exec-policy.js";
 import { inspectListedAgentTarget } from "../lib/agent-target.js";
 import { normalizeBackend } from "../lib/backend.js";
 import { Mosaic } from "../lib/mosaic.js";
+import { DEFAULT_FLEET_MAX_PANE_CHARS, DEFAULT_FLEET_SUMMARY_LIMIT, performFleetSummary } from "../lib/fleet-summary.js";
 
 export interface CliDeps {
   /** Factory for the client; when provided, the CLI will NOT close it (tests own it). */
@@ -318,6 +320,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .description("List dispatchable targets (panes) on a machine")
     .option("-m, --machine <id>", "machine to enumerate (local when omitted)")
     .option("-n, --limit <n>", "max rows", parseIntegerOption("limit", 1))
+    .option("--all", "include every target; default output is bounded to avoid expensive fleet captures")
     .option("--backend <backend>", "backend: tmux | mosaic (default DISPATCH_BACKEND or tmux)")
     .option("--verbose", "include compact detection/capability details")
     .option("--json", "output JSON")
@@ -326,7 +329,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
       const runner = await makeRunner(opts.machine);
       const tmux = backend === "tmux" ? new Tmux(runner) : undefined;
       const allTargets = backend === "mosaic" ? new Mosaic(runner).listTargets() : tmux!.listTargets();
-      const limit = opts.limit ?? (opts.json ? undefined : 50);
+      const limit = opts.all === true ? undefined : (opts.limit ?? 50);
       const selectedTargets = limit === undefined ? allTargets : allTargets.slice(0, limit);
       const targets =
         backend === "mosaic"
@@ -363,6 +366,45 @@ export function buildProgram(deps: CliDeps = {}): Command {
         }
         out("hint: use --verbose for detection details or --json for full target metadata");
       }
+    });
+
+  const fleet = program.command("fleet").description("Summarize bounded fleet and pane state");
+
+  fleet
+    .command("summary")
+    .description("Build a bounded target summary with pane classification and optional AI provider preflight")
+    .option("--targets <glob>", "target glob or comma-separated globs matched against target and machine/target", "*")
+    .option("--changed-since <duration>", "classify visible active panes as stuck when status age is at least this duration")
+    .option("--max-pane-chars <n>", "max redacted excerpt characters per pane", parseIntegerOption("max-pane-chars", 1), DEFAULT_FLEET_MAX_PANE_CHARS)
+    .option("-n, --limit <n>", "max matched panes to inspect", parseIntegerOption("limit", 1), DEFAULT_FLEET_SUMMARY_LIMIT)
+    .option("-m, --machine <id>", "machine to enumerate (local when omitted)")
+    .option("--preflight-ai", "fail before tmux probing unless an AI transform provider is configured")
+    .option("--provider <name>", "AI provider for preflight: groq | cerebras | openai | none")
+    .option("--model <model>", "AI model override for preflight")
+    .option("--json", "output JSON")
+    .action(async (opts) => {
+      const runner = await makeRunner(opts.machine);
+      const result = performFleetSummary(
+        {
+          machine: opts.machine,
+          targets: opts.targets,
+          changedSince: opts.changedSince,
+          maxPaneChars: opts.maxPaneChars,
+          limit: opts.limit,
+          preflightAi: opts.preflightAi === true,
+          ai:
+            opts.preflightAi || opts.provider || opts.model
+              ? {
+                  enabled: true,
+                  provider: opts.provider,
+                  model: opts.model,
+                }
+              : undefined,
+        },
+        { tmux: new Tmux(runner) },
+      );
+      out(opts.json ? JSON.stringify(result, null, 2) : formatFleetSummary(result));
+      if (result.status === "failed") process.exitCode = 1;
     });
 
   program
