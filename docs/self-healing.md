@@ -33,9 +33,10 @@ dispatch self-heal diagnose \
   --json
 ```
 
-For larger evidence, write the bounded sample to a temporary file and pass
-`--error-file` or `--status-file`. This keeps the command non-mutating while
-still producing a consistent diagnosis.
+For larger evidence, write the sample to a temporary file and pass
+`--error-file` or `--status-file`. The CLI reads only bounded head/tail bytes
+from those files, and all returned redacted fields are capped with truncation
+metadata so full prompts, pane captures, and payload tails are not echoed.
 
 ```bash
 dispatch self-heal diagnose --error-file /tmp/dispatch-failure.txt --json
@@ -125,4 +126,3 @@ The smoke must prove the original route is fixed without leaking prompt content.
 
 If the dry-run still fails, do not use tmux paste fallback. Re-enter diagnosis
 with the new redacted error and route the repair to the owning package.
-

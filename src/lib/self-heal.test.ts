@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { diagnoseDispatchSelfHeal, redactSelfHealText } from "./self-heal.js";
+import {
+  SELF_HEAL_MAX_DIRECT_INPUT_CHARS,
+  SELF_HEAL_MAX_DISPLAY_CHARS,
+  diagnoseDispatchSelfHeal,
+  formatSelfHealDiagnosis,
+  redactSelfHealText,
+} from "./self-heal.js";
 
 describe("dispatch self-heal diagnosis", () => {
   test("redacts common secret-looking values", () => {
@@ -61,5 +67,29 @@ describe("dispatch self-heal diagnosis", () => {
     expect(diagnosis.category).toBe("machine");
     expect(diagnosis.repairRoute).toMatch(/open-machines/);
     expect(diagnosis.nextActions.join("\n")).toMatch(/spark01, spark02, and apple03/);
+  });
+
+  test("bounds oversized inputs without echoing the payload tail", () => {
+    const tailPayload = "TAIL_PAYLOAD_SHOULD_NOT_BE_RETURNED";
+    const oversized = [
+      "large prompt body",
+      "x".repeat(SELF_HEAL_MAX_DIRECT_INPUT_CHARS + 300),
+      `dispatch: unknown option --from ${tailPayload}`,
+    ].join("\n");
+    const diagnosis = diagnoseDispatchSelfHeal({ errorText: oversized });
+    const formatted = formatSelfHealDiagnosis(diagnosis);
+
+    expect(diagnosis.category).toBe("stale_package");
+    expect(diagnosis.redacted.errorText).toContain("self-heal redacted text truncated");
+    expect(diagnosis.redacted.errorText?.length ?? 0).toBeLessThanOrEqual(SELF_HEAL_MAX_DISPLAY_CHARS);
+    expect(JSON.stringify(diagnosis)).not.toContain(tailPayload);
+    expect(formatted).not.toContain(tailPayload);
+    expect(diagnosis.inputLimits.fields.errorText).toMatchObject({
+      originalChars: oversized.length,
+      classificationChars: SELF_HEAL_MAX_DIRECT_INPUT_CHARS,
+      displayedChars: SELF_HEAL_MAX_DISPLAY_CHARS,
+      truncatedForClassification: true,
+      truncatedForDisplay: true,
+    });
   });
 });

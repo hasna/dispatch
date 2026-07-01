@@ -16,6 +16,21 @@ export interface DispatchSelfHealInput {
   legacyHandoffAuthorized?: boolean;
 }
 
+export const SELF_HEAL_MAX_DIRECT_INPUT_CHARS = 4096;
+export const SELF_HEAL_MAX_FILE_INPUT_BYTES = 8192;
+export const SELF_HEAL_MAX_DISPLAY_CHARS = 1200;
+
+export interface SelfHealTextLimitMetadata {
+  originalChars: number;
+  classificationChars: number;
+  displayedChars: number;
+  truncatedForClassification: boolean;
+  truncatedForDisplay: boolean;
+  omittedClassificationChars: number;
+  maxInputChars: number;
+  maxDisplayChars: number;
+}
+
 export interface DispatchSelfHealDiagnosis {
   dryRun: true;
   mutates: false;
@@ -40,6 +55,18 @@ export interface DispatchSelfHealDiagnosis {
     errorText?: string;
     statusText?: string;
   };
+  inputLimits: {
+    maxDirectInputChars: number;
+    maxFileInputBytes: number;
+    maxDisplayedRedactedChars: number;
+    fields: {
+      target?: SelfHealTextLimitMetadata;
+      machine?: SelfHealTextLimitMetadata;
+      route?: SelfHealTextLimitMetadata;
+      errorText?: SelfHealTextLimitMetadata;
+      statusText?: SelfHealTextLimitMetadata;
+    };
+  };
 }
 
 interface Rule {
@@ -48,6 +75,21 @@ interface Rule {
   reason: string;
   patterns: RegExp[];
 }
+
+interface BoundedText {
+  text: string;
+  truncated: boolean;
+  omittedChars: number;
+}
+
+interface PreparedSelfHealText {
+  classificationText: string;
+  redactedText: string;
+  metadata: SelfHealTextLimitMetadata;
+}
+
+const CLASSIFICATION_TRUNCATION_MARKER = "\n[... self-heal classification input truncated ...]\n";
+const DISPLAY_TRUNCATION_MARKER = "\n[... self-heal redacted text truncated; see inputLimits metadata ...]";
 
 const SECRET_PATTERNS: Array<[RegExp, string]> = [
   [/\bsk-(?:ant|proj)-[A-Za-z0-9_-]+\b/g, "[REDACTED:api-key]"],
@@ -173,15 +215,94 @@ export function redactSelfHealText(input: string | undefined): string | undefine
   return redacted;
 }
 
-export function diagnoseDispatchSelfHeal(input: DispatchSelfHealInput): DispatchSelfHealDiagnosis {
-  const redacted = {
-    target: redactSelfHealText(input.target),
-    machine: redactSelfHealText(input.machine),
-    route: redactSelfHealText(input.route),
-    errorText: redactSelfHealText(input.errorText),
-    statusText: redactSelfHealText(input.statusText),
+function truncateMiddle(input: string, maxChars: number): BoundedText {
+  if (input.length <= maxChars) return { text: input, truncated: false, omittedChars: 0 };
+  const budget = maxChars - CLASSIFICATION_TRUNCATION_MARKER.length;
+  if (budget <= 0) {
+    return {
+      text: CLASSIFICATION_TRUNCATION_MARKER.slice(0, maxChars),
+      truncated: true,
+      omittedChars: input.length,
+    };
+  }
+  const headChars = Math.ceil(budget / 2);
+  const tailChars = Math.floor(budget / 2);
+  return {
+    text: `${input.slice(0, headChars)}${CLASSIFICATION_TRUNCATION_MARKER}${input.slice(input.length - tailChars)}`,
+    truncated: true,
+    omittedChars: input.length - headChars - tailChars,
   };
-  const corpus = [input.target, input.machine, input.route, input.errorText, input.statusText].filter(Boolean).join("\n");
+}
+
+function truncateDisplay(input: string, originalChars: number, maxChars: number, forceTruncated: boolean): BoundedText {
+  if (!forceTruncated && input.length <= maxChars) return { text: input, truncated: false, omittedChars: 0 };
+  const budget = maxChars - DISPLAY_TRUNCATION_MARKER.length;
+  if (budget <= 0) {
+    return {
+      text: DISPLAY_TRUNCATION_MARKER.slice(0, maxChars),
+      truncated: true,
+      omittedChars: Math.max(0, originalChars),
+    };
+  }
+  const headChars = Math.min(input.length, budget);
+  return {
+    text: `${input.slice(0, headChars)}${DISPLAY_TRUNCATION_MARKER}`,
+    truncated: true,
+    omittedChars: Math.max(0, originalChars - headChars),
+  };
+}
+
+function prepareSelfHealText(input: string | undefined): PreparedSelfHealText | undefined {
+  if (input === undefined) return undefined;
+  const classification = truncateMiddle(input, SELF_HEAL_MAX_DIRECT_INPUT_CHARS);
+  const displaySource = input.slice(0, SELF_HEAL_MAX_DIRECT_INPUT_CHARS);
+  const redactedDisplaySource = redactSelfHealText(displaySource) ?? "";
+  const display = truncateDisplay(
+    redactedDisplaySource,
+    input.length,
+    SELF_HEAL_MAX_DISPLAY_CHARS,
+    input.length > displaySource.length || input.length > SELF_HEAL_MAX_DISPLAY_CHARS,
+  );
+  return {
+    classificationText: classification.text,
+    redactedText: display.text,
+    metadata: {
+      originalChars: input.length,
+      classificationChars: classification.text.length,
+      displayedChars: display.text.length,
+      truncatedForClassification: classification.truncated,
+      truncatedForDisplay: display.truncated,
+      omittedClassificationChars: classification.omittedChars,
+      maxInputChars: SELF_HEAL_MAX_DIRECT_INPUT_CHARS,
+      maxDisplayChars: SELF_HEAL_MAX_DISPLAY_CHARS,
+    },
+  };
+}
+
+export function diagnoseDispatchSelfHeal(input: DispatchSelfHealInput): DispatchSelfHealDiagnosis {
+  const prepared = {
+    target: prepareSelfHealText(input.target),
+    machine: prepareSelfHealText(input.machine),
+    route: prepareSelfHealText(input.route),
+    errorText: prepareSelfHealText(input.errorText),
+    statusText: prepareSelfHealText(input.statusText),
+  };
+  const redacted = {
+    target: prepared.target?.redactedText,
+    machine: prepared.machine?.redactedText,
+    route: prepared.route?.redactedText,
+    errorText: prepared.errorText?.redactedText,
+    statusText: prepared.statusText?.redactedText,
+  };
+  const corpus = [
+    prepared.target?.classificationText,
+    prepared.machine?.classificationText,
+    prepared.route?.classificationText,
+    prepared.errorText?.classificationText,
+    prepared.statusText?.classificationText,
+  ]
+    .filter(Boolean)
+    .join("\n");
   const matched = RULES.find((rule) => rule.patterns.some((pattern) => pattern.test(corpus)));
   const category = matched?.category ?? "unknown";
   const fallbackAllowed = input.legacyHandoffAuthorized === true;
@@ -206,6 +327,18 @@ export function diagnoseDispatchSelfHeal(input: DispatchSelfHealInput): Dispatch
       ignoreIfNonresponsive: ["apple01"],
     },
     redacted,
+    inputLimits: {
+      maxDirectInputChars: SELF_HEAL_MAX_DIRECT_INPUT_CHARS,
+      maxFileInputBytes: SELF_HEAL_MAX_FILE_INPUT_BYTES,
+      maxDisplayedRedactedChars: SELF_HEAL_MAX_DISPLAY_CHARS,
+      fields: {
+        target: prepared.target?.metadata,
+        machine: prepared.machine?.metadata,
+        route: prepared.route?.metadata,
+        errorText: prepared.errorText?.metadata,
+        statusText: prepared.statusText?.metadata,
+      },
+    },
   };
 }
 
@@ -219,6 +352,7 @@ export function formatSelfHealDiagnosis(diagnosis: DispatchSelfHealDiagnosis): s
     `fallback detail: ${diagnosis.fallbackPolicy.detail}`,
     `affected machines: check ${diagnosis.affectedMachineChecks.check.join(", ")}; ignore ${diagnosis.affectedMachineChecks.ignoreIfNonresponsive.join(", ")} if nonresponsive`,
     `repair route: ${diagnosis.repairRoute}`,
+    `input bounds: direct ${diagnosis.inputLimits.maxDirectInputChars} chars; files ${diagnosis.inputLimits.maxFileInputBytes} bytes; displayed redacted ${diagnosis.inputLimits.maxDisplayedRedactedChars} chars`,
     "next actions:",
     ...diagnosis.nextActions.map((action) => `  - ${action}`),
   ];
@@ -226,7 +360,15 @@ export function formatSelfHealDiagnosis(diagnosis: DispatchSelfHealDiagnosis): s
   if (diagnosis.redacted.machine) lines.push(`machine: ${diagnosis.redacted.machine}`);
   if (diagnosis.redacted.route) lines.push(`route: ${diagnosis.redacted.route}`);
   if (diagnosis.redacted.errorText) lines.push(`error: ${diagnosis.redacted.errorText}`);
+  if (diagnosis.inputLimits.fields.errorText?.truncatedForDisplay) {
+    const meta = diagnosis.inputLimits.fields.errorText;
+    lines.push(`error metadata: originalChars=${meta.originalChars}; displayedChars=${meta.displayedChars}; truncated=true`);
+  }
   if (diagnosis.redacted.statusText) lines.push(`status: ${diagnosis.redacted.statusText}`);
+  if (diagnosis.inputLimits.fields.statusText?.truncatedForDisplay) {
+    const meta = diagnosis.inputLimits.fields.statusText;
+    lines.push(`status metadata: originalChars=${meta.originalChars}; displayedChars=${meta.displayedChars}; truncated=true`);
+  }
   return lines.join("\n");
 }
 

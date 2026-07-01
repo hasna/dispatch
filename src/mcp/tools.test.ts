@@ -9,6 +9,7 @@ import { Tmux } from "../lib/tmux.js";
 import { Mosaic } from "../lib/mosaic.js";
 import { MockRunner } from "../test/mock-runner.js";
 import { buildProgram } from "../cli/index.js";
+import { SELF_HEAL_MAX_DISPLAY_CHARS } from "../lib/self-heal.js";
 import type {
   BulkDispatchOptions,
   BulkDispatchResult,
@@ -268,6 +269,29 @@ describe("MCP tool handlers", () => {
       affectedMachineChecks: { check: ["spark01", "spark02", "apple03"], ignoreIfNonresponsive: ["apple01"] },
     });
     expect(JSON.stringify(result)).not.toContain(apiKey);
+  });
+
+  test("self-heal diagnose bounds oversized direct input without echoing the tail", async () => {
+    const d = deps();
+    const tailPayload = "MCP_TAIL_PAYLOAD_SHOULD_NOT_BE_RETURNED";
+    const result = await tool("dispatch_self_heal_diagnose").handler(d, {
+      errorText: ["large prompt body", "x".repeat(7000), `TypeError: broken dispatch path ${tailPayload}`].join("\n"),
+    });
+
+    expect(result).toMatchObject({
+      dryRun: true,
+      mutates: false,
+      category: "dispatch_bug",
+    });
+    const diagnosis = result as {
+      redacted: { errorText: string };
+      inputLimits: { fields: { errorText: { truncatedForDisplay: boolean; truncatedForClassification: boolean } } };
+    };
+    expect(diagnosis.redacted.errorText).toContain("self-heal redacted text truncated");
+    expect(diagnosis.redacted.errorText.length).toBeLessThanOrEqual(SELF_HEAL_MAX_DISPLAY_CHARS);
+    expect(JSON.stringify(result)).not.toContain(tailPayload);
+    expect(diagnosis.inputLimits.fields.errorText.truncatedForDisplay).toBe(true);
+    expect(diagnosis.inputLimits.fields.errorText.truncatedForClassification).toBe(true);
   });
 
   test("send forwards goal mode to the client", async () => {

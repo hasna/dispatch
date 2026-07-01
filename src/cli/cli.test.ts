@@ -18,6 +18,7 @@ import {
 import { DispatchClient } from "../sdk/index.js";
 import { Store } from "../lib/store.js";
 import { MockRunner } from "../test/mock-runner.js";
+import { SELF_HEAL_MAX_DISPLAY_CHARS } from "../lib/self-heal.js";
 import type {
   BulkDispatchOptions,
   BulkDispatchResult,
@@ -449,6 +450,25 @@ describe("CLI read/schedule commands (in-memory client)", () => {
     expect(JSON.stringify(diagnosis)).not.toContain(apiKey);
     expect(diagnosis.fallbackPolicy.detail).toMatch(/tmux prompt paste fallback is forbidden/i);
     expect(diagnosis.affectedMachineChecks.check).toEqual(["spark01", "spark02", "apple03"]);
+  });
+
+  test("self-heal diagnose bounds oversized file evidence without echoing the tail", async () => {
+    const { program, out } = runner();
+    const tailPayload = "CLI_TAIL_PAYLOAD_SHOULD_NOT_BE_RETURNED";
+    const file = join(tmpdir(), `dispatch_self_heal_${process.pid}.txt`);
+    writeFileSync(file, ["large prompt body", "x".repeat(12000), `dispatch: unknown option --from ${tailPayload}`].join("\n"));
+    try {
+      await program.parseAsync(["self-heal", "diagnose", "--error-file", file, "--json"], { from: "user" });
+    } finally {
+      rmSync(file, { force: true });
+    }
+
+    const diagnosis = JSON.parse(out.join("\n"));
+    expect(diagnosis.category).toBe("stale_package");
+    expect(diagnosis.redacted.errorText).toContain("self-heal redacted text truncated");
+    expect(diagnosis.redacted.errorText.length).toBeLessThanOrEqual(SELF_HEAL_MAX_DISPLAY_CHARS);
+    expect(JSON.stringify(diagnosis)).not.toContain(tailPayload);
+    expect(diagnosis.inputLimits.fields.errorText.truncatedForDisplay).toBe(true);
   });
 
   test("loops defaults to compact capped output", async () => {
