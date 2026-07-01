@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { readFileSync } from "node:fs";
 import { Command, InvalidArgumentError } from "commander";
 import { getPackageVersion } from "../lib/version.js";
 import { DispatchClient } from "../sdk/index.js";
@@ -22,6 +23,7 @@ import { loadExecPolicy } from "../lib/exec-policy.js";
 import { inspectListedAgentTarget } from "../lib/agent-target.js";
 import { normalizeBackend } from "../lib/backend.js";
 import { Mosaic } from "../lib/mosaic.js";
+import { diagnoseDispatchSelfHeal, formatSelfHealDiagnosis } from "../lib/self-heal.js";
 
 export interface CliDeps {
   /** Factory for the client; when provided, the CLI will NOT close it (tests own it). */
@@ -363,6 +365,33 @@ export function buildProgram(deps: CliDeps = {}): Command {
         }
         out("hint: use --verbose for detection details or --json for full target metadata");
       }
+    });
+
+  const selfHeal = program.command("self-heal").description("Read-only dispatch failure diagnosis and recovery guidance");
+
+  selfHeal
+    .command("diagnose")
+    .description("Classify a dispatch failure from bounded, redacted context and recommend the next safe action")
+    .option("-t, --to <target>", "original dispatch target")
+    .option("-m, --machine <id>", "original machine id")
+    .option("--route <text>", "short route/source description, for example sessions-query:open-router")
+    .option("--error <text>", "failure text to classify")
+    .option("--error-file <path>", "read failure text from a file")
+    .option("--status-file <path>", "read bounded status JSON/text from a file")
+    .option("--legacy-handoff-authorized", "record that the user explicitly authorized a legacy/emergency tmux paste handoff")
+    .option("--json", "output JSON")
+    .action((opts) => {
+      const errorText = opts.error ?? (opts.errorFile ? readFileSync(opts.errorFile, "utf8") : undefined);
+      const statusText = opts.statusFile ? readFileSync(opts.statusFile, "utf8") : undefined;
+      const diagnosis = diagnoseDispatchSelfHeal({
+        target: opts.to,
+        machine: opts.machine,
+        route: opts.route,
+        errorText,
+        statusText,
+        legacyHandoffAuthorized: opts.legacyHandoffAuthorized === true,
+      });
+      out(opts.json ? JSON.stringify(diagnosis, null, 2) : formatSelfHealDiagnosis(diagnosis));
     });
 
   program

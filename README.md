@@ -60,6 +60,7 @@ dispatch resume     Resume a paused schedule/loop
 dispatch clear      Delete a schedule/loop
 dispatch cancel     Cancel a scheduled dispatch
 dispatch daemon     start | ensure | restart | status | doctor | service | stop
+dispatch self-heal  diagnose
 ```
 
 ### Output defaults
@@ -223,6 +224,28 @@ Provider-specific keys/models are also supported: `GROQ_API_KEY`/`GROQ_MODEL`,
 `CEREBRAS_API_KEY`/`CEREBRAS_MODEL`, and `OPENAI_API_KEY`/`OPENAI_MODEL`. If `--ai`
 is requested without credentials, capture still returns the raw redacted transcript
 and reports an actionable AI failure.
+
+### Self-Healing
+
+`dispatch self-heal diagnose` is a read-only runbook helper for failed dispatch
+routes. It accepts bounded error/status context, redacts common secret-looking
+values, classifies the failure as `target`, `auth`, `machine`, `stale_package`,
+`routing`, `dispatch_bug`, or `unknown`, and recommends the next safe repair step.
+
+```bash
+dispatch self-heal diagnose \
+  --to work:agent \
+  --machine spark01 \
+  --route "sessions-query:open-router" \
+  --error "target not found" \
+  --json
+```
+
+The command does not mutate repos, package installs, daemon state, or machine
+configuration. Its fallback policy forbids tmux prompt paste unless the user has
+explicitly authorized a legacy/emergency handoff for the incident. See
+[docs/self-healing.md](docs/self-healing.md) for the full capture, classification,
+repair, daemon restart, and original-route smoke runbook.
 
 ### Exec
 
@@ -533,7 +556,7 @@ bun run build
 ```
 
 See [AGENTS.md](AGENTS.md) for repo conventions and [docs/](docs/) for architecture,
-reliability, and cross-machine details.
+reliability, self-healing, and cross-machine details.
 
 ## License
 

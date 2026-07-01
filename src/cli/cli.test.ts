@@ -418,6 +418,39 @@ describe("CLI read/schedule commands (in-memory client)", () => {
     expect(r.argvs().some((a) => a[0] === "sh" && a[2]?.includes("head -n") && a[2]?.includes("cut -c"))).toBe(true);
   });
 
+  test("self-heal diagnose emits redacted read-only JSON guidance", async () => {
+    const { program, out } = runner();
+    const apiKey = "sk-" + "proj-" + "secret";
+
+    await program.parseAsync(
+      [
+        "self-heal",
+        "diagnose",
+        "--to",
+        "work:agent",
+        "--machine",
+        "spark01",
+        "--route",
+        "sessions-query:open-router",
+        "--error",
+        `unknown option --from with Authorization: Bearer ${apiKey}`,
+        "--json",
+      ],
+      { from: "user" },
+    );
+
+    const diagnosis = JSON.parse(out.join("\n"));
+    expect(diagnosis).toMatchObject({
+      dryRun: true,
+      mutates: false,
+      category: "stale_package",
+      fallbackPolicy: { tmuxPasteFallbackAllowed: false },
+    });
+    expect(JSON.stringify(diagnosis)).not.toContain(apiKey);
+    expect(diagnosis.fallbackPolicy.detail).toMatch(/tmux prompt paste fallback is forbidden/i);
+    expect(diagnosis.affectedMachineChecks.check).toEqual(["spark01", "spark02", "apple03"]);
+  });
+
   test("loops defaults to compact capped output", async () => {
     const { store, program, out } = runner();
     for (let i = 0; i < 25; i += 1) {
