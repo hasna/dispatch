@@ -250,6 +250,26 @@ describe("MCP tool handlers", () => {
     }
   });
 
+  test("self-heal diagnose returns redacted read-only guidance", async () => {
+    const d = deps();
+    const apiKey = "sk-" + "proj-" + "secret";
+    const result = await tool("dispatch_self_heal_diagnose").handler(d, {
+      target: "work:agent",
+      machine: "spark01",
+      route: "sessions-query:open-router",
+      errorText: `unknown option --from with Authorization: Bearer ${apiKey}`,
+    });
+
+    expect(result).toMatchObject({
+      dryRun: true,
+      mutates: false,
+      category: "stale_package",
+      fallbackPolicy: { tmuxPasteFallbackAllowed: false },
+      affectedMachineChecks: { check: ["spark01", "spark02", "apple03"], ignoreIfNonresponsive: ["apple01"] },
+    });
+    expect(JSON.stringify(result)).not.toContain(apiKey);
+  });
+
   test("send forwards goal mode to the client", async () => {
     const d = deps();
     let received: DispatchOptions | undefined;
@@ -496,6 +516,10 @@ describe("CLI/MCP parity", () => {
       if (cmd.name() === "daemon") {
         for (const sub of cmd.commands) {
           if (sub.name() !== "run") cliVerbs.add(`daemon_${sub.name()}`);
+        }
+      } else if (cmd.name() === "self-heal") {
+        for (const sub of cmd.commands) {
+          cliVerbs.add(`self_heal_${sub.name()}`);
         }
       } else {
         cliVerbs.add(cmd.name());

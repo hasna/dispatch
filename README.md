@@ -491,7 +491,7 @@ Every CLI verb is also an MCP tool, so agents can dispatch over MCP:
 // register the server: dispatch-mcp  (stdio)
 // tools:
 //   dispatch_send, dispatch_key, dispatch_capture, dispatch_exec, dispatch_status, dispatch_show,
-//   dispatch_list, dispatch_targets,
+//   dispatch_list, dispatch_targets, dispatch_self_heal_diagnose,
 //   dispatch_schedule, dispatch_loop, dispatch_schedules, dispatch_loops,
 //   dispatch_cancel, dispatch_pause, dispatch_resume, dispatch_clear,
 //   dispatch_daemon_start, dispatch_daemon_stop, dispatch_daemon_status,

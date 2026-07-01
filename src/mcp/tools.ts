@@ -12,6 +12,7 @@ import { serviceAction } from "../daemon/service.js";
 import { summarizeBulk, summarizeRecord, summarizeSchedule } from "../cli/format.js";
 import { normalizeBackend } from "../lib/backend.js";
 import { Mosaic } from "../lib/mosaic.js";
+import { diagnoseDispatchSelfHeal } from "../lib/self-heal.js";
 
 export interface ToolDeps {
   client: DispatchClient;
@@ -217,6 +218,30 @@ export const TOOLS: ToolDef[] = [
         forceInterrupt: a.forceInterrupt as boolean | undefined,
         policy: a.policyFile ? loadExecPolicy(a.policyFile as string) : undefined,
       }).then((record) => (a.verbose === true ? record : compactRecordResult(record))),
+  },
+  {
+    name: "dispatch_self_heal_diagnose",
+    verb: "self_heal_diagnose",
+    title: "Diagnose dispatch failure",
+    description:
+      "Read-only dispatch failure diagnosis. Redacts common credential shapes, classifies the failure, and recommends the next safe repair action without mutating repos, daemons, packages, or machines.",
+    inputSchema: {
+      target: z.string().optional().describe("original dispatch target"),
+      machine: z.string().optional().describe("original machine id"),
+      route: z.string().optional().describe("short route/source description"),
+      errorText: z.string().optional().describe("bounded failure text to classify"),
+      statusText: z.string().optional().describe("bounded status JSON/text to classify"),
+      legacyHandoffAuthorized: z.boolean().optional().describe("true only when the user explicitly authorized legacy/emergency tmux paste handoff"),
+    },
+    handler: async (_deps, a) =>
+      diagnoseDispatchSelfHeal({
+        target: a.target as string | undefined,
+        machine: a.machine as string | undefined,
+        route: a.route as string | undefined,
+        errorText: a.errorText as string | undefined,
+        statusText: a.statusText as string | undefined,
+        legacyHandoffAuthorized: a.legacyHandoffAuthorized === true,
+      }),
   },
   {
     name: "dispatch_status",
