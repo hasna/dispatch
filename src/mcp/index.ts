@@ -5,6 +5,7 @@ import { getPackageVersion } from "../lib/version.js";
 import { DispatchClient } from "../sdk/index.js";
 import { Store } from "../lib/store.js";
 import { TOOLS, type ToolDeps } from "./tools.js";
+import { RemoteTargetEnumerationError } from "../lib/tmux.js";
 
 export interface CreateServerOptions {
   /** Inject deps (tests). When omitted, a default store + client are created. */
@@ -35,8 +36,14 @@ export function createServer(opts: CreateServerOptions = {}): McpServer {
           const result = await tool.handler(resolveDeps(), args ?? {});
           return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
         } catch (err) {
+          const text =
+            err instanceof RemoteTargetEnumerationError
+              ? JSON.stringify({ error: err.toJSON() }, null, 2)
+              : err instanceof Error
+                ? err.message
+                : String(err);
           return {
-            content: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }],
+            content: [{ type: "text" as const, text }],
             isError: true,
           };
         }

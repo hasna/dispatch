@@ -11,6 +11,7 @@ import { DispatchClient } from "../sdk/index.js";
 import { Store } from "../lib/store.js";
 import { Tmux } from "../lib/tmux.js";
 import { LocalRunner, type RunResult, type Runner } from "../lib/runner.js";
+import { MockRunner } from "../test/mock-runner.js";
 
 const tmuxAvailable = spawnSync("tmux", ["-V"], { encoding: "utf8" }).status === 0;
 const SESSION = `dispatch_mcp_it_${process.pid}`;
@@ -33,13 +34,13 @@ class SocketTmuxRunner implements Runner {
   }
 }
 
-async function connect(opts: { targetSocket?: string } = {}) {
+async function connect(opts: { targetSocket?: string; makeTmux?: (machine?: string) => Promise<Tmux> } = {}) {
   const store = new Store(join(dataDir, "mcp.db"));
   const server = createServer({
     deps: {
       client: new DispatchClient({ store }),
       store,
-      makeTmux: opts.targetSocket ? async () => new Tmux(new SocketTmuxRunner(opts.targetSocket!)) : undefined,
+      makeTmux: opts.makeTmux ?? (opts.targetSocket ? async () => new Tmux(new SocketTmuxRunner(opts.targetSocket!)) : undefined),
     },
   });
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();
@@ -48,6 +49,39 @@ async function connect(opts: { targetSocket?: string } = {}) {
   await client.connect(clientT);
   return { client, store };
 }
+
+describe("MCP structured remote target errors", () => {
+  test("preserves the typed auth error without leaking remote output", async () => {
+    const runner = new MockRunner("station02");
+    const credentialMarker = "credential-marker-that-must-not-leak";
+    runner.queue.push({
+      stdout: "secret-session:0.0\n",
+      stderr: `Permission denied (publickey). ${credentialMarker}`,
+      exitCode: 255,
+      source: "ssh",
+    });
+    const { client } = await connect({ makeTmux: async () => new Tmux(runner) });
+
+    const response = await client.callTool({
+      name: "dispatch_targets",
+      arguments: { machine: "station02" },
+    });
+
+    expect(response.isError).toBe(true);
+    expect(textOf(response)).toEqual({
+      error: {
+        code: "DISPATCH_REMOTE_AUTH_FAILED",
+        category: "auth",
+        message: "remote target enumeration failed",
+        machine: "station02",
+        source: "ssh",
+        exitCode: 255,
+      },
+    });
+    expect(response.content[0]?.text).not.toContain("secret-session");
+    expect(response.content[0]?.text).not.toContain(credentialMarker);
+  });
+});
 
 function textOf(res: any): any {
   return JSON.parse(res.content[0].text);

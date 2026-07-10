@@ -62,6 +62,18 @@ describe("Tmux command construction", () => {
     expect(new Tmux(r).listTargets()).toEqual([]);
   });
 
+  test("listTargets preserves an empty remote result when tmux reports that no server is running", () => {
+    const r = new MockRunner("station02");
+    r.queue.push({
+      stdout: "",
+      stderr: "no server running on /tmp/tmux-1000/default",
+      exitCode: 1,
+      source: "ssh",
+    });
+
+    expect(new Tmux(r).listTargets()).toEqual([]);
+  });
+
   test("listTargets classifies a remote timeout separately from authentication", () => {
     const r = new MockRunner("station02");
     r.queue.push({
@@ -77,6 +89,40 @@ describe("Tmux command construction", () => {
         category: "transport",
         source: "tailscale",
         exitCode: 124,
+      }),
+    );
+  });
+
+  test("listTargets recognizes SSH handshake authentication failures", () => {
+    const r = new MockRunner("station02");
+    r.queue.push({
+      stdout: "",
+      stderr: "ssh: handshake failed: ssh: unable to authenticate, attempted methods [none publickey], no supported methods remain",
+      exitCode: 255,
+      source: "tailscale",
+    });
+
+    expect(() => new Tmux(r).listTargets()).toThrow(
+      expect.objectContaining({
+        code: "DISPATCH_REMOTE_AUTH_FAILED",
+        category: "auth",
+      }),
+    );
+  });
+
+  test("listTargets does not mistake a remote tmux socket permission error for SSH authentication", () => {
+    const r = new MockRunner("station02");
+    r.queue.push({
+      stdout: "",
+      stderr: "error connecting to /tmp/tmux-1000/default (Permission denied)",
+      exitCode: 1,
+      source: "ssh",
+    });
+
+    expect(() => new Tmux(r).listTargets()).toThrow(
+      expect.objectContaining({
+        code: "DISPATCH_REMOTE_COMMAND_FAILED",
+        category: "remote_command",
       }),
     );
   });

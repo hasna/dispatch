@@ -11,21 +11,30 @@ function safeMachineLabel(machine: string): string {
 function classifyRemoteTargetFailure(result: RunResult): RemoteTargetEnumerationErrorCategory {
   const diagnostic = `${result.stderr}\n${result.stdout}`.slice(0, 8192);
   if (
-    /permission denied|authentication failed|too many authentication failures|no supported authentication methods|access denied/i.test(
-      diagnostic,
-    )
+    /authentication failed|unable to authenticate|too many authentication failures|no supported (?:authentication )?methods(?: remain)?|permission denied \((?:publickey|password|keyboard-interactive|hostbased|gssapi[^,)]*)(?:,[^)]+)*\)/i.test(diagnostic)
   ) {
     return "auth";
   }
   if (
     result.exitCode === 124 ||
-    /timed out|no route to host|network is unreachable|connection (?:refused|reset|closed)|could not resolve hostname|host key verification failed/i.test(
+    result.exitCode === 255 ||
+    /timed out|no route to host|network is unreachable|connection (?:refused|reset|closed)|could not resolve hostname|host key verification failed|remote host identification has changed|ssh(?:_exchange_identification|: handshake failed)|broken pipe/i.test(
       diagnostic,
     )
   ) {
     return "transport";
   }
   return "remote_command";
+}
+
+function isTmuxServerAbsent(result: RunResult): boolean {
+  if (result.exitCode !== 1 || result.stdout.trim().length > 0) return false;
+  const diagnostic = result.stderr.trim();
+  return (
+    /^no server running on [^\r\n]+$/i.test(diagnostic) ||
+    /^error connecting to [^\r\n]+ \(No such file or directory\)$/i.test(diagnostic) ||
+    /^failed to connect to server(?:: No such file or directory)?$/i.test(diagnostic)
+  );
 }
 
 /**
@@ -185,6 +194,7 @@ export class Tmux {
       "#{session_name}:#{window_index}.#{pane_index}\t#{window_name}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_pid}",
     ]);
     if (res.exitCode !== 0) {
+      if (isTmuxServerAbsent(res)) return [];
       if (res.source !== "local") {
         throw new RemoteTargetEnumerationError({
           machine: this.machine,
