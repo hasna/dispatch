@@ -419,6 +419,44 @@ describe("CLI read/schedule commands (in-memory client)", () => {
     expect(r.argvs().some((a) => a[0] === "sh" && a[2]?.includes("head -n") && a[2]?.includes("cut -c"))).toBe(true);
   });
 
+  test("targets --machine --json emits a structured nonzero auth error without target or credential output", async () => {
+    const out: string[] = [];
+    const err: string[] = [];
+    const r = new MockRunner("station02");
+    const credentialMarker = "credential-marker-that-must-not-leak";
+    r.queue.push({
+      stdout: "secret-session:0.0\n",
+      stderr: `Permission denied (publickey). ${credentialMarker}`,
+      exitCode: 255,
+      source: "ssh",
+    });
+    const program = buildProgram({
+      runnerFactory: async () => r,
+      out: (s) => out.push(s),
+      err: (s) => err.push(s),
+    });
+    process.exitCode = 0;
+
+    await program.parseAsync(["targets", "--machine", "station02", "--verbose", "--json"], { from: "user" });
+
+    expect(out).toEqual([]);
+    expect(process.exitCode).toBe(1);
+    const payload = JSON.parse(err.join("\n"));
+    expect(payload).toEqual({
+      error: {
+        code: "DISPATCH_REMOTE_AUTH_FAILED",
+        category: "auth",
+        message: "remote target enumeration failed",
+        machine: "station02",
+        source: "ssh",
+        exitCode: 255,
+      },
+    });
+    expect(err.join("\n")).not.toContain("secret-session");
+    expect(err.join("\n")).not.toContain(credentialMarker);
+    process.exitCode = 0;
+  });
+
   test("self-heal diagnose emits redacted read-only JSON guidance", async () => {
     const { program, out } = runner();
     const apiKey = "sk-" + "proj-" + "secret";

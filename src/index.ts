@@ -59,7 +59,8 @@ export {
 export { computeNextRun, parseCron, parseDurationMs, nextCronRun } from "./lib/schedule.js";
 export { tick } from "./lib/scheduler.js";
 export type { SchedulerDeps, TickResult } from "./lib/scheduler.js";
-export { Tmux, parseTarget, formatTarget } from "./lib/tmux.js";
+export { RemoteTargetEnumerationError, Tmux, parseTarget, formatTarget } from "./lib/tmux.js";
+export type { RemoteTargetEnumerationErrorCategory } from "./lib/tmux.js";
 export { Store } from "./lib/store.js";
 export { createRunner, LocalRunner, RemoteRunner } from "./lib/runner.js";
 export { getPackageVersion } from "./lib/version.js";

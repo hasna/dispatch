@@ -16,7 +16,7 @@ import {
   resolvePrompt,
 } from "./format.js";
 import { registerDaemonCommands } from "./daemon-commands.js";
-import { Tmux } from "../lib/tmux.js";
+import { RemoteTargetEnumerationError, Tmux } from "../lib/tmux.js";
 import type { Runner } from "../lib/runner.js";
 import { createRunner } from "../lib/runner.js";
 import { loadExecPolicy } from "../lib/exec-policy.js";
@@ -351,7 +351,21 @@ export function buildProgram(deps: CliDeps = {}): Command {
       const backend = normalizeBackend(opts.backend);
       const runner = await makeRunner(opts.machine);
       const tmux = backend === "tmux" ? new Tmux(runner) : undefined;
-      const allTargets = backend === "mosaic" ? new Mosaic(runner).listTargets() : tmux!.listTargets();
+      let allTargets;
+      try {
+        allTargets = backend === "mosaic" ? new Mosaic(runner).listTargets() : tmux!.listTargets();
+      } catch (error) {
+        if (!(error instanceof RemoteTargetEnumerationError)) throw error;
+        if (opts.json) {
+          err(JSON.stringify({ error: error.toJSON() }, null, 2));
+        } else {
+          err(
+            `${error.message}: ${error.category} via ${error.source} on ${error.machine} (exit ${error.exitCode}; ${error.code})`,
+          );
+        }
+        process.exitCode = 1;
+        return;
+      }
       const limit = opts.limit ?? (opts.json ? undefined : 50);
       const selectedTargets = limit === undefined ? allTargets : allTargets.slice(0, limit);
       const targets =
