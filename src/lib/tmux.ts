@@ -10,13 +10,13 @@ function safeMachineLabel(machine: string): string {
 
 function classifyRemoteTargetFailure(result: RunResult): RemoteTargetEnumerationErrorCategory {
   const diagnostic = `${result.stderr}\n${result.stdout}`.slice(0, 8192);
+  if (result.exitCode === 124) return "transport";
   if (
     /authentication failed|unable to authenticate|too many authentication failures|no supported (?:authentication )?methods(?: remain)?|permission denied \((?:publickey|password|keyboard-interactive|hostbased|gssapi[^,)]*)(?:,[^)]+)*\)/i.test(diagnostic)
   ) {
     return "auth";
   }
   if (
-    result.exitCode === 124 ||
     result.exitCode === 255 ||
     /timed out|no route to host|network is unreachable|connection (?:refused|reset|closed)|could not resolve hostname|host key verification failed|remote host identification has changed|ssh(?:_exchange_identification|: handshake failed)|broken pipe/i.test(
       diagnostic,

@@ -93,6 +93,24 @@ describe("Tmux command construction", () => {
     );
   });
 
+  test("listTargets treats exit 124 as an authoritative timeout even when diagnostics mention authentication", () => {
+    const r = new MockRunner("station02");
+    r.queue.push({
+      stdout: "partial remote output",
+      stderr: "Permission denied (publickey); remote command timed out",
+      exitCode: 124,
+      source: "tailscale",
+    });
+
+    expect(() => new Tmux(r).listTargets()).toThrow(
+      expect.objectContaining({
+        code: "DISPATCH_REMOTE_TRANSPORT_FAILED",
+        category: "transport",
+        exitCode: 124,
+      }),
+    );
+  });
+
   test("listTargets recognizes SSH handshake authentication failures", () => {
     const r = new MockRunner("station02");
     r.queue.push({
