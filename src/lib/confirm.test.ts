@@ -83,6 +83,13 @@ describe("isPromptParkedInComposer", () => {
     expect(isPromptParkedInComposer("> [Pasted text #2 +1 line]", prompt)).toBe(true);
   });
 
+  test("treats Codewith pasted-content placeholders as parked input", () => {
+    const prompt = `${"very long pasted content ".repeat(600)}FINAL_TAIL_NOT_VISIBLE`;
+
+    expect(isPromptParkedInComposer("› [Pasted Content 1174 chars]", prompt)).toBe(true);
+    expect(isPromptParkedInComposer("> [Pasted Content 1 char]", prompt)).toBe(true);
+  });
+
   test("does not treat a submitted prompt in scrollback above a working footer as parked", () => {
     const prompt = "Please refactor the tokenizer and add unit tests for edge cases.";
     const capture = `› awaiting prompt — idle

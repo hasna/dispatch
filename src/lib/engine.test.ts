@@ -848,6 +848,66 @@ GET /health 200
     expect(r.argvs().filter((a) => a[1] === "send-keys" && a.includes("Enter"))).toHaveLength(1);
   });
 
+  test("accepts a new Codewith pasted-content placeholder as parked before Enter", async () => {
+    const prompt = `${"long hidden prompt body\n".repeat(60)}FINAL_HIDDEN_TAIL`;
+    const r = new MockRunner();
+    let pasted = false;
+    let entered = false;
+
+    r.responder = (argv) => {
+      if (argv[1] === "list-panes") return { stdout: "%1\n", stderr: "", exitCode: 0, source: "local" };
+      if (argv[1] === "display-message") {
+        const format = argv.at(-1) ?? "";
+        if (format === "#{pane_current_command}") return { stdout: "node\n", stderr: "", exitCode: 0, source: "local" };
+        if (format === "#{pane_current_path}") {
+          return {
+            stdout: "/home/hasna/.hasna/projects/workspaces/wks_gB9naI7M46xCISc_5Yzf9\n",
+            stderr: "",
+            exitCode: 0,
+            source: "local",
+          };
+        }
+        if (format === "#{pane_pid}") return { stdout: "1234\n", stderr: "", exitCode: 0, source: "local" };
+        if (format === "#{pane_in_mode}") return { stdout: "0\n", stderr: "", exitCode: 0, source: "local" };
+        return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "load-buffer") return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+      if (argv[1] === "paste-buffer") {
+        pasted = true;
+        return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "send-keys" && argv.includes("Enter")) {
+        entered = true;
+        return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[1] === "capture-pane") {
+        const stdout = entered
+          ? "✶ Working… (esc to interrupt)"
+          : pasted
+            ? `${codewithComposerCapture}\n› [Pasted Content 1174 chars]\n\n  gpt-5.6-sol high · account004 · 019f69c2`
+            : codewithComposerCapture;
+        return { stdout, stderr: "", exitCode: 0, source: "local" };
+      }
+      if (argv[0] === "ps") {
+        return {
+          stdout: codewithProcessTree,
+          stderr: "",
+          exitCode: 0,
+          source: "local",
+        };
+      }
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    };
+
+    const rec = await performDispatch(
+      { target: "work:fleet-cleanup", prompt, submitDelayMs: 0 },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("delivered");
+    expect(r.argvs().filter((a) => a[1] === "send-keys" && a.includes("Enter"))).toHaveLength(1);
+  });
+
   test("waits for a literal prompt tail to park before pressing Enter", async () => {
     const prompt = "FINAL_LITERAL_TAIL_MARKER";
     const r = new MockRunner();

@@ -134,13 +134,14 @@ function livePaneRegion(text: string, maxLines = 14): string {
   return tail.join("\n");
 }
 
-const CLAUDE_PASTED_TEXT_PLACEHOLDER = /\[Pasted text(?: #\d+)?(?: \+\d+ lines?)?\]/i;
+const PASTED_CONTENT_PLACEHOLDER =
+  /\[(?:Pasted text(?: #\d+)?(?: \+\d+ lines?)?|Pasted Content \d+ chars?)\]/i;
 
 export interface PromptParkingEvidence {
   parked: boolean;
   /** True when the distinctive prompt tail is visible in the current composer region. */
   tailVisible: boolean;
-  /** True when Claude collapsed a large paste to a `[Pasted text...]` composer placeholder. */
+  /** True when an agent collapsed a large paste to a visible pasted-content placeholder. */
   placeholder: boolean;
 }
 
@@ -159,7 +160,7 @@ function promptParkingEvidenceForTail(text: string, tail: string): PromptParking
       return emptyPromptParkingEvidence();
     }
     const tailVisible = squish(composerRegion).includes(tail);
-    const placeholder = CLAUDE_PASTED_TEXT_PLACEHOLDER.test(composerRegion);
+    const placeholder = PASTED_CONTENT_PLACEHOLDER.test(composerRegion);
     return { parked: tailVisible || placeholder, tailVisible, placeholder };
   }
   return emptyPromptParkingEvidence();

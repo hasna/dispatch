@@ -207,9 +207,9 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
   const trustedPromptParked = (snapshot: string): boolean => {
     const evidence = promptParkingEvidenceInComposer(snapshot, prompt);
     if (!evidence.parked) return false;
-    // A Claude `[Pasted text]` placeholder proves a large paste is parked only
-    // if it was not already the visible composer state before delivery. If it
-    // already existed, fail closed instead of submitting stale hidden content.
+    // A pasted-content placeholder proves a large paste is parked only if it
+    // was not already the visible composer state before delivery. If it already
+    // existed, fail closed instead of submitting stale hidden content.
     if (evidence.placeholder && !evidence.tailVisible && beforeParkingEvidence.placeholder) return false;
     return true;
   };

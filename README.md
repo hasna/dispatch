@@ -524,9 +524,10 @@ CLI `--allow`; it does not accept inline allowlists from the caller.
    prompt is registered before Enter. Tune via `--delay` or
    `DISPATCH_MIN_DELAY_MS` / `DISPATCH_MAX_DELAY_MS` / `DISPATCH_MS_PER_WORD` /
    `DISPATCH_MS_PER_CHAR`.
-4. Poll until the prompt tail is visibly parked in the composer. Claude's collapsed
-   `[Pasted text]` placeholder counts only when it newly appears after delivery, so
-   stale hidden composer content cannot spoof the settle gate.
+4. Poll until the prompt tail is visibly parked in the composer. Collapsed paste
+   placeholders such as Claude's `[Pasted text]` and Codewith's
+   `[Pasted Content N chars]` count only when they newly appear after delivery,
+   so stale hidden composer content cannot spoof the settle gate.
 5. Press **Enter**, then re-press until the **delivery probe** confirms submission
    (working indicator appeared / composer cleared) or the submit timeout/retries are exhausted.
    Queued Tab delivery is not retried because duplicate Tabs can create duplicate
