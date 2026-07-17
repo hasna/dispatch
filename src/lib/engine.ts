@@ -3,7 +3,12 @@ import { Tmux } from "./tmux.js";
 import type { Store } from "./store.js";
 import { computeSubmitDelay } from "./delay.js";
 import { submit } from "./submit.js";
-import { confirmDelivery, evaluateDelivery, promptParkingEvidenceInComposer } from "./confirm.js";
+import {
+  codewithPastedContentPlaceholderCounts,
+  confirmDelivery,
+  evaluateDelivery,
+  promptParkingEvidenceInComposer,
+} from "./confirm.js";
 import { genId, nowIso } from "./ids.js";
 import { validateAgentComposerTarget } from "./agent-target.js";
 import { performCapture } from "./capture.js";
@@ -204,14 +209,30 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
   // 6. Submit with retry, probing delivery if confirmation is enabled.
   let checkedInitialParkedSnapshot = false;
   const beforeParkingEvidence = promptParkingEvidenceInComposer(before, prompt);
+  const beforeCodewithPlaceholderCounts = codewithPastedContentPlaceholderCounts(before);
   const trustedPromptParked = (snapshot: string): boolean => {
     const evidence = promptParkingEvidenceInComposer(snapshot, prompt);
     if (!evidence.parked) return false;
-    // A Claude `[Pasted text]` placeholder proves a large paste is parked only
-    // if it was not already the visible composer state before delivery. If it
-    // already existed, fail closed instead of submitting stale hidden content.
-    if (evidence.placeholder && !evidence.tailVisible && beforeParkingEvidence.placeholder) return false;
-    return true;
+    if (evidence.tailVisible) return true;
+    // A placeholder proves a large paste is parked only if it was not already
+    // the visible composer state before delivery. If it already existed, fail
+    // closed instead of submitting stale hidden content.
+    if (beforeParkingEvidence.placeholder) return false;
+    // Codewith reports the parked character count. Trust that hidden content
+    // only after bracketed-paste delivery and only when the complete prompt is
+    // represented. Literal delivery and partial/invalid counts fail closed.
+    if (evidence.codewithPlaceholder) {
+      const expectedCount = Array.from(prompt).length;
+      if (mode !== "paste" || evidence.codewithCharacterCount !== expectedCount) return false;
+      const beforeOccurrences = beforeCodewithPlaceholderCounts.filter(
+        (count) => count === expectedCount,
+      ).length;
+      const afterOccurrences = codewithPastedContentPlaceholderCounts(snapshot).filter(
+        (count) => count === expectedCount,
+      ).length;
+      return afterOccurrences === beforeOccurrences + 1;
+    }
+    return evidence.claudePlaceholder;
   };
   const isPromptParked = (): boolean => {
     if (!checkedInitialParkedSnapshot) {
