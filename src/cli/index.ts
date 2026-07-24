@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { Command, InvalidArgumentError } from "commander";
 import { getPackageVersion } from "../lib/version.js";
 import { DispatchClient } from "../sdk/index.js";
@@ -27,13 +28,14 @@ import {
   resolvePrompt,
 } from "./format.js";
 import { registerDaemonCommands } from "./daemon-commands.js";
-import { Tmux } from "../lib/tmux.js";
+import { RemoteTargetEnumerationError, Tmux } from "../lib/tmux.js";
 import type { Runner } from "../lib/runner.js";
 import { createRunner } from "../lib/runner.js";
 import { loadExecPolicy } from "../lib/exec-policy.js";
 import { inspectListedAgentTarget } from "../lib/agent-target.js";
 import { normalizeBackend } from "../lib/backend.js";
 import { Mosaic } from "../lib/mosaic.js";
+import { SELF_HEAL_MAX_FILE_INPUT_BYTES, diagnoseDispatchSelfHeal, formatSelfHealDiagnosis } from "../lib/self-heal.js";
 
 export interface CliDeps {
   /** Factory for the client; when provided, the CLI will NOT close it (tests own it). */
@@ -61,6 +63,30 @@ function normalizeSubmitKeyOption(value: string | undefined): "Enter" | "Tab" | 
   if (normalized === "enter" || normalized === "return") return "Enter";
   if (normalized === "tab") return "Tab";
   throw new InvalidArgumentError("submit-key must be Enter or Tab");
+}
+
+function readFileChunk(fd: number, position: number, length: number): string {
+  if (length <= 0) return "";
+  const buffer = Buffer.alloc(length);
+  const bytesRead = readSync(fd, buffer, 0, length, position);
+  return buffer.subarray(0, bytesRead).toString("utf8");
+}
+
+function readBoundedSelfHealFile(path: string): string {
+  const fd = openSync(path, "r");
+  try {
+    const size = fstatSync(fd).size;
+    if (size <= SELF_HEAL_MAX_FILE_INPUT_BYTES) return readFileChunk(fd, 0, size);
+
+    const marker = `\n[... self-heal file input truncated; original ${size} bytes, read bounded head/tail only ...]\n`;
+    const markerBytes = Buffer.byteLength(marker);
+    const chunkBudget = Math.max(0, SELF_HEAL_MAX_FILE_INPUT_BYTES - markerBytes);
+    const headBytes = Math.ceil(chunkBudget / 2);
+    const tailBytes = Math.floor(chunkBudget / 2);
+    return `${readFileChunk(fd, 0, headBytes)}${marker}${readFileChunk(fd, size - tailBytes, tailBytes)}`;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export function buildProgram(deps: CliDeps = {}): Command {
@@ -407,7 +433,21 @@ export function buildProgram(deps: CliDeps = {}): Command {
       const backend = normalizeBackend(opts.backend);
       const runner = await makeRunner(opts.machine);
       const tmux = backend === "tmux" ? new Tmux(runner) : undefined;
-      const allTargets = backend === "mosaic" ? new Mosaic(runner).listTargets() : tmux!.listTargets();
+      let allTargets;
+      try {
+        allTargets = backend === "mosaic" ? new Mosaic(runner).listTargets() : tmux!.listTargets();
+      } catch (error) {
+        if (!(error instanceof RemoteTargetEnumerationError)) throw error;
+        if (opts.json) {
+          err(JSON.stringify({ error: error.toJSON() }, null, 2));
+        } else {
+          err(
+            `${error.message}: ${error.category} via ${error.source} on ${error.machine} (exit ${error.exitCode}; ${error.code})`,
+          );
+        }
+        process.exitCode = 1;
+        return;
+      }
       const limit = opts.limit ?? (opts.json ? undefined : 50);
       const selectedTargets = limit === undefined ? allTargets : allTargets.slice(0, limit);
       const targets =
@@ -445,6 +485,33 @@ export function buildProgram(deps: CliDeps = {}): Command {
         }
         out("hint: use --verbose for detection details or --json for full target metadata");
       }
+    });
+
+  const selfHeal = program.command("self-heal").description("Read-only dispatch failure diagnosis and recovery guidance");
+
+  selfHeal
+    .command("diagnose")
+    .description("Classify a dispatch failure from bounded, redacted context and recommend the next safe action")
+    .option("-t, --to <target>", "original dispatch target")
+    .option("-m, --machine <id>", "original machine id")
+    .option("--route <text>", "short route/source description, for example sessions-query:open-router")
+    .option("--error <text>", "failure text to classify")
+    .option("--error-file <path>", "read failure text from a file")
+    .option("--status-file <path>", "read bounded status JSON/text from a file")
+    .option("--legacy-handoff-authorized", "record that the user explicitly authorized a legacy/emergency tmux paste handoff")
+    .option("--json", "output JSON")
+    .action((opts) => {
+      const errorText = opts.error ?? (opts.errorFile ? readBoundedSelfHealFile(opts.errorFile) : undefined);
+      const statusText = opts.statusFile ? readBoundedSelfHealFile(opts.statusFile) : undefined;
+      const diagnosis = diagnoseDispatchSelfHeal({
+        target: opts.to,
+        machine: opts.machine,
+        route: opts.route,
+        errorText,
+        statusText,
+        legacyHandoffAuthorized: opts.legacyHandoffAuthorized === true,
+      });
+      out(opts.json ? JSON.stringify(diagnosis, null, 2) : formatSelfHealDiagnosis(diagnosis));
     });
 
   program

@@ -9,6 +9,7 @@ import { Tmux } from "../lib/tmux.js";
 import { Mosaic } from "../lib/mosaic.js";
 import { MockRunner } from "../test/mock-runner.js";
 import { buildProgram } from "../cli/index.js";
+import { SELF_HEAL_MAX_DISPLAY_CHARS } from "../lib/self-heal.js";
 import type {
   AgentRecoverOptions,
   AgentRecoverResult,
@@ -252,6 +253,49 @@ describe("MCP tool handlers", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test("self-heal diagnose returns redacted read-only guidance", async () => {
+    const d = deps();
+    const apiKey = "sk-" + "proj-" + "secret";
+    const result = await tool("dispatch_self_heal_diagnose").handler(d, {
+      target: "work:agent",
+      machine: "spark01",
+      route: "sessions-query:open-router",
+      errorText: `unknown option --from with Authorization: Bearer ${apiKey}`,
+    });
+
+    expect(result).toMatchObject({
+      dryRun: true,
+      mutates: false,
+      category: "stale_package",
+      fallbackPolicy: { tmuxPasteFallbackAllowed: false },
+      affectedMachineChecks: { check: ["spark01", "spark02", "apple03"], ignoreIfNonresponsive: ["apple01"] },
+    });
+    expect(JSON.stringify(result)).not.toContain(apiKey);
+  });
+
+  test("self-heal diagnose bounds oversized direct input without echoing the tail", async () => {
+    const d = deps();
+    const tailPayload = "MCP_TAIL_PAYLOAD_SHOULD_NOT_BE_RETURNED";
+    const result = await tool("dispatch_self_heal_diagnose").handler(d, {
+      errorText: ["large prompt body", "x".repeat(7000), `TypeError: broken dispatch path ${tailPayload}`].join("\n"),
+    });
+
+    expect(result).toMatchObject({
+      dryRun: true,
+      mutates: false,
+      category: "dispatch_bug",
+    });
+    const diagnosis = result as {
+      redacted: { errorText: string };
+      inputLimits: { fields: { errorText: { truncatedForDisplay: boolean; truncatedForClassification: boolean } } };
+    };
+    expect(diagnosis.redacted.errorText).toContain("self-heal redacted text truncated");
+    expect(diagnosis.redacted.errorText.length).toBeLessThanOrEqual(SELF_HEAL_MAX_DISPLAY_CHARS);
+    expect(JSON.stringify(result)).not.toContain(tailPayload);
+    expect(diagnosis.inputLimits.fields.errorText.truncatedForDisplay).toBe(true);
+    expect(diagnosis.inputLimits.fields.errorText.truncatedForClassification).toBe(true);
   });
 
   test("send forwards goal mode to the client", async () => {
@@ -598,6 +642,10 @@ describe("CLI/MCP parity", () => {
       if (cmd.name() === "daemon") {
         for (const sub of cmd.commands) {
           if (sub.name() !== "run") cliVerbs.add(`daemon_${sub.name()}`);
+        }
+      } else if (cmd.name() === "self-heal") {
+        for (const sub of cmd.commands) {
+          cliVerbs.add(`self_heal_${sub.name()}`);
         }
       } else {
         cliVerbs.add(cmd.name());

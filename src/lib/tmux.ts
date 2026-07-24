@@ -1,5 +1,87 @@
-import type { Runner } from "./runner.js";
+import type { RunResult, Runner } from "./runner.js";
 import type { TmuxTarget } from "../types.js";
+
+export type RemoteTargetEnumerationErrorCategory = "auth" | "transport" | "remote_command";
+
+function safeMachineLabel(machine: string): string {
+  const trimmed = machine.trim();
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(trimmed) ? trimmed : "remote";
+}
+
+function classifyRemoteTargetFailure(result: RunResult): RemoteTargetEnumerationErrorCategory {
+  const diagnostic = `${result.stderr}\n${result.stdout}`.slice(0, 8192);
+  if (result.exitCode === 124) return "transport";
+  if (
+    /authentication failed|unable to authenticate|too many authentication failures|no supported (?:authentication )?methods(?: remain)?|permission denied \((?:publickey|password|keyboard-interactive|hostbased|gssapi[^,)]*)(?:,[^)]+)*\)/i.test(diagnostic)
+  ) {
+    return "auth";
+  }
+  if (
+    result.exitCode === 255 ||
+    /timed out|no route to host|network is unreachable|connection (?:refused|reset|closed)|could not resolve hostname|host key verification failed|remote host identification has changed|ssh(?:_exchange_identification|: handshake failed)|broken pipe/i.test(
+      diagnostic,
+    )
+  ) {
+    return "transport";
+  }
+  return "remote_command";
+}
+
+function isTmuxServerAbsent(result: RunResult): boolean {
+  if (result.exitCode !== 1 || result.stdout.trim().length > 0) return false;
+  const diagnostic = result.stderr.trim();
+  return (
+    /^no server running on [^\r\n]+$/i.test(diagnostic) ||
+    /^error connecting to [^\r\n]+ \(No such file or directory\)$/i.test(diagnostic) ||
+    /^failed to connect to server(?:: No such file or directory)?$/i.test(diagnostic)
+  );
+}
+
+/**
+ * A remote target-enumeration command did not complete successfully.
+ *
+ * The remote command's stdout/stderr are deliberately not retained: they can
+ * contain pane targets, shell output, or credential diagnostics and must not be
+ * surfaced by discovery APIs or the CLI.
+ */
+export class RemoteTargetEnumerationError extends Error {
+  readonly name = "RemoteTargetEnumerationError";
+  readonly code: "DISPATCH_REMOTE_AUTH_FAILED" | "DISPATCH_REMOTE_TRANSPORT_FAILED" | "DISPATCH_REMOTE_COMMAND_FAILED";
+  readonly category: RemoteTargetEnumerationErrorCategory;
+  readonly machine: string;
+  readonly source: Exclude<RunResult["source"], "local">;
+  readonly exitCode: number;
+
+  constructor(input: {
+    machine: string;
+    source: Exclude<RunResult["source"], "local">;
+    exitCode: number;
+    category: RemoteTargetEnumerationErrorCategory;
+  }) {
+    super("remote target enumeration failed");
+    this.category = input.category;
+    this.code =
+      input.category === "auth"
+        ? "DISPATCH_REMOTE_AUTH_FAILED"
+        : input.category === "transport"
+          ? "DISPATCH_REMOTE_TRANSPORT_FAILED"
+          : "DISPATCH_REMOTE_COMMAND_FAILED";
+    this.machine = safeMachineLabel(input.machine);
+    this.source = input.source;
+    this.exitCode = Number.isInteger(input.exitCode) ? input.exitCode : 1;
+  }
+
+  toJSON() {
+    return {
+      code: this.code,
+      category: this.category,
+      message: this.message,
+      machine: this.machine,
+      source: this.source,
+      exitCode: this.exitCode,
+    };
+  }
+}
 
 /**
  * Parse a tmux target string `session[:window[.pane]]` into its parts.
@@ -111,7 +193,18 @@ export class Tmux {
       "-F",
       "#{session_name}:#{window_index}.#{pane_index}\t#{window_name}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_pid}",
     ]);
-    if (res.exitCode !== 0) return [];
+    if (res.exitCode !== 0) {
+      if (isTmuxServerAbsent(res)) return [];
+      if (res.source !== "local") {
+        throw new RemoteTargetEnumerationError({
+          machine: this.machine,
+          source: res.source,
+          exitCode: res.exitCode,
+          category: classifyRemoteTargetFailure(res),
+        });
+      }
+      return [];
+    }
     return res.stdout
       .split("\n")
       .filter((l) => l.trim().length > 0)

@@ -135,17 +135,55 @@ function livePaneRegion(text: string, maxLines = 14): string {
 }
 
 const CLAUDE_PASTED_TEXT_PLACEHOLDER = /\[Pasted text(?: #\d+)?(?: \+\d+ lines?)?\]/i;
+const CODEWITH_PASTED_CONTENT_PLACEHOLDER_LINE =
+  /^[\t ]*(?:[│┃║╎╏┆┇┊┋▏▎▌▐][\t ]*)?[>›❯][\t ]+\[Pasted Content ([1-9]\d*) chars\][\t ]*$/;
+
+export interface CodewithPastedContentPlaceholder {
+  characterCount: number;
+}
+
+/** Return every strict, positive, safe Codewith placeholder count in a pane capture. */
+export function codewithPastedContentPlaceholderCounts(text: string): number[] {
+  const counts: number[] = [];
+  for (const line of text.split("\n")) {
+    const match = line.match(CODEWITH_PASTED_CONTENT_PLACEHOLDER_LINE);
+    if (!match) continue;
+    const characterCount = Number(match[1]);
+    if (Number.isSafeInteger(characterCount)) counts.push(characterCount);
+  }
+  return counts;
+}
+
+/** Parse a Codewith collapsed-paste marker, rejecting non-positive or unsafe counts. */
+export function parseCodewithPastedContentPlaceholder(
+  text: string,
+): CodewithPastedContentPlaceholder | undefined {
+  const counts = codewithPastedContentPlaceholderCounts(text);
+  return counts.length === 1 ? { characterCount: counts[0] as number } : undefined;
+}
 
 export interface PromptParkingEvidence {
   parked: boolean;
   /** True when the distinctive prompt tail is visible in the current composer region. */
   tailVisible: boolean;
-  /** True when Claude collapsed a large paste to a `[Pasted text...]` composer placeholder. */
+  /** True when an agent collapsed a large paste to a visible pasted-content placeholder. */
   placeholder: boolean;
+  /** True when the placeholder uses Claude's pasted-text form. */
+  claudePlaceholder: boolean;
+  /** True when one unambiguous placeholder uses Codewith's strict character-count form. */
+  codewithPlaceholder: boolean;
+  /** Parsed positive Codewith character count, when valid. */
+  codewithCharacterCount?: number;
 }
 
 function emptyPromptParkingEvidence(): PromptParkingEvidence {
-  return { parked: false, tailVisible: false, placeholder: false };
+  return {
+    parked: false,
+    tailVisible: false,
+    placeholder: false,
+    claudePlaceholder: false,
+    codewithPlaceholder: false,
+  };
 }
 
 function promptParkingEvidenceForTail(text: string, tail: string): PromptParkingEvidence {
@@ -159,8 +197,18 @@ function promptParkingEvidenceForTail(text: string, tail: string): PromptParking
       return emptyPromptParkingEvidence();
     }
     const tailVisible = squish(composerRegion).includes(tail);
-    const placeholder = CLAUDE_PASTED_TEXT_PLACEHOLDER.test(composerRegion);
-    return { parked: tailVisible || placeholder, tailVisible, placeholder };
+    const claudePlaceholder = CLAUDE_PASTED_TEXT_PLACEHOLDER.test(composerRegion);
+    const parsedCodewithPlaceholder = parseCodewithPastedContentPlaceholder(composerRegion);
+    const codewithPlaceholder = parsedCodewithPlaceholder !== undefined;
+    const placeholder = claudePlaceholder || codewithPlaceholder;
+    return {
+      parked: tailVisible || placeholder,
+      tailVisible,
+      placeholder,
+      claudePlaceholder,
+      codewithPlaceholder,
+      codewithCharacterCount: parsedCodewithPlaceholder?.characterCount,
+    };
   }
   return emptyPromptParkingEvidence();
 }

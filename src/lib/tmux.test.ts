@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Tmux, formatTarget, parseTarget } from "./tmux.js";
+import { RemoteTargetEnumerationError, Tmux, formatTarget, parseTarget } from "./tmux.js";
 import { MockRunner } from "../test/mock-runner.js";
 
 describe("parseTarget / formatTarget", () => {
@@ -26,6 +26,125 @@ describe("parseTarget / formatTarget", () => {
 });
 
 describe("Tmux command construction", () => {
+  test("listTargets surfaces a typed auth error for failed remote enumeration without echoing transport output", () => {
+    const r = new MockRunner("station02");
+    const credentialMarker = "credential-marker-that-must-not-leak";
+    r.queue.push({
+      stdout: "secret-session:0.0\n",
+      stderr: `Permission denied (publickey). ${credentialMarker}`,
+      exitCode: 255,
+      source: "ssh",
+    });
+
+    let error: unknown;
+    try {
+      new Tmux(r).listTargets();
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(RemoteTargetEnumerationError);
+    expect(error).toMatchObject({
+      code: "DISPATCH_REMOTE_AUTH_FAILED",
+      category: "auth",
+      machine: "station02",
+      source: "ssh",
+      exitCode: 255,
+    });
+    expect(String(error)).not.toContain("secret-session");
+    expect(String(error)).not.toContain(credentialMarker);
+  });
+
+  test("listTargets preserves an empty local result when no tmux server is running", () => {
+    const r = new MockRunner();
+    r.queue.push({ stdout: "", stderr: "no server running", exitCode: 1, source: "local" });
+
+    expect(new Tmux(r).listTargets()).toEqual([]);
+  });
+
+  test("listTargets preserves an empty remote result when tmux reports that no server is running", () => {
+    const r = new MockRunner("station02");
+    r.queue.push({
+      stdout: "",
+      stderr: "no server running on /tmp/tmux-1000/default",
+      exitCode: 1,
+      source: "ssh",
+    });
+
+    expect(new Tmux(r).listTargets()).toEqual([]);
+  });
+
+  test("listTargets classifies a remote timeout separately from authentication", () => {
+    const r = new MockRunner("station02");
+    r.queue.push({
+      stdout: "",
+      stderr: "remote command timed out after 20000ms",
+      exitCode: 124,
+      source: "tailscale",
+    });
+
+    expect(() => new Tmux(r).listTargets()).toThrow(
+      expect.objectContaining({
+        code: "DISPATCH_REMOTE_TRANSPORT_FAILED",
+        category: "transport",
+        source: "tailscale",
+        exitCode: 124,
+      }),
+    );
+  });
+
+  test("listTargets treats exit 124 as an authoritative timeout even when diagnostics mention authentication", () => {
+    const r = new MockRunner("station02");
+    r.queue.push({
+      stdout: "partial remote output",
+      stderr: "Permission denied (publickey); remote command timed out",
+      exitCode: 124,
+      source: "tailscale",
+    });
+
+    expect(() => new Tmux(r).listTargets()).toThrow(
+      expect.objectContaining({
+        code: "DISPATCH_REMOTE_TRANSPORT_FAILED",
+        category: "transport",
+        exitCode: 124,
+      }),
+    );
+  });
+
+  test("listTargets recognizes SSH handshake authentication failures", () => {
+    const r = new MockRunner("station02");
+    r.queue.push({
+      stdout: "",
+      stderr: "ssh: handshake failed: ssh: unable to authenticate, attempted methods [none publickey], no supported methods remain",
+      exitCode: 255,
+      source: "tailscale",
+    });
+
+    expect(() => new Tmux(r).listTargets()).toThrow(
+      expect.objectContaining({
+        code: "DISPATCH_REMOTE_AUTH_FAILED",
+        category: "auth",
+      }),
+    );
+  });
+
+  test("listTargets does not mistake a remote tmux socket permission error for SSH authentication", () => {
+    const r = new MockRunner("station02");
+    r.queue.push({
+      stdout: "",
+      stderr: "error connecting to /tmp/tmux-1000/default (Permission denied)",
+      exitCode: 1,
+      source: "ssh",
+    });
+
+    expect(() => new Tmux(r).listTargets()).toThrow(
+      expect.objectContaining({
+        code: "DISPATCH_REMOTE_COMMAND_FAILED",
+        category: "remote_command",
+      }),
+    );
+  });
+
   test("sendLiteral uses send-keys -l -- (literal, end-of-options)", () => {
     const r = new MockRunner();
     new Tmux(r).sendLiteral("s:w", "hello -n");

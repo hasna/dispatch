@@ -63,6 +63,7 @@ dispatch resume     Resume a paused schedule/loop
 dispatch clear      Delete a schedule/loop
 dispatch cancel     Cancel a scheduled dispatch
 dispatch daemon     start | ensure | restart | status | doctor | service | stop
+dispatch self-heal  diagnose
 ```
 
 ### Output defaults
@@ -262,6 +263,28 @@ dispatch recover --to open-dispatch:1.1 --file ./recovery.md --goal --apply
 
 Use `--no-queue` to refuse active-agent queued recovery. The MCP tools
 `dispatch_triage` and `dispatch_recover` expose the same schemas for agents.
+
+### Self-Healing
+
+`dispatch self-heal diagnose` is a read-only runbook helper for failed dispatch
+routes. It accepts bounded error/status context, redacts common secret-looking
+values, classifies the failure as `target`, `auth`, `machine`, `stale_package`,
+`routing`, `dispatch_bug`, or `unknown`, and recommends the next safe repair step.
+
+```bash
+dispatch self-heal diagnose \
+  --to work:agent \
+  --machine spark01 \
+  --route "sessions-query:open-router" \
+  --error "target not found" \
+  --json
+```
+
+The command does not mutate repos, package installs, daemon state, or machine
+configuration. Its fallback policy forbids tmux prompt paste unless the user has
+explicitly authorized a legacy/emergency handoff for the incident. See
+[docs/self-healing.md](docs/self-healing.md) for the full capture, classification,
+repair, daemon restart, and original-route smoke runbook.
 
 ### Exec
 
@@ -507,7 +530,7 @@ Every CLI verb is also an MCP tool, so agents can dispatch over MCP:
 // register the server: dispatch-mcp  (stdio)
 // tools:
 //   dispatch_send, dispatch_key, dispatch_capture, dispatch_exec, dispatch_status, dispatch_show,
-//   dispatch_list, dispatch_targets,
+//   dispatch_list, dispatch_targets, dispatch_self_heal_diagnose,
 //   dispatch_schedule, dispatch_loop, dispatch_schedules, dispatch_loops,
 //   dispatch_cancel, dispatch_pause, dispatch_resume, dispatch_clear,
 //   dispatch_daemon_start, dispatch_daemon_stop, dispatch_daemon_status,
@@ -540,9 +563,13 @@ CLI `--allow`; it does not accept inline allowlists from the caller.
    prompt is registered before Enter. Tune via `--delay` or
    `DISPATCH_MIN_DELAY_MS` / `DISPATCH_MAX_DELAY_MS` / `DISPATCH_MS_PER_WORD` /
    `DISPATCH_MS_PER_CHAR`.
-4. Poll until the prompt tail is visibly parked in the composer. Claude's collapsed
-   `[Pasted text]` placeholder counts only when it newly appears after delivery, so
-   stale hidden composer content cannot spoof the settle gate.
+4. Poll until the prompt tail is visibly parked in the composer. Collapsed paste
+   placeholders such as Claude's `[Pasted text]` and Codewith's
+   `[Pasted Content N chars]` can provide settle evidence. A Codewith placeholder is
+   trusted only when it newly appears after bracketed paste, is an unambiguous standalone
+   marker with a positive count, and that count exactly matches the complete prompt's
+   Unicode scalar count. Literal delivery, partial or invalid counts, embedded or
+   ambiguous marker text, and stale placeholders all fail closed.
 5. Press **Enter**, then re-press until the **delivery probe** confirms submission
    (working indicator appeared / composer cleared) or the submit timeout/retries are exhausted.
    Queued Tab delivery is not retried because duplicate Tabs can create duplicate
@@ -572,7 +599,7 @@ bun run build
 ```
 
 See [AGENTS.md](AGENTS.md) for repo conventions and [docs/](docs/) for architecture,
-reliability, and cross-machine details.
+reliability, self-healing, and cross-machine details.
 
 ## License
 

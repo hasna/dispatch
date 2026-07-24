@@ -18,6 +18,7 @@ import {
 import { DispatchClient } from "../sdk/index.js";
 import { Store } from "../lib/store.js";
 import { MockRunner } from "../test/mock-runner.js";
+import { SELF_HEAL_MAX_DISPLAY_CHARS } from "../lib/self-heal.js";
 import type {
   AgentRecoverOptions,
   AgentRecoverResult,
@@ -420,6 +421,96 @@ describe("CLI read/schedule commands (in-memory client)", () => {
     });
     expect(r.argvs().some((a) => a[0] === "ps")).toBe(false);
     expect(r.argvs().some((a) => a[0] === "sh" && a[2]?.includes("head -n") && a[2]?.includes("cut -c"))).toBe(true);
+  });
+
+  test("targets --machine --json emits a structured nonzero auth error without target or credential output", async () => {
+    const out: string[] = [];
+    const err: string[] = [];
+    const r = new MockRunner("station02");
+    const credentialMarker = "credential-marker-that-must-not-leak";
+    r.queue.push({
+      stdout: "secret-session:0.0\n",
+      stderr: `Permission denied (publickey). ${credentialMarker}`,
+      exitCode: 255,
+      source: "ssh",
+    });
+    const program = buildProgram({
+      runnerFactory: async () => r,
+      out: (s) => out.push(s),
+      err: (s) => err.push(s),
+    });
+    process.exitCode = 0;
+
+    await program.parseAsync(["targets", "--machine", "station02", "--verbose", "--json"], { from: "user" });
+
+    expect(out).toEqual([]);
+    expect(process.exitCode).toBe(1);
+    const payload = JSON.parse(err.join("\n"));
+    expect(payload).toEqual({
+      error: {
+        code: "DISPATCH_REMOTE_AUTH_FAILED",
+        category: "auth",
+        message: "remote target enumeration failed",
+        machine: "station02",
+        source: "ssh",
+        exitCode: 255,
+      },
+    });
+    expect(err.join("\n")).not.toContain("secret-session");
+    expect(err.join("\n")).not.toContain(credentialMarker);
+    process.exitCode = 0;
+  });
+
+  test("self-heal diagnose emits redacted read-only JSON guidance", async () => {
+    const { program, out } = runner();
+    const apiKey = "sk-" + "proj-" + "secret";
+
+    await program.parseAsync(
+      [
+        "self-heal",
+        "diagnose",
+        "--to",
+        "work:agent",
+        "--machine",
+        "spark01",
+        "--route",
+        "sessions-query:open-router",
+        "--error",
+        `unknown option --from with Authorization: Bearer ${apiKey}`,
+        "--json",
+      ],
+      { from: "user" },
+    );
+
+    const diagnosis = JSON.parse(out.join("\n"));
+    expect(diagnosis).toMatchObject({
+      dryRun: true,
+      mutates: false,
+      category: "stale_package",
+      fallbackPolicy: { tmuxPasteFallbackAllowed: false },
+    });
+    expect(JSON.stringify(diagnosis)).not.toContain(apiKey);
+    expect(diagnosis.fallbackPolicy.detail).toMatch(/tmux prompt paste fallback is forbidden/i);
+    expect(diagnosis.affectedMachineChecks.check).toEqual(["spark01", "spark02", "apple03"]);
+  });
+
+  test("self-heal diagnose bounds oversized file evidence without echoing the tail", async () => {
+    const { program, out } = runner();
+    const tailPayload = "CLI_TAIL_PAYLOAD_SHOULD_NOT_BE_RETURNED";
+    const file = join(tmpdir(), `dispatch_self_heal_${process.pid}.txt`);
+    writeFileSync(file, ["large prompt body", "x".repeat(12000), `dispatch: unknown option --from ${tailPayload}`].join("\n"));
+    try {
+      await program.parseAsync(["self-heal", "diagnose", "--error-file", file, "--json"], { from: "user" });
+    } finally {
+      rmSync(file, { force: true });
+    }
+
+    const diagnosis = JSON.parse(out.join("\n"));
+    expect(diagnosis.category).toBe("stale_package");
+    expect(diagnosis.redacted.errorText).toContain("self-heal redacted text truncated");
+    expect(diagnosis.redacted.errorText.length).toBeLessThanOrEqual(SELF_HEAL_MAX_DISPLAY_CHARS);
+    expect(JSON.stringify(diagnosis)).not.toContain(tailPayload);
+    expect(diagnosis.inputLimits.fields.errorText.truncatedForDisplay).toBe(true);
   });
 
   test("loops defaults to compact capped output", async () => {

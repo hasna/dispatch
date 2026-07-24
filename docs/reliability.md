@@ -39,11 +39,17 @@ so a longer prompt waits longer (defaults: min 400ms, max 4000ms, 9ms/word, 0.6m
 all env- and flag-overridable).
 
 After the delay, `dispatch` polls the pane until the delivered prompt is visibly parked in
-the current composer. For large Claude Code pastes, Claude may collapse the composer input
-to `[Pasted text]` or `[Pasted text #N +M lines]`; those placeholders count as parked
-because Claude still submits the full pasted content. If the prompt never parks within
-`DISPATCH_SETTLE_TIMEOUT_MS` (default 2000ms), dispatch refuses to press Enter/Tab and
-records a failed delivery instead of risking a swallowed submit.
+the current composer. For large agent pastes, the agent may collapse the composer input
+to a placeholder such as Claude's `[Pasted text]`, `[Pasted text #N +M lines]`, or
+Codewith's `[Pasted Content N chars]`. A Codewith placeholder counts as parked only when
+it newly appears after bracketed-paste delivery, is an unambiguous standalone placeholder
+line with a positive count, and that count exactly equals the complete prompt's Unicode
+scalar count (the same semantics as Rust `str.chars().count()`). Literal delivery cannot
+use Codewith placeholder evidence. Partial or invalid counts, embedded or ambiguous
+placeholder text, and unchanged or stale pre-delivery placeholder evidence all fail
+closed. If the prompt never parks within `DISPATCH_SETTLE_TIMEOUT_MS` (default 2000ms),
+dispatch refuses to press Enter/Tab and records a failed delivery instead of risking a
+swallowed submit.
 
 Once parked, `dispatch` presses **Enter**, then confirms and re-presses Enter idempotently
 until the delivery probe says it submitted. Defaults are a 10s submit budget with a 2s

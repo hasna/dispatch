@@ -7,6 +7,7 @@ import {
   detectWorking,
   evaluateDelivery,
   isPromptParkedInComposer,
+  parseCodewithPastedContentPlaceholder,
   promptTail,
 } from "./confirm.js";
 import { Tmux } from "./tmux.js";
@@ -74,6 +75,43 @@ describe("promptTail", () => {
   });
 });
 
+describe("parseCodewithPastedContentPlaceholder", () => {
+  test("exposes the positive character count", () => {
+    expect(parseCodewithPastedContentPlaceholder("› [Pasted Content 3867 chars]")).toEqual({
+      characterCount: 3867,
+    });
+    expect(parseCodewithPastedContentPlaceholder("> [Pasted Content 1 chars]")).toEqual({
+      characterCount: 1,
+    });
+  });
+
+  test("rejects zero and malformed character counts", () => {
+    expect(parseCodewithPastedContentPlaceholder("› [Pasted Content 0 chars]")).toBeUndefined();
+    expect(parseCodewithPastedContentPlaceholder("› [Pasted Content 01 chars]")).toBeUndefined();
+    expect(parseCodewithPastedContentPlaceholder("› [Pasted Content nope chars]")).toBeUndefined();
+    expect(parseCodewithPastedContentPlaceholder("› [Pasted Content -1 chars]")).toBeUndefined();
+    expect(parseCodewithPastedContentPlaceholder("› [pasted content 1 char]")).toBeUndefined();
+    expect(parseCodewithPastedContentPlaceholder("› [Pasted Content 1 char]")).toBeUndefined();
+    expect(parseCodewithPastedContentPlaceholder("› [Pasted Content 3867 char]")).toBeUndefined();
+  });
+
+  test("rejects embedded, suffixed, and ambiguous placeholder text", () => {
+    expect(
+      parseCodewithPastedContentPlaceholder(
+        "› explain why [Pasted Content 3867 chars] is shown",
+      ),
+    ).toBeUndefined();
+    expect(
+      parseCodewithPastedContentPlaceholder("› [Pasted Content 3867 chars] trailing text"),
+    ).toBeUndefined();
+    expect(
+      parseCodewithPastedContentPlaceholder(
+        "› [Pasted Content 3867 chars]\n› [Pasted Content 3867 chars]",
+      ),
+    ).toBeUndefined();
+  });
+});
+
 describe("isPromptParkedInComposer", () => {
   test("treats Claude collapsed pasted-text placeholders as parked input", () => {
     const prompt = `${"very long pasted content ".repeat(600)}FINAL_TAIL_NOT_VISIBLE`;
@@ -81,6 +119,13 @@ describe("isPromptParkedInComposer", () => {
     expect(isPromptParkedInComposer("❯ [Pasted text]", prompt)).toBe(true);
     expect(isPromptParkedInComposer("❯ [Pasted text #1 +11 lines]", prompt)).toBe(true);
     expect(isPromptParkedInComposer("> [Pasted text #2 +1 line]", prompt)).toBe(true);
+  });
+
+  test("treats Codewith pasted-content placeholders as parked input", () => {
+    const prompt = `${"very long pasted content ".repeat(600)}FINAL_TAIL_NOT_VISIBLE`;
+
+    expect(isPromptParkedInComposer("› [Pasted Content 1174 chars]", prompt)).toBe(true);
+    expect(isPromptParkedInComposer("> [Pasted Content 1 chars]", prompt)).toBe(true);
   });
 
   test("does not treat a submitted prompt in scrollback above a working footer as parked", () => {

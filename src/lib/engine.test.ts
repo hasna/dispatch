@@ -83,6 +83,68 @@ const codexProcessTree = `
 1240 1234 Sl+ bun /home/hasna/.bun/bin/codex
 `;
 
+function realisticCodewithPrompt(length = 3867): string {
+  const tail = "\nFINAL_CODEWITH_PROMPT_TAIL";
+  return `${"x".repeat(length - tail.length)}${tail}`;
+}
+
+function codewithPlaceholderRunner(
+  afterDeliveryPlaceholder: string,
+  beforePlaceholder?: string,
+  beforeTrailingComposer = false,
+): MockRunner {
+  const r = new MockRunner();
+  let delivered = false;
+  let entered = false;
+
+  const capture = (placeholder?: string, trailingComposer = false): string => placeholder
+    ? `${codewithComposerCapture}\n${placeholder}${trailingComposer ? "\n\n› idle composer" : ""}\n\n  gpt-5.6-sol high · account004 · 019f69c2`
+    : codewithComposerCapture;
+
+  r.responder = (argv) => {
+    if (argv[1] === "list-panes") return { stdout: "%1\n", stderr: "", exitCode: 0, source: "local" };
+    if (argv[1] === "display-message") {
+      const format = argv.at(-1) ?? "";
+      if (format === "#{pane_current_command}") return { stdout: "node\n", stderr: "", exitCode: 0, source: "local" };
+      if (format === "#{pane_current_path}") {
+        return {
+          stdout: "/home/hasna/.hasna/projects/workspaces/wks_gB9naI7M46xCISc_5Yzf9\n",
+          stderr: "",
+          exitCode: 0,
+          source: "local",
+        };
+      }
+      if (format === "#{pane_pid}") return { stdout: "1234\n", stderr: "", exitCode: 0, source: "local" };
+      if (format === "#{pane_in_mode}") return { stdout: "0\n", stderr: "", exitCode: 0, source: "local" };
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    }
+    if (argv[1] === "load-buffer") return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    if (argv[1] === "paste-buffer" || (argv[1] === "send-keys" && argv.includes("-l"))) {
+      delivered = true;
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    }
+    if (argv[1] === "send-keys" && argv.includes("Enter")) {
+      entered = true;
+      return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+    }
+    if (argv[1] === "capture-pane") {
+      const stdout = entered
+        ? "✶ Working… (esc to interrupt)"
+        : capture(
+          delivered ? afterDeliveryPlaceholder : beforePlaceholder,
+          !delivered && beforeTrailingComposer,
+        );
+      return { stdout, stderr: "", exitCode: 0, source: "local" };
+    }
+    if (argv[0] === "ps") {
+      return { stdout: codewithProcessTree, stderr: "", exitCode: 0, source: "local" };
+    }
+    return { stdout: "", stderr: "", exitCode: 0, source: "local" };
+  };
+
+  return r;
+}
+
 describe("chooseMode", () => {
   test("multiline always pastes", () => {
     expect(chooseMode("a\nb")).toBe("paste");
@@ -841,6 +903,134 @@ GET /health 200
 
     const rec = await performDispatch(
       { target: "work:claude", prompt, submitDelayMs: 0 },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("delivered");
+    expect(r.argvs().filter((a) => a[1] === "send-keys" && a.includes("Enter"))).toHaveLength(1);
+  });
+
+  test("submits a new exact-count Codewith paste placeholder exactly once", async () => {
+    const prompt = realisticCodewithPrompt();
+    const r = codewithPlaceholderRunner(`› [Pasted Content ${prompt.length} chars]`);
+
+    const rec = await performDispatch(
+      { target: "work:fleet-cleanup", prompt, submitDelayMs: 0 },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("delivered");
+    expect(r.argvs().filter((a) => a[1] === "send-keys" && a.includes("Enter"))).toHaveLength(1);
+  });
+
+  test("accepts Codewith's exact Unicode-scalar count for a non-BMP prompt", async () => {
+    const prompt = `${realisticCodewithPrompt()}🚀`;
+    const unicodeScalarCount = Array.from(prompt).length;
+    expect(unicodeScalarCount).toBe(prompt.length - 1);
+    const r = codewithPlaceholderRunner(
+      `› [Pasted Content ${unicodeScalarCount} chars]`,
+    );
+
+    const rec = await performDispatch(
+      { target: "work:fleet-cleanup", prompt, submitDelayMs: 0 },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("delivered");
+    expect(r.argvs().filter((a) => a[1] === "send-keys" && a.includes("Enter"))).toHaveLength(1);
+  });
+
+  test("does not press Enter for a partial Codewith paste placeholder", async () => {
+    const prompt = realisticCodewithPrompt();
+    const r = codewithPlaceholderRunner("› [Pasted Content 1024 chars]");
+
+    const rec = await performDispatch(
+      { target: "work:fleet-cleanup", prompt, submitDelayMs: 0 },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("failed");
+    expect(rec.detail).toMatch(/settle|park/i);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("Enter"))).toBe(false);
+  });
+
+  test("does not trust a matching Codewith placeholder after literal delivery", async () => {
+    const prompt = realisticCodewithPrompt();
+    const r = codewithPlaceholderRunner(`› [Pasted Content ${prompt.length} chars]`);
+
+    const rec = await performDispatch(
+      { target: "work:fleet-cleanup", prompt, mode: "literal", submitDelayMs: 0 },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("failed");
+    expect(rec.detail).toMatch(/settle|park/i);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("Enter"))).toBe(false);
+  });
+
+  test("does not press Enter for zero or malformed Codewith paste counts", async () => {
+    const prompt = realisticCodewithPrompt();
+
+    for (const placeholder of [
+      "› [Pasted Content 0 chars]",
+      "› [Pasted Content nope chars]",
+    ]) {
+      const r = codewithPlaceholderRunner(placeholder);
+      const rec = await performDispatch(
+        { target: "work:fleet-cleanup", prompt, submitDelayMs: 0 },
+        { tmux: new Tmux(r), sleep: noSleep },
+      );
+
+      expect(rec.status, placeholder).toBe("failed");
+      expect(rec.detail, placeholder).toMatch(/settle|park/i);
+      expect(
+        r.argvs().some((a) => a[1] === "send-keys" && a.includes("Enter")),
+        placeholder,
+      ).toBe(false);
+    }
+  });
+
+  test("does not press Enter when a matching Codewith placeholder is unchanged", async () => {
+    const prompt = realisticCodewithPrompt();
+    const placeholder = `› [Pasted Content ${prompt.length} chars]`;
+    const r = codewithPlaceholderRunner(placeholder, placeholder);
+
+    const rec = await performDispatch(
+      { target: "work:fleet-cleanup", prompt, submitDelayMs: 0 },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("failed");
+    expect(rec.detail).toMatch(/settle|park/i);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("Enter"))).toBe(false);
+  });
+
+  test("does not trust a stale matching Codewith placeholder when capture boundaries shift", async () => {
+    const prompt = realisticCodewithPrompt();
+    const placeholder = `› [Pasted Content ${prompt.length} chars]`;
+    const r = codewithPlaceholderRunner(placeholder, placeholder, true);
+
+    const rec = await performDispatch(
+      { target: "work:fleet-cleanup", prompt, submitDelayMs: 0 },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("failed");
+    expect(rec.detail).toMatch(/settle|park/i);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("Enter"))).toBe(false);
+  });
+
+  test("accepts one newly appended Codewith placeholder when matching history remains", async () => {
+    const prompt = realisticCodewithPrompt();
+    const placeholder = `› [Pasted Content ${prompt.length} chars]`;
+    const r = codewithPlaceholderRunner(
+      `${placeholder}\n${placeholder}`,
+      placeholder,
+      true,
+    );
+
+    const rec = await performDispatch(
+      { target: "work:fleet-cleanup", prompt, submitDelayMs: 0 },
       { tmux: new Tmux(r), sleep: noSleep },
     );
 
