@@ -22,7 +22,7 @@
                     LocalRunner                 RemoteRunner
                     (spawnSync)            (@hasna/machines → ssh)
                                        |
-                                Store (sqlite)  ← dispatches + schedules
+                    Store (sqlite) or /v1 API  ← dispatches + schedules
 ```
 
 ## Surfaces
@@ -55,7 +55,17 @@ tmux is the default backend. The optional Mosaic backend is selected through
 the public `mosaic` binary directly (`mosaic.control.v1` JSON receipts/envelopes)
 rather than using tmux compatibility shims.
 
-## State
+## Client route
+
+Local mode is the default and uses the on-box runner/store described below. API
+mode is selected with `HASNA_DISPATCH_STORAGE_MODE=api` (or
+`self_hosted`/`remote`/`cloud`/`hybrid`) plus `HASNA_DISPATCH_API_URL` and
+`HASNA_DISPATCH_API_KEY`. In API mode, CLI and MCP client commands route through
+the authenticated `/v1` authority for dispatch records, schedules, targets, fleet
+summary, and daemon actions. Invalid API configuration fails closed instead of
+falling back to local SQLite.
+
+## Local state
 
 Everything lives in sqlite at `~/.hasna/dispatch/dispatch.db` (override with
 `DISPATCH_DATA_DIR`):

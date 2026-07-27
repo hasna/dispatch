@@ -569,6 +569,33 @@ the historical raw records should pass `verbose: true`.
 `dispatch_exec` accepts `policyFile` for the same reviewed JSON policy used by
 CLI `--allow`; it does not accept inline allowlists from the caller.
 
+## Local and API mode
+
+By default, `dispatch` runs in local mode: live commands use local or
+`--machine`-resolved terminal runners, and recorded dispatches/schedules live in
+on-box SQLite under `DISPATCH_DATA_DIR`.
+
+Set the dispatch storage mode to `api`, `self_hosted`, `remote`, `cloud`, or
+`hybrid` to route the CLI/MCP client through the authenticated `/v1` HTTP
+authority instead. API mode is fail-closed: it requires both
+`HASNA_DISPATCH_API_URL` and `HASNA_DISPATCH_API_KEY`, normalizes the authority to
+`/v1`, does not accept URL userinfo/query/fragment data, and never falls back to
+local SQLite after an API mode misconfiguration.
+
+```bash
+HASNA_DISPATCH_STORAGE_MODE=api
+HASNA_DISPATCH_API_URL=https://dispatch.example.internal
+HASNA_DISPATCH_API_KEY=...
+
+dispatch list --json
+dispatch schedule --to work:agent --prompt "later" --in 30m --json
+dispatch targets --json
+dispatch daemon status --json
+```
+
+An explicit `HASNA_DISPATCH_STORAGE_MODE=local` keeps local mode even if API
+URL/key variables are present.
+
 ## How auto-submit works (the key feature)
 
 1. Snapshot the pane.
@@ -604,6 +631,9 @@ CLI `--allow`; it does not accept inline allowlists from the caller.
 | `DISPATCH_SETTLE_TIMEOUT_MS` | Prompt-parked settle budget before the first submit key; default 2000ms |
 | `DISPATCH_SUBMIT_TIMEOUT_MS` / `DISPATCH_SUBMIT_RETRY_INTERVAL_MS` | Submit confirmation/retry budget; defaults 10000ms / 2000ms |
 | `DISPATCH_DAEMON_INTERVAL_MS` | Daemon tick interval |
+| `HASNA_DISPATCH_STORAGE_MODE` / `DISPATCH_STORAGE_MODE` | `local` or API-backed mode (`api`, `self_hosted`, `remote`, `cloud`, `hybrid`) |
+| `HASNA_DISPATCH_API_URL` / `DISPATCH_API_URL` | API authority root or `/v1` URL for API mode |
+| `HASNA_DISPATCH_API_KEY` / `DISPATCH_API_KEY` | Bearer/API key for API mode; value is never printed |
 
 ## Development
 

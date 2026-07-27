@@ -6,6 +6,7 @@ import { DispatchClient } from "../sdk/index.js";
 import { Store } from "../lib/store.js";
 import { TOOLS, type ToolDeps } from "./tools.js";
 import { RemoteTargetEnumerationError } from "../lib/tmux.js";
+import { getDispatchApiClient } from "../lib/api-client.js";
 
 export interface CreateServerOptions {
   /** Inject deps (tests). When omitted, a default store + client are created. */
@@ -22,6 +23,11 @@ export function createServer(opts: CreateServerOptions = {}): McpServer {
   let deps = opts.deps;
   const resolveDeps = (): ToolDeps => {
     if (deps) return deps;
+    const api = getDispatchApiClient();
+    if (api) {
+      deps = { client: api };
+      return deps;
+    }
     const store = new Store();
     deps = { client: new DispatchClient({ store }), store };
     return deps;
@@ -30,8 +36,8 @@ export function createServer(opts: CreateServerOptions = {}): McpServer {
   for (const tool of TOOLS) {
     server.registerTool(
       tool.name,
-      { title: tool.title, description: tool.description, inputSchema: tool.inputSchema },
-      async (args: Record<string, unknown>) => {
+      { title: tool.title, description: tool.description, inputSchema: tool.inputSchema } as never,
+      (async (args: Record<string, unknown>) => {
         try {
           const result = await tool.handler(resolveDeps(), args ?? {});
           return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
@@ -47,7 +53,7 @@ export function createServer(opts: CreateServerOptions = {}): McpServer {
             isError: true,
           };
         }
-      },
+      }) as never,
     );
   }
 
