@@ -14,6 +14,7 @@ describe("scaffold", () => {
     expect(pkg.type).toBe("module");
     expect(pkg.license).toBe("Apache-2.0");
     expect(pkg.publishConfig.access).toBe("public");
+    expect(pkg.scripts.prepack).toBe("bun run build");
   });
 
   test("exposes the three binaries", () => {
