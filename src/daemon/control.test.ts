@@ -20,6 +20,7 @@ import { Store } from "../lib/store.js";
 
 const pidPath = join(tmpdir(), `dispatch_test_pid_${process.pid}_${Math.floor(Math.random() * 1e6)}.pid`);
 const statePath = join(tmpdir(), `dispatch_test_state_${process.pid}_${Math.floor(Math.random() * 1e6)}.json`);
+const lockPath = join(tmpdir(), `dispatch_test_pid_${process.pid}_${Math.floor(Math.random() * 1e6)}.lock`);
 const DEAD_PID = 2147480000; // almost certainly not a live process
 
 function spawnNamedSleeper(argv0: string) {
@@ -29,6 +30,7 @@ function spawnNamedSleeper(argv0: string) {
 afterEach(() => {
   rmSync(pidPath, { force: true });
   rmSync(statePath, { force: true });
+  rmSync(lockPath, { recursive: true, force: true });
 });
 
 describe("pidfile", () => {
@@ -41,13 +43,13 @@ describe("pidfile", () => {
   });
   test("claimPid recovers a stale pidfile atomically", () => {
     writePid(DEAD_PID, pidPath);
-    const claimed = claimPid(process.pid, pidPath);
+    const claimed = claimPid(process.pid, pidPath, lockPath);
     expect(claimed.claimed).toBe(true);
     expect(readPid(pidPath)).toBe(process.pid);
   });
   test("claimPid refuses an already running owned daemon", () => {
     writePid(process.pid, pidPath);
-    const claimed = claimPid(12345, pidPath);
+    const claimed = claimPid(12345, pidPath, lockPath);
     expect(claimed.claimed).toBe(false);
     expect(claimed.pid).toBe(process.pid);
   });

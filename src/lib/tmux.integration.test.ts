@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LocalRunner } from "./runner.js";
 import { Tmux } from "./tmux.js";
+import { canRunTmuxIntegration } from "../test/tmux-availability.js";
 
-const tmuxAvailable = spawnSync("tmux", ["-V"], { encoding: "utf8" }).status === 0;
+const tmuxAvailable = canRunTmuxIntegration();
 const SESSION = `dispatch_it_${process.pid}`;
 // Target the session by name; tmux resolves to its active window/pane. This
 // avoids assuming a base-index (the host may use base-index 1).

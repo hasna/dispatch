@@ -4,8 +4,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codewithFixtureLauncher } from "../test/agent-launcher.js";
+import { canRunTmuxIntegration } from "../test/tmux-availability.js";
 
-const tmuxAvailable = spawnSync("tmux", ["-V"], { encoding: "utf8" }).status === 0;
+const tmuxAvailable = canRunTmuxIntegration();
 const SESSION = `dispatch_cli_${process.pid}`;
 const cli = join(import.meta.dir, "index.ts");
 const agent = join(import.meta.dir, "..", "test", "fake-agent.ts");

@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codewithFixtureLauncher } from "./test/agent-launcher.js";
+import { canRunTmuxIntegration } from "./test/tmux-availability.js";
 
 /**
  * End-to-end fidelity: dispatch a long multi-paragraph prompt through the real
@@ -11,7 +12,7 @@ import { codewithFixtureLauncher } from "./test/agent-launcher.js";
  * intact (no premature submit, no mangling) AND that delivery was confirmed.
  */
 
-const tmuxAvailable = spawnSync("tmux", ["-V"], { encoding: "utf8" }).status === 0;
+const tmuxAvailable = canRunTmuxIntegration();
 const SESSION = `dispatch_e2e_${process.pid}`;
 const cli = join(import.meta.dir, "cli", "index.ts");
 const recorder = join(import.meta.dir, "test", "recorder-agent.ts");

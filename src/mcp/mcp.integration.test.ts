@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codewithFixtureLauncher } from "../test/agent-launcher.js";
+import { canRunTmuxIntegration } from "../test/tmux-availability.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "./index.js";
@@ -13,7 +14,7 @@ import { Tmux } from "../lib/tmux.js";
 import { LocalRunner, type RunResult, type Runner } from "../lib/runner.js";
 import { MockRunner } from "../test/mock-runner.js";
 
-const tmuxAvailable = spawnSync("tmux", ["-V"], { encoding: "utf8" }).status === 0;
+const tmuxAvailable = canRunTmuxIntegration();
 const SESSION = `dispatch_mcp_it_${process.pid}`;
 const TARGET_SOCKET = `dispatch_mcp_targets_${process.pid}`;
 const TARGET_SESSION = `dispatch_mcp_targets_${process.pid}`;

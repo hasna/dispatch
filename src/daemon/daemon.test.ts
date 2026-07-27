@@ -9,11 +9,13 @@ import { DispatchClient } from "../sdk/index.js";
 
 const pidPath = join(tmpdir(), `dispatch_daemon_pid_${process.pid}_${Math.floor(Math.random() * 1e6)}.pid`);
 const statePath = join(tmpdir(), `dispatch_daemon_state_${process.pid}_${Math.floor(Math.random() * 1e6)}.json`);
+const lockPath = join(tmpdir(), `dispatch_daemon_pid_${process.pid}_${Math.floor(Math.random() * 1e6)}.lock`);
 const noSleep = async () => {};
 
 afterEach(() => {
   rmSync(pidPath, { force: true });
   rmSync(statePath, { force: true });
+  rmSync(lockPath, { recursive: true, force: true });
 });
 
 describe("runDaemon", () => {
@@ -37,6 +39,7 @@ describe("runDaemon", () => {
       store,
       client,
       pidPath,
+      pidLockPath: lockPath,
       statePath,
       sleep: noSleep,
       shouldStop: () => ticks++ >= 1,
@@ -55,7 +58,7 @@ describe("runDaemon", () => {
     writePid(process.pid, pidPath); // a live pid
     const store = new Store(":memory:");
     await expect(
-      runDaemon({ store, pidPath, shouldStop: () => true, sleep: noSleep, log: () => {} }),
+      runDaemon({ store, pidPath, pidLockPath: lockPath, shouldStop: () => true, sleep: noSleep, log: () => {} }),
     ).rejects.toThrow(/already running/);
     store.close();
   });
