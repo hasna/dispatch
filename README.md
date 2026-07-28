@@ -580,7 +580,17 @@ Set the dispatch storage mode to `api`, `self_hosted`, `remote`, `cloud`, or
 authority instead. API mode is fail-closed: it requires both
 `HASNA_DISPATCH_API_URL` and `HASNA_DISPATCH_API_KEY`, normalizes the authority to
 `/v1`, does not accept URL userinfo/query/fragment data, and never falls back to
-local SQLite after an API mode misconfiguration.
+local SQLite after an API mode misconfiguration. Once API mode is selected, the
+route is fixed for the whole command: an empty, `null`, or otherwise falsy answer
+from the authority is reported as a remote failure (`REMOTE_API_EMPTY_RESPONSE`),
+never quietly answered from the local box.
+
+Side-effecting requests (`send`, `exec`, `key`, bulk dispatch, `recover`) are sent
+exactly once. They carry an `Idempotency-Key` header for the authority's benefit,
+but the client does not replay them — including after a client-side timeout, which
+is not proof the authority never received the request. Only HTTP-idempotent reads
+are retried. Write retries stay off until the authority's idempotency contract is
+specified and covered by tests.
 
 ```bash
 HASNA_DISPATCH_STORAGE_MODE=api

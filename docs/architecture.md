@@ -65,6 +65,12 @@ the authenticated `/v1` authority for dispatch records, schedules, targets, flee
 summary, and daemon actions. Invalid API configuration fails closed instead of
 falling back to local SQLite.
 
+The route decision is computed once per command and is never re-derived from the
+response value, so an empty or falsy authority payload cannot be mistaken for
+"local mode"; a body-less success raises `REMOTE_API_EMPTY_RESPONSE`. The client
+retries only HTTP-idempotent methods, and never after a client-side abort/timeout,
+so a dispatch/exec/key/recover POST is submitted to a pane at most once.
+
 ## Local state
 
 Everything lives in sqlite at `~/.hasna/dispatch/dispatch.db` (override with

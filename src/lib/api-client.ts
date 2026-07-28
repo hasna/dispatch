@@ -27,6 +27,13 @@ export type Env = Record<string, string | undefined>;
 export type DispatchClientRoute = "local" | "api-http";
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
+/**
+ * Outcome of an API-mode routing attempt. `routed` records whether the remote
+ * authority answered the call; it is never derived from the payload value, so a
+ * falsy or empty remote response can never be mistaken for "local mode".
+ */
+export type DispatchApiRouteResult<T> = { routed: true; value: T } | { routed: false };
+
 const API_MODES = new Set(["api", "self_hosted", "remote", "cloud", "hybrid"]);
 const VALID_MODES = new Set(["local", ...API_MODES]);
 const RETRY_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -95,6 +102,25 @@ export class DispatchApiError extends Error {
   }
 }
 
+/**
+ * A 2xx with no payload from an endpoint that must return one. Raised instead of
+ * resolving `undefined`, because `undefined` is indistinguishable from "this
+ * command did not route to the API" at the call sites.
+ */
+export class DispatchApiEmptyResponseError extends Error {
+  readonly method: string;
+  readonly path: string;
+
+  constructor(baseUrl: string, method: string, path: string) {
+    super(
+      `REMOTE_API_EMPTY_RESPONSE: configured Dispatch authority ${baseUrl} returned an empty body for ${method} ${path}; local fallback is disabled`,
+    );
+    this.name = "DispatchApiEmptyResponseError";
+    this.method = method;
+    this.path = path;
+  }
+}
+
 function firstEnv(env: Env, keys: readonly string[]): { key: string; value: string } | null {
   for (const key of keys) {
     const value = env[key]?.trim();
@@ -137,6 +163,13 @@ function normalizeApiAuthorityUrl(value: string): string {
   return `${url.origin}/v1`;
 }
 
+/** True when the failure is a client-side abort/timeout rather than an authority response. */
+function isAbortLike(error: unknown): boolean {
+  if (error instanceof Error && error.name === "AbortError") return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /abort|timed?\s*out/i.test(message);
+}
+
 function routeError(baseUrl: string, route: string, error: unknown): never {
   const status = error && typeof error === "object" ? (error as { status?: unknown }).status : undefined;
   if (status === 401) {
@@ -163,8 +196,7 @@ function routeError(baseUrl: string, route: string, error: unknown): never {
       { cause: error },
     );
   }
-  const message = error instanceof Error ? error.message : String(error);
-  if ((error instanceof Error && error.name === "AbortError") || /abort|timed?\s*out/i.test(message)) {
+  if (isAbortLike(error)) {
     throw new Error(`REMOTE_API_TIMEOUT: configured Dispatch authority ${baseUrl} timed out for ${route}; local fallback is disabled`, {
       cause: error,
     });
@@ -335,8 +367,12 @@ export class DispatchApiClient {
       Authorization: `Bearer ${this.apiKey}`,
       Accept: "application/json",
     };
+    // The Idempotency-Key is advisory metadata for the authority. It does NOT license
+    // client retries: no authority in this repo implements or is tested against an
+    // idempotency contract, so replaying a side-effecting POST could type a prompt or
+    // shell command into a live pane twice. Only HTTP-idempotent methods are retried.
     if (opts.idempotencyKey) headers["Idempotency-Key"] = opts.idempotencyKey;
-    const methodRetryable = IDEMPOTENT.has(upper) || Boolean(opts.idempotencyKey);
+    const methodRetryable = IDEMPOTENT.has(upper);
     const attempts = methodRetryable ? (opts.retries ?? 2) + 1 : 1;
     let last: unknown;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -351,15 +387,23 @@ export class DispatchApiClient {
         const response = await this.fetchImpl(url, init);
         const text = await response.text();
         const parsed = text ? safeJson(text) : undefined;
-        if (response.ok) return parsed as T;
+        if (response.ok) {
+          if (parsed === undefined || parsed === null) throw new DispatchApiEmptyResponseError(this.baseUrl, upper, rel);
+          return parsed as T;
+        }
         last = new DispatchApiError(upper, rel, response.status, parsed);
       } catch (error) {
+        if (error instanceof DispatchApiEmptyResponseError) throw error;
         last = error;
       } finally {
         clearTimeout(timer);
       }
       const status = last && typeof last === "object" ? (last as { status?: unknown }).status : undefined;
-      if (!methodRetryable || attempt >= attempts || (typeof status === "number" && !RETRY_STATUSES.has(status))) break;
+      // A client-side abort/timeout is not proof the authority never received the
+      // request, so it is never retried regardless of method. Only transport-level
+      // failures qualify — an authority response always carries a numeric status.
+      const abortedInFlight = typeof status !== "number" && isAbortLike(last);
+      if (!methodRetryable || attempt >= attempts || abortedInFlight || (typeof status === "number" && !RETRY_STATUSES.has(status))) break;
       await this.sleepImpl(Math.min(2_000, 200 * 2 ** (attempt - 1)));
     }
     return routeError(this.baseUrl.replace(/\/v1$/, ""), rel, last);

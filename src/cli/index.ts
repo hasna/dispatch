@@ -38,7 +38,13 @@ import { normalizeBackend } from "../lib/backend.js";
 import { Mosaic } from "../lib/mosaic.js";
 import { SELF_HEAL_MAX_FILE_INPUT_BYTES, diagnoseDispatchSelfHeal, formatSelfHealDiagnosis } from "../lib/self-heal.js";
 import { DEFAULT_FLEET_MAX_PANE_CHARS, DEFAULT_FLEET_SUMMARY_LIMIT, performFleetSummary } from "../lib/fleet-summary.js";
-import { DispatchApiClient, getDispatchApiConfigStatus, type DispatchTargetsOptions, type FetchLike } from "../lib/api-client.js";
+import {
+  DispatchApiClient,
+  getDispatchApiConfigStatus,
+  type DispatchApiRouteResult,
+  type DispatchTargetsOptions,
+  type FetchLike,
+} from "../lib/api-client.js";
 
 export interface CliDeps {
   /** Factory for the client; when provided, the CLI will NOT close it (tests own it). */
@@ -120,9 +126,15 @@ export function buildProgram(deps: CliDeps = {}): Command {
     }
   }
 
-  async function withApiClient<T>(fn: (c: DispatchApiClient) => T | Promise<T>): Promise<T | undefined> {
-    if (!deps.clientFactory && !getDispatchApiConfigStatus(deps.env).selected) return undefined;
-    return withClient((c) => (c instanceof DispatchApiClient ? fn(c) : undefined));
+  /**
+   * Run `fn` against the remote authority when the client route is API mode.
+   * `routed` reflects the route decision only, never the truthiness of the remote
+   * payload, so an empty or falsy remote answer can never silently fall back to
+   * the local box.
+   */
+  async function withApiClient<T>(fn: (c: DispatchApiClient) => T | Promise<T>): Promise<DispatchApiRouteResult<T>> {
+    if (!deps.clientFactory && !getDispatchApiConfigStatus(deps.env).selected) return { routed: false };
+    return withClient(async (c) => (c instanceof DispatchApiClient ? { routed: true as const, value: await fn(c) } : { routed: false as const }));
   }
 
   const program = new Command();
@@ -452,7 +464,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .option("--json", "output JSON")
     .action(async (opts) => {
       const backend = normalizeBackend(opts.backend);
-      const apiTargets = await withApiClient((c) =>
+      const apiRoute = await withApiClient((c) =>
         c.targets({
           machine: opts.machine,
           backend,
@@ -461,7 +473,8 @@ export function buildProgram(deps: CliDeps = {}): Command {
           verbose: opts.verbose === true || opts.json === true,
         } satisfies DispatchTargetsOptions),
       );
-      if (apiTargets) {
+      if (apiRoute.routed) {
+        const apiTargets = apiRoute.value;
         if (opts.json) {
           out(JSON.stringify(apiTargets, null, 2));
         } else if (apiTargets.length === 0) {
@@ -596,8 +609,8 @@ export function buildProgram(deps: CliDeps = {}): Command {
               }
             : undefined,
       };
-      const apiResult = await withApiClient((c) => c.fleetSummary(options));
-      const result = apiResult ?? performFleetSummary(options, { tmux: new Tmux(await makeRunner(opts.machine)) });
+      const apiRoute = await withApiClient((c) => c.fleetSummary(options));
+      const result = apiRoute.routed ? apiRoute.value : performFleetSummary(options, { tmux: new Tmux(await makeRunner(opts.machine)) });
       out(opts.json ? JSON.stringify(result, null, 2) : formatFleetSummary(result));
       if (result.status === "failed") process.exitCode = 1;
     });

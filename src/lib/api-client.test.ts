@@ -1,8 +1,22 @@
 import { describe, expect, test } from "bun:test";
-import { DispatchApiClient, DispatchApiError, getDispatchApiClient, getDispatchApiConfigStatus, type FetchLike } from "./api-client.js";
+import {
+  DispatchApiClient,
+  DispatchApiError,
+  getDispatchApiClient,
+  getDispatchApiConfigStatus,
+  type FetchLike,
+} from "./api-client.js";
+
+interface RecordedCall {
+  url: string;
+  path: string;
+  method: string;
+  headers: Record<string, string>;
+  body: unknown;
+}
 
 function apiFetch(handler: (path: string, method: string, body: unknown) => { status?: number; body?: unknown }) {
-  const calls: Array<{ url: string; path: string; method: string; headers: Record<string, string>; body: unknown }> = [];
+  const calls: RecordedCall[] = [];
   const fetchImpl: FetchLike = async (url, init = {}) => {
     const method = init.method ?? "GET";
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
@@ -13,6 +27,34 @@ function apiFetch(handler: (path: string, method: string, body: unknown) => { st
     return Response.json(result.body ?? {}, { status: result.status ?? 200 });
   };
   return { calls, fetchImpl };
+}
+
+/** A fetch that never answers, so the client's own timeout aborts the request. */
+function hangingFetch() {
+  const calls: string[] = [];
+  const fetchImpl: FetchLike = (url, init = {}) => {
+    calls.push(`${init.method ?? "GET"} ${new URL(url).pathname}`);
+    return new Promise((_resolve, reject) => {
+      const signal = init.signal as AbortSignal | undefined;
+      const abort = () => {
+        const error = new Error("The operation was aborted.");
+        error.name = "AbortError";
+        reject(error);
+      };
+      if (signal?.aborted) abort();
+      else signal?.addEventListener("abort", abort);
+    });
+  };
+  return { calls, fetchImpl };
+}
+
+/**
+ * Calls that carry the API key anywhere other than the auth headers. The auth
+ * headers are excluded deliberately — they are the one place the key belongs —
+ * so the predicate can actually fail; see the negative control below.
+ */
+function credentialLeaks(calls: Array<Pick<RecordedCall, "url" | "body">>, apiKey: string): Array<Pick<RecordedCall, "url" | "body">> {
+  return calls.filter((call) => JSON.stringify({ url: call.url, body: call.body }).includes(apiKey));
 }
 
 const record = {
@@ -170,7 +212,16 @@ describe("DispatchApiClient", () => {
       "POST /v1/daemon/service",
     ]);
     expect(calls.every((call) => call.headers.Authorization === "Bearer secret")).toBe(true);
-    expect(calls.every((call) => !JSON.stringify(call).includes("secret") || call.headers.Authorization === "Bearer secret")).toBe(true);
+    expect(credentialLeaks(calls, "secret")).toEqual([]);
+  });
+
+  test("the credential-leak predicate flags a key carried outside the auth headers", () => {
+    // Negative control: without this, an assertion that "the key never leaks" could
+    // be vacuously true and would stay green if a future change put it in a query
+    // string or request body.
+    expect(credentialLeaks([{ url: "https://dispatch.hasna.xyz/v1/dispatches?apiKey=secret", body: undefined }], "secret")).toHaveLength(1);
+    expect(credentialLeaks([{ url: "https://dispatch.hasna.xyz/v1/dispatches", body: { options: { apiKey: "secret" } } }], "secret")).toHaveLength(1);
+    expect(credentialLeaks([{ url: "https://dispatch.hasna.xyz/v1/dispatches", body: { options: { prompt: "hello" } } }], "secret")).toEqual([]);
   });
 
   test("returns undefined for a missing dispatch without querying local state", async () => {
@@ -178,6 +229,69 @@ describe("DispatchApiClient", () => {
     const client = new DispatchApiClient({ baseUrl: "https://dispatch.hasna.xyz/v1", apiKey: "secret", fetchImpl });
     expect(await client.status("missing")).toBeUndefined();
     expect(calls.map((call) => call.path)).toEqual(["/v1/dispatches/missing"]);
+  });
+
+  test("never replays a side-effecting POST, so a prompt or command is submitted at most once", async () => {
+    const { calls, fetchImpl } = apiFetch(() => ({ status: 504, body: { error: "gateway timeout" } }));
+    const client = new DispatchApiClient({
+      baseUrl: "https://dispatch.hasna.xyz/v1",
+      apiKey: "secret",
+      fetchImpl,
+      sleepImpl: async () => {},
+    });
+
+    await expect(client.send({ target: "work:agent", prompt: "hello" })).rejects.toThrow(/REMOTE_API_UNAVAILABLE/);
+    await expect(client.exec({ target: "work:shell", command: "bun run migrate" })).rejects.toThrow(/REMOTE_API_UNAVAILABLE/);
+    await expect(client.recover({ target: "work:agent", prompt: "fix" })).rejects.toThrow(/REMOTE_API_UNAVAILABLE/);
+
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual(["POST /v1/dispatches", "POST /v1/exec", "POST /v1/recover"]);
+  });
+
+  test("still retries idempotent reads on a retryable status", async () => {
+    const { calls, fetchImpl } = apiFetch(() => ({ status: 503, body: { error: "unavailable" } }));
+    const client = new DispatchApiClient({
+      baseUrl: "https://dispatch.hasna.xyz/v1",
+      apiKey: "secret",
+      fetchImpl,
+      sleepImpl: async () => {},
+    });
+
+    await expect(client.list()).rejects.toThrow(/REMOTE_API_UNAVAILABLE/);
+    expect(calls).toHaveLength(3);
+  });
+
+  test("never replays a request after a client-side timeout, even an idempotent one", async () => {
+    const post = hangingFetch();
+    const postClient = new DispatchApiClient({
+      baseUrl: "https://dispatch.hasna.xyz/v1",
+      apiKey: "secret",
+      fetchImpl: post.fetchImpl,
+      timeoutMs: 5,
+      sleepImpl: async () => {},
+    });
+    await expect(postClient.exec({ target: "work:shell", command: "bun run migrate" })).rejects.toThrow(/REMOTE_API_TIMEOUT/);
+    expect(post.calls).toEqual(["POST /v1/exec"]);
+
+    const get = hangingFetch();
+    const getClient = new DispatchApiClient({
+      baseUrl: "https://dispatch.hasna.xyz/v1",
+      apiKey: "secret",
+      fetchImpl: get.fetchImpl,
+      timeoutMs: 5,
+      sleepImpl: async () => {},
+    });
+    await expect(getClient.list()).rejects.toThrow(/REMOTE_API_TIMEOUT/);
+    expect(get.calls).toEqual(["GET /v1/dispatches"]);
+  });
+
+  test("a body-less or null success from the authority fails closed instead of resolving undefined", async () => {
+    const empty: FetchLike = async () => new Response(null, { status: 204 });
+    const emptyClient = new DispatchApiClient({ baseUrl: "https://dispatch.hasna.xyz/v1", apiKey: "secret", fetchImpl: empty });
+    await expect(emptyClient.daemonStatus()).rejects.toThrow(/REMOTE_API_EMPTY_RESPONSE/);
+
+    const nulled: FetchLike = async () => new Response("null", { status: 200, headers: { "content-type": "application/json" } });
+    const nullClient = new DispatchApiClient({ baseUrl: "https://dispatch.hasna.xyz/v1", apiKey: "secret", fetchImpl: nulled });
+    await expect(nullClient.fleetSummary()).rejects.toThrow(/REMOTE_API_EMPTY_RESPONSE/);
   });
 
   test("rejects redirects so credentials are not followed to another authority", async () => {

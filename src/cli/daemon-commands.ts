@@ -4,7 +4,7 @@ import { daemonStatus, stopDaemon } from "../daemon/control.js";
 import { runDaemon, startDaemon } from "../daemon/daemon.js";
 import { serviceAction, type ServiceAction } from "../daemon/service.js";
 import { createDispatchClientFromEnv, type DispatchClientLike } from "../sdk/index.js";
-import { DispatchApiClient, getDispatchApiConfigStatus } from "../lib/api-client.js";
+import { DispatchApiClient, getDispatchApiConfigStatus, type DispatchApiRouteResult } from "../lib/api-client.js";
 
 export interface DaemonCommandDeps {
   out: (s: string) => void;
@@ -28,13 +28,19 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
 
   const makeClient = deps.clientFactory ?? (() => createDispatchClientFromEnv());
 
-  async function withApiDaemon<T>(fn: (client: DispatchApiClient) => Promise<T>): Promise<T | undefined> {
+  /**
+   * Run `fn` against the remote authority when the client route is API mode.
+   * The returned `routed` flag comes from the route decision alone — never from
+   * the truthiness of the remote payload — so an empty or falsy remote answer can
+   * never silently hand the command to the local box.
+   */
+  async function withApiDaemon<T>(fn: (client: DispatchApiClient) => Promise<T>): Promise<DispatchApiRouteResult<T>> {
     const apiSelected = deps.apiSelected ?? (deps.clientFactory ? undefined : getDispatchApiConfigStatus().selected);
-    if (apiSelected === false) return undefined;
+    if (apiSelected === false) return { routed: false };
     const client = makeClient();
     const isApi = client instanceof DispatchApiClient;
     try {
-      return isApi ? await fn(client) : undefined;
+      return isApi ? { routed: true, value: await fn(client) } : { routed: false };
     } finally {
       if ((deps.ownClient ?? !deps.clientFactory) && typeof client.close === "function") client.close();
     }
@@ -81,11 +87,11 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
     .description("Start the daemon in the background")
     .action(async () => {
       const remote = await withApiDaemon((client) => client.daemonStart());
-      if (remote) {
-        if (remote.alreadyRunning) {
-          deps.out(`daemon already running (pid ${remote.pid})`);
-        } else if (remote.started) {
-          deps.out(`daemon started (pid ${remote.pid})`);
+      if (remote.routed) {
+        if (remote.value.alreadyRunning) {
+          deps.out(`daemon already running (pid ${remote.value.pid})`);
+        } else if (remote.value.started) {
+          deps.out(`daemon started (pid ${remote.value.pid})`);
         } else {
           deps.err("daemon failed to start");
           process.exitCode = 1;
@@ -115,15 +121,15 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
     .option("--json", "output JSON")
     .action(async (opts) => {
       const remote = await withApiDaemon((client) => client.daemonEnsure());
-      if (remote) {
+      if (remote.routed) {
         deps.out(
           opts.json
-            ? JSON.stringify({ action: "ensure", ...remote }, null, 2)
-            : remote.ok
-              ? `daemon ensured${remote.after?.pid ? ` (pid ${remote.after.pid})` : ""}`
+            ? JSON.stringify({ action: "ensure", ...remote.value }, null, 2)
+            : remote.value.ok
+              ? `daemon ensured${remote.value.after?.pid ? ` (pid ${remote.value.after.pid})` : ""}`
               : "daemon ensure failed",
         );
-        if (!remote.ok) process.exitCode = 1;
+        if (!remote.value.ok) process.exitCode = 1;
         return;
       }
       const store = new Store();
@@ -156,9 +162,9 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
     .option("--json", "output JSON")
     .action(async (opts) => {
       const remote = await withApiDaemon((client) => client.daemonRestart());
-      if (remote) {
-        deps.out(opts.json ? JSON.stringify({ action: "restart", ...remote }, null, 2) : remote.ok ? `daemon restarted (pid ${remote.started.pid})` : "daemon restart failed");
-        if (!remote.ok) process.exitCode = 1;
+      if (remote.routed) {
+        deps.out(opts.json ? JSON.stringify({ action: "restart", ...remote.value }, null, 2) : remote.value.ok ? `daemon restarted (pid ${remote.value.started.pid})` : "daemon restart failed");
+        if (!remote.value.ok) process.exitCode = 1;
         return;
       }
       const stopped = await stopDaemon();
@@ -178,11 +184,11 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
     .description("Stop the running daemon and wait for it to exit")
     .action(async () => {
       const remote = await withApiDaemon((client) => client.daemonStop());
-      if (remote) {
-        if (remote.stopped) {
-          deps.out(`daemon stopped (pid ${remote.pid})${remote.forced ? " [forced]" : ""}`);
-        } else if (remote.pid && !remote.wasRunning) {
-          deps.out(`removed stale pidfile (pid ${remote.pid} was not running)`);
+      if (remote.routed) {
+        if (remote.value.stopped) {
+          deps.out(`daemon stopped (pid ${remote.value.pid})${remote.value.forced ? " [forced]" : ""}`);
+        } else if (remote.value.pid && !remote.value.wasRunning) {
+          deps.out(`removed stale pidfile (pid ${remote.value.pid} was not running)`);
         } else {
           deps.out("daemon is not running");
         }
@@ -204,8 +210,8 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
     .option("--json", "output JSON")
     .action(async (opts) => {
       const remote = await withApiDaemon((client) => client.daemonStatus());
-      if (remote) {
-        printDaemonStatus(remote, opts.json === true);
+      if (remote.routed) {
+        printDaemonStatus(remote.value, opts.json === true);
         return;
       }
       const store = new Store();
@@ -223,14 +229,14 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
     .option("--json", "output JSON")
     .action(async (opts) => {
       const remote = await withApiDaemon((client) => client.daemonDoctor());
-      if (remote) {
+      if (remote.routed) {
         if (opts.json) {
-          deps.out(JSON.stringify(remote, null, 2));
+          deps.out(JSON.stringify(remote.value, null, 2));
         } else {
-          deps.out(remote.ok ? "daemon doctor: ok" : "daemon doctor: attention needed");
-          for (const f of remote.findings) deps.out(`  - ${f}`);
+          deps.out(remote.value.ok ? "daemon doctor: ok" : "daemon doctor: attention needed");
+          for (const f of remote.value.findings) deps.out(`  - ${f}`);
         }
-        if (!remote.ok) process.exitCode = 1;
+        if (!remote.value.ok) process.exitCode = 1;
         return;
       }
       const store = new Store();
@@ -267,8 +273,8 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
         return;
       }
       const remote = await withApiDaemon((client) => client.daemonService({ action, start: opts.start === true }));
-      if (remote) {
-        printServiceResult(remote, opts.json === true);
+      if (remote.routed) {
+        printServiceResult(remote.value, opts.json === true);
         return;
       }
       const res = serviceAction(action, {

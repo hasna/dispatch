@@ -1372,4 +1372,83 @@ describe("CLI read/schedule commands (in-memory client)", () => {
     expect(JSON.parse(out[3]!)).toMatchObject({ schemaVersion: "dispatch.fleet_summary.v1", status: "completed" });
     expect(JSON.parse(out[4]!)).toMatchObject({ health: "alive", scheduled: 1 });
   });
+
+  test("api mode fails closed on an empty authority response instead of answering from the local box", async () => {
+    const out: string[] = [];
+    const calls: string[] = [];
+    const fetchImpl: FetchLike = async (url, init = {}) => {
+      calls.push(`${init.method ?? "GET"} ${new URL(url).pathname}`);
+      return new Response(null, { status: 204 });
+    };
+    const program = buildProgram({
+      env: {
+        HASNA_DISPATCH_STORAGE_MODE: "api",
+        HASNA_DISPATCH_API_URL: "https://dispatch.hasna.xyz",
+        HASNA_DISPATCH_API_KEY: "test-key",
+      } as NodeJS.ProcessEnv,
+      fetchImpl,
+      runnerFactory: async () => {
+        throw new Error("API mode must not enumerate local tmux targets");
+      },
+      out: (s) => out.push(s),
+    });
+
+    // A body-less 204 is indistinguishable from "not API mode" if the route
+    // decision is derived from the payload; each of these must surface the remote
+    // failure rather than print local daemon/tmux state.
+    await expect(program.parseAsync(["daemon", "status", "--json"], { from: "user" })).rejects.toThrow(/REMOTE_API_EMPTY_RESPONSE/);
+    await expect(program.parseAsync(["daemon", "doctor", "--json"], { from: "user" })).rejects.toThrow(/REMOTE_API_EMPTY_RESPONSE/);
+    await expect(program.parseAsync(["fleet", "summary", "--json"], { from: "user" })).rejects.toThrow(/REMOTE_API_EMPTY_RESPONSE/);
+
+    expect(calls).toEqual(["GET /v1/daemon/status", "GET /v1/daemon/doctor", "POST /v1/fleet/summary"]);
+    expect(out).toEqual([]);
+  });
+
+  test("api mode fails closed on a null authority body instead of running the local fleet summary", async () => {
+    const out: string[] = [];
+    const fetchImpl: FetchLike = async () =>
+      new Response("null", { status: 200, headers: { "content-type": "application/json" } });
+    const program = buildProgram({
+      env: {
+        HASNA_DISPATCH_STORAGE_MODE: "api",
+        HASNA_DISPATCH_API_URL: "https://dispatch.hasna.xyz",
+        HASNA_DISPATCH_API_KEY: "test-key",
+      } as NodeJS.ProcessEnv,
+      fetchImpl,
+      runnerFactory: async () => {
+        throw new Error("LOCAL RUNNER USED");
+      },
+      out: (s) => out.push(s),
+    });
+
+    await expect(program.parseAsync(["fleet", "summary", "--json"], { from: "user" })).rejects.toThrow(/REMOTE_API_EMPTY_RESPONSE/);
+    await expect(program.parseAsync(["targets", "--json"], { from: "user" })).rejects.toThrow(/REMOTE_API_EMPTY_RESPONSE/);
+    expect(out).toEqual([]);
+  });
+
+  test("a falsy authority payload still reports the remote answer instead of local daemon state", async () => {
+    const out: string[] = [];
+    const fetchImpl: FetchLike = async () =>
+      new Response("false", { status: 200, headers: { "content-type": "application/json" } });
+    const program = buildProgram({
+      env: {
+        HASNA_DISPATCH_STORAGE_MODE: "api",
+        HASNA_DISPATCH_API_URL: "https://dispatch.hasna.xyz",
+        HASNA_DISPATCH_API_KEY: "test-key",
+      } as NodeJS.ProcessEnv,
+      fetchImpl,
+      runnerFactory: async () => {
+        throw new Error("API mode must not enumerate local tmux targets");
+      },
+      out: (s) => out.push(s),
+    });
+
+    // `false` is a well-formed JSON body, so the route decision must not be
+    // re-derived from its truthiness — that is what silently printed local
+    // SQLite daemon state as if it were the authority's.
+    await program.parseAsync(["daemon", "status", "--json"], { from: "user" });
+
+    expect(out).toEqual(["false"]);
+    process.exitCode = 0;
+  });
 });

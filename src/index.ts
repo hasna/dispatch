@@ -53,8 +53,15 @@ export {
   performMosaicDispatch,
 } from "./lib/mosaic.js";
 export { normalizeBackend } from "./lib/backend.js";
-export { DispatchApiClient, DispatchApiError, getDispatchApiClient, getDispatchApiConfigStatus } from "./lib/api-client.js";
-export type { DispatchApiClientOptions, DispatchApiConfigStatus, DispatchClientRoute, DispatchTargetsOptions, FetchLike } from "./lib/api-client.js";
+export { DispatchApiClient, DispatchApiEmptyResponseError, DispatchApiError, getDispatchApiClient, getDispatchApiConfigStatus } from "./lib/api-client.js";
+export type {
+  DispatchApiClientOptions,
+  DispatchApiConfigStatus,
+  DispatchApiRouteResult,
+  DispatchClientRoute,
+  DispatchTargetsOptions,
+  FetchLike,
+} from "./lib/api-client.js";
 export { parseSessionsTargets, resolveSessionsTargets } from "./lib/sessions-source.js";
 export {
   classifyPaneCommand,
