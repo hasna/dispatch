@@ -1451,4 +1451,33 @@ describe("CLI read/schedule commands (in-memory client)", () => {
     expect(out).toEqual(["false"]);
     process.exitCode = 0;
   });
+
+  test("a stale DISPATCH_STORAGE_MODE alias does not brick commands that the canonical mode governs", async () => {
+    const out: string[] = [];
+    const calls: string[] = [];
+    const fetchImpl: FetchLike = async (url, init = {}) => {
+      calls.push(`${init.method ?? "GET"} ${new URL(url).pathname}`);
+      return Response.json({ dispatches: [] });
+    };
+    const program = buildProgram({
+      env: {
+        HASNA_DISPATCH_STORAGE_MODE: "api",
+        // Left over from an older install; it loses to the canonical name above
+        // and is therefore never consulted, so it must not fail the run either.
+        DISPATCH_STORAGE_MODE: "sqlite",
+        HASNA_DISPATCH_API_URL: "https://dispatch.hasna.xyz",
+        HASNA_DISPATCH_API_KEY: "test-key",
+      } as NodeJS.ProcessEnv,
+      fetchImpl,
+      runnerFactory: async () => {
+        throw new Error("API mode must not enumerate local tmux targets");
+      },
+      out: (s) => out.push(s),
+    });
+
+    await program.parseAsync(["list", "--json"], { from: "user" });
+
+    expect(calls).toEqual(["GET /v1/dispatches"]);
+    expect(JSON.parse(out[0]!)).toEqual([]);
+  });
 });

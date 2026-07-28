@@ -117,6 +117,52 @@ describe("dispatch API route resolution", () => {
       /REMOTE_API_URL_MISSING/,
     );
   });
+
+  test("a stale DISPATCH_STORAGE_MODE alias never vetoes the canonical mode that outranks it", () => {
+    // Only the variable that wins precedence is consulted, so an unread alias
+    // must not be able to brick the run — least of all the default local path.
+    expect(
+      getDispatchApiConfigStatus({ HASNA_DISPATCH_STORAGE_MODE: "local", DISPATCH_STORAGE_MODE: "sqlite" }),
+    ).toMatchObject({ selected: false, ok: true, mode: "local", source: "HASNA_DISPATCH_STORAGE_MODE", issues: [] });
+    expect(getDispatchApiClient({ HASNA_DISPATCH_STORAGE_MODE: "local", DISPATCH_STORAGE_MODE: "sqlite" })).toBeNull();
+
+    const apiEnv = {
+      HASNA_DISPATCH_STORAGE_MODE: "api",
+      DISPATCH_STORAGE_MODE: "sqlite",
+      HASNA_DISPATCH_API_URL: "https://dispatch.hasna.xyz",
+      HASNA_DISPATCH_API_KEY: "test-key",
+    };
+    expect(getDispatchApiConfigStatus(apiEnv)).toMatchObject({
+      selected: true,
+      ok: true,
+      mode: "api",
+      source: "HASNA_DISPATCH_STORAGE_MODE",
+      v1BaseUrl: "https://dispatch.hasna.xyz/v1",
+      issues: [],
+    });
+    expect(getDispatchApiClient(apiEnv)).toBeInstanceOf(DispatchApiClient);
+  });
+
+  test("an unusable storage mode still fails closed when that variable is the one in effect", () => {
+    // Negative control for the precedence rule above: ignoring the loser must not
+    // become ignoring the winner. The alias is authoritative when the canonical
+    // name is unset, and the canonical name is authoritative when both are set.
+    expect(getDispatchApiConfigStatus({ DISPATCH_STORAGE_MODE: "sqlite" })).toMatchObject({
+      selected: true,
+      ok: false,
+      mode: "sqlite",
+      source: "DISPATCH_STORAGE_MODE",
+      localFallback: false,
+    });
+    expect(getDispatchApiConfigStatus({ HASNA_DISPATCH_STORAGE_MODE: "sqlite", DISPATCH_STORAGE_MODE: "local" })).toMatchObject({
+      selected: true,
+      ok: false,
+      mode: "sqlite",
+      source: "HASNA_DISPATCH_STORAGE_MODE",
+      localFallback: false,
+    });
+    expect(() => getDispatchApiClient({ HASNA_DISPATCH_STORAGE_MODE: "sqlite" })).toThrow(/REMOTE_STORAGE_MODE_INVALID/);
+  });
 });
 
 describe("DispatchApiClient", () => {

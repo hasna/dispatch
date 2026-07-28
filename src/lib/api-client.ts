@@ -121,7 +121,12 @@ export class DispatchApiEmptyResponseError extends Error {
   }
 }
 
-function firstEnv(env: Env, keys: readonly string[]): { key: string; value: string } | null {
+/**
+ * The first key that carries a value, in precedence order. Later keys are pure
+ * aliases: once an earlier one wins they are never read, so their contents can
+ * never affect the outcome.
+ */
+function firstEnv<K extends string>(env: Env, keys: readonly K[]): { key: K; value: string } | null {
   for (const key of keys) {
     const value = env[key]?.trim();
     if (value) return { key, value };
@@ -263,35 +268,35 @@ function booleanEnvelope(raw: unknown, keys: readonly string[]): boolean {
 }
 
 export function getDispatchApiConfigStatus(env: Env = process.env as Env): DispatchApiConfigStatus {
-  const canonical = cleanMode(env.HASNA_DISPATCH_STORAGE_MODE);
-  const fallback = cleanMode(env.DISPATCH_STORAGE_MODE);
+  // Resolve precedence first, then validate only the variable that actually
+  // wins. Validating the loser too would let a stale `DISPATCH_STORAGE_MODE`
+  // left over from an older install veto an explicitly set
+  // `HASNA_DISPATCH_STORAGE_MODE` and hard-fail every command, including the
+  // default local mode that never reads either value.
+  const modeHit = firstEnv(env, ["HASNA_DISPATCH_STORAGE_MODE", "DISPATCH_STORAGE_MODE"]);
+  const selectedMode = cleanMode(modeHit?.value);
   const urlHit = firstEnv(env, ["HASNA_DISPATCH_API_URL", "DISPATCH_API_URL"]);
   const keyHit = firstEnv(env, ["HASNA_DISPATCH_API_KEY", "DISPATCH_API_KEY"]);
 
-  for (const [source, value] of [
-    ["HASNA_DISPATCH_STORAGE_MODE", canonical],
-    ["DISPATCH_STORAGE_MODE", fallback],
-  ] as const) {
-    if (value && !VALID_MODES.has(value)) {
-      return {
-        selected: true,
-        ok: false,
-        mode: value,
-        source,
-        apiUrlConfigured: Boolean(urlHit),
-        apiKeyConfigured: Boolean(keyHit),
-        v1BaseUrl: null,
-        issues: [
-          `REMOTE_STORAGE_MODE_INVALID: ${source}=${value} must be local, api, remote, self_hosted, cloud, or hybrid; local fallback is disabled`,
-        ],
-        localFallback: false,
-      };
-    }
+  if (modeHit && selectedMode && !VALID_MODES.has(selectedMode)) {
+    return {
+      selected: true,
+      ok: false,
+      mode: selectedMode,
+      source: modeHit.key,
+      apiUrlConfigured: Boolean(urlHit),
+      apiKeyConfigured: Boolean(keyHit),
+      v1BaseUrl: null,
+      issues: [
+        `REMOTE_STORAGE_MODE_INVALID: ${modeHit.key}=${selectedMode} must be local, api, remote, self_hosted, cloud, or hybrid; local fallback is disabled`,
+      ],
+      localFallback: false,
+    };
   }
 
-  let mode = canonical ?? fallback ?? "local";
-  let source: DispatchApiConfigStatus["source"] = canonical ? "HASNA_DISPATCH_STORAGE_MODE" : fallback ? "DISPATCH_STORAGE_MODE" : "default";
-  if (!canonical && !fallback && urlHit && keyHit) {
+  let mode = selectedMode ?? "local";
+  let source: DispatchApiConfigStatus["source"] = modeHit ? modeHit.key : "default";
+  if (!selectedMode && urlHit && keyHit) {
     mode = "api";
     source = "auto:api-url+api-key";
   }
