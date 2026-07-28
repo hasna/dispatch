@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runDaemon, startDaemon } from "./daemon.js";
@@ -62,6 +62,35 @@ describe("runDaemon", () => {
     ).rejects.toThrow(/already running/);
     store.close();
   });
+
+  test(
+    "claims through the injected pid lock, not the shared one",
+    async () => {
+      // A live-owner lock at the INJECTED path. runDaemon must contend with it
+      // and time out; if opts.pidLockPath stops reaching claimPid the daemon
+      // takes the shared $HOME lock instead, finds it free, and starts.
+      mkdirSync(lockPath, { recursive: true });
+      writeFileSync(join(lockPath, "pid"), String(process.pid)); // us: alive, so never reaped
+      const store = new Store(":memory:");
+      try {
+        await expect(
+          runDaemon({
+            store,
+            pidPath,
+            pidLockPath: lockPath,
+            statePath,
+            shouldStop: () => true,
+            sleep: noSleep,
+            log: () => {},
+          }),
+        ).rejects.toThrow(`could not acquire daemon pidfile lock: ${lockPath}`);
+        expect(existsSync(pidPath)).toBe(false); // never claimed
+      } finally {
+        store.close();
+      }
+    },
+    15_000, // acquirePidLock spins for PID_LOCK_WAIT_MS before giving up
+  );
 
   test("startDaemon creates a missing log directory before spawning", async () => {
     const root = mkdtempSync(join(tmpdir(), "dispatch_daemon_start_"));
