@@ -1,0 +1,83 @@
+{
+  "$schema": "./node_modules/@hasna/contracts/dist/hasna.contract.schema.json",
+  "schema": "hasna.service_contract.v1",
+  "name": "dispatch",
+  "class": "cli-with-store",
+  "contractVersion": "v1",
+  "kitVersion": "0.8.1",
+  "description": "Local tmux prompt dispatch for coding agents. CLI + MCP + SDK + daemon with SQLite-backed dispatch and schedule records.",
+  "bins": [
+    "dispatch",
+    "dispatch-mcp",
+    "dispatch-daemon"
+  ],
+  "hosting": [
+    "user-hosted"
+  ],
+  "deploymentModes": [
+    "local",
+    "self_hosted"
+  ],
+  "serviceSurfaces": [
+    {
+      "name": "typescript-sdk",
+      "kind": "sdk",
+      "status": "supported",
+      "authMode": "local-only",
+      "deploymentModes": [
+        "local",
+        "self_hosted"
+      ],
+      "exportSubpath": "./sdk",
+      "clientClassName": "DispatchClient"
+    },
+    {
+      "name": "mcp",
+      "kind": "mcp",
+      "status": "supported",
+      "mcpBin": "dispatch-mcp",
+      "authMode": "local-only",
+      "deploymentModes": [
+        "local",
+        "self_hosted"
+      ]
+    },
+    {
+      "name": "cli",
+      "kind": "cli",
+      "status": "supported",
+      "bin": "dispatch",
+      "authMode": "local-only",
+      "deploymentModes": [
+        "local",
+        "self_hosted"
+      ]
+    }
+  ],
+  "storage": {
+    "mode": "local",
+    "engines": [
+      "sqlite"
+    ],
+    "envPrefix": "HASNA_DISPATCH_",
+    "aliasEnvPrefix": "DISPATCH_",
+    "sqlitePath": "~/.hasna/dispatch/dispatch.db"
+  },
+  "metadata": {
+    "release": {
+      "artifactScan": {
+        "script": "scan:artifact"
+      }
+    },
+    "conformance": {
+      "waivedStorageEngines": [
+        {
+          "engine": "postgres",
+          "reason": "Local tmux dispatch package without a serve binary or cloud runtime placement; PostgreSQL support belongs to a future service-capable storage task.",
+          "reviewedBy": "platform-storage",
+          "expiresAt": "2027-01-01T00:00:00.000Z"
+        }
+      ]
+    }
+  }
+}

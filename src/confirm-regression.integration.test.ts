@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codewithFixtureLauncher } from "./test/agent-launcher.js";
+import { canRunTmuxIntegration } from "./test/tmux-availability.js";
 
 /**
  * Regression coverage for the confirmation false-negatives reported from
@@ -11,7 +12,7 @@ import { codewithFixtureLauncher } from "./test/agent-launcher.js";
  * These drive the real CLI against real tmux panes.
  */
 
-const tmuxAvailable = spawnSync("tmux", ["-V"], { encoding: "utf8" }).status === 0;
+const tmuxAvailable = canRunTmuxIntegration();
 const cli = join(import.meta.dir, "cli", "index.ts");
 const busyAgent = join(import.meta.dir, "test", "busy-agent.ts");
 const authSwitchAgent = join(import.meta.dir, "test", "auth-switch-agent.ts");

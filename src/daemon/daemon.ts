@@ -21,6 +21,8 @@ export interface RunDaemonOptions {
   sleep?: (ms: number) => Promise<void>;
   log?: (msg: string) => void;
   statePath?: string;
+  /** Inject a pid lock path (tests). */
+  pidLockPath?: string;
 }
 
 function intervalFromEnv(): number | undefined {
@@ -42,7 +44,7 @@ export async function runDaemon(opts: RunDaemonOptions = {}): Promise<void> {
   const intervalMs = opts.intervalMs ?? intervalFromEnv() ?? 1000;
   const log = opts.log ?? ((m: string) => console.error(`[dispatch-daemon] ${m}`));
 
-  const claimed = claimPid(process.pid, pidPath);
+  const claimed = claimPid(process.pid, pidPath, opts.pidLockPath);
   if (!claimed.claimed) {
     throw new Error(`daemon already running (pid ${claimed.pid ?? "unknown"})`);
   }

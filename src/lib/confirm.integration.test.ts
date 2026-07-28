@@ -7,8 +7,9 @@ import { LocalRunner } from "./runner.js";
 import { Tmux } from "./tmux.js";
 import { confirmDelivery, evaluateDelivery } from "./confirm.js";
 import { codewithFixtureLauncher } from "../test/agent-launcher.js";
+import { canRunTmuxIntegration } from "../test/tmux-availability.js";
 
-const tmuxAvailable = spawnSync("tmux", ["-V"], { encoding: "utf8" }).status === 0;
+const tmuxAvailable = canRunTmuxIntegration();
 const SESSION = `dispatch_confirm_${process.pid}`;
 const TARGET = SESSION;
 const tmux = new Tmux(new LocalRunner());

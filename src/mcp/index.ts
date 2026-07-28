@@ -4,7 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { getPackageVersion } from "../lib/version.js";
 import { DispatchClient } from "../sdk/index.js";
 import { Store } from "../lib/store.js";
-import { TOOLS, type ToolDeps } from "./tools.js";
+import { TOOLS, type ToolDef, type ToolDeps } from "./tools.js";
 import { RemoteTargetEnumerationError } from "../lib/tmux.js";
 
 export interface CreateServerOptions {
@@ -18,6 +18,14 @@ export interface CreateServerOptions {
  */
 export function createServer(opts: CreateServerOptions = {}): McpServer {
   const server = new McpServer({ name: "dispatch", version: getPackageVersion() });
+  const registerTool = server.registerTool.bind(server) as (
+    name: string,
+    config: Pick<ToolDef, "title" | "description" | "inputSchema">,
+    cb: (args: Record<string, unknown>) => Promise<{
+      content: Array<{ type: "text"; text: string }>;
+      isError?: true;
+    }>,
+  ) => unknown;
 
   let deps = opts.deps;
   const resolveDeps = (): ToolDeps => {
@@ -28,7 +36,7 @@ export function createServer(opts: CreateServerOptions = {}): McpServer {
   };
 
   for (const tool of TOOLS) {
-    server.registerTool(
+    registerTool(
       tool.name,
       { title: tool.title, description: tool.description, inputSchema: tool.inputSchema },
       async (args: Record<string, unknown>) => {
