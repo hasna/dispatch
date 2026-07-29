@@ -3,10 +3,15 @@ import { Store } from "../lib/store.js";
 import { daemonStatus, stopDaemon } from "../daemon/control.js";
 import { runDaemon, startDaemon } from "../daemon/daemon.js";
 import { serviceAction, type ServiceAction } from "../daemon/service.js";
+import { createDispatchClientFromEnv, type DispatchClientLike } from "../sdk/index.js";
+import { DispatchApiClient, getDispatchApiConfigStatus, type DispatchApiRouteResult } from "../lib/api-client.js";
 
 export interface DaemonCommandDeps {
   out: (s: string) => void;
   err: (s: string) => void;
+  clientFactory?: () => DispatchClientLike;
+  ownClient?: boolean;
+  apiSelected?: boolean;
 }
 
 /** Register the `daemon` command group (start | stop | status | run). */
@@ -21,10 +26,78 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
     return startDaemon({ cliEntry: entry });
   };
 
+  const makeClient = deps.clientFactory ?? (() => createDispatchClientFromEnv());
+
+  /**
+   * Run `fn` against the remote authority when the client route is API mode.
+   * The returned `routed` flag comes from the route decision alone — never from
+   * the truthiness of the remote payload — so an empty or falsy remote answer can
+   * never silently hand the command to the local box.
+   */
+  async function withApiDaemon<T>(fn: (client: DispatchApiClient) => Promise<T>): Promise<DispatchApiRouteResult<T>> {
+    const apiSelected = deps.apiSelected ?? (deps.clientFactory ? undefined : getDispatchApiConfigStatus().selected);
+    if (apiSelected === false) return { routed: false };
+    const client = makeClient();
+    const isApi = client instanceof DispatchApiClient;
+    try {
+      return isApi ? { routed: true, value: await fn(client) } : { routed: false };
+    } finally {
+      if ((deps.ownClient ?? !deps.clientFactory) && typeof client.close === "function") client.close();
+    }
+  }
+
+  function printDaemonStatus(st: ReturnType<typeof daemonStatus>, json: boolean): void {
+    if (json) {
+      deps.out(JSON.stringify(st, null, 2));
+      return;
+    }
+    const head = st.running
+      ? `daemon running (pid ${st.pid})`
+      : st.stale
+        ? `daemon not running (stale pidfile, pid ${st.pid})`
+        : "daemon not running";
+    deps.out(head);
+    deps.out(`  health: ${st.health}${st.heartbeatAgeMs !== undefined ? `  heartbeat_age_ms: ${st.heartbeatAgeMs}` : ""}`);
+    if (st.lastTickAt) deps.out(`  last tick: ${st.lastTickAt}`);
+    if (st.nextDue) deps.out(`  next due: ${st.nextDue.id} ${st.nextDue.kind ?? "schedule"} ${st.nextDue.nextRun} ${st.nextDue.machine ?? "local"}/${st.nextDue.target}`);
+    deps.out(`  scheduled: ${st.scheduled}  paused: ${st.paused}  fired: ${st.fired}  cancelled: ${st.cancelled}  failed: ${st.failed}`);
+    if (st.recentFailures.length > 0) {
+      deps.out("  recent failures:");
+      for (const f of st.recentFailures) deps.out(`    ${f.id} ${f.lastFailureAt} ${f.lastFailureReason ?? "unknown failure"}`);
+    }
+    deps.out(`  dispatches recorded: ${st.recentDispatches}`);
+    deps.out(`  log: ${st.logPath}`);
+    deps.out(`  state: ${st.statePath}`);
+  }
+
+  function printServiceResult(res: ReturnType<typeof serviceAction>, json: boolean): void {
+    if (json) {
+      deps.out(JSON.stringify(res, null, 2));
+    } else {
+      deps.out(res.detail);
+      if (res.unitPath) deps.out(`unit: ${res.unitPath}`);
+      if (res.stdout?.trim()) deps.out(res.stdout.trim());
+      if (res.stderr?.trim()) deps.err(res.stderr.trim());
+    }
+    if (!res.ok) process.exitCode = 1;
+  }
+
   daemon
     .command("start")
     .description("Start the daemon in the background")
     .action(async () => {
+      const remote = await withApiDaemon((client) => client.daemonStart());
+      if (remote.routed) {
+        if (remote.value.alreadyRunning) {
+          deps.out(`daemon already running (pid ${remote.value.pid})`);
+        } else if (remote.value.started) {
+          deps.out(`daemon started (pid ${remote.value.pid})`);
+        } else {
+          deps.err("daemon failed to start");
+          process.exitCode = 1;
+        }
+        return;
+      }
       const entry = cliEntry();
       if (!entry) {
         deps.err("cannot determine CLI entry to launch the daemon");
@@ -47,6 +120,18 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
     .description("Idempotently ensure the daemon is running; recover stale state")
     .option("--json", "output JSON")
     .action(async (opts) => {
+      const remote = await withApiDaemon((client) => client.daemonEnsure());
+      if (remote.routed) {
+        deps.out(
+          opts.json
+            ? JSON.stringify({ action: "ensure", ...remote.value }, null, 2)
+            : remote.value.ok
+              ? `daemon ensured${remote.value.after?.pid ? ` (pid ${remote.value.after.pid})` : ""}`
+              : "daemon ensure failed",
+        );
+        if (!remote.value.ok) process.exitCode = 1;
+        return;
+      }
       const store = new Store();
       try {
         const before = daemonStatus(store);
@@ -76,6 +161,12 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
     .description("Restart the daemon safely")
     .option("--json", "output JSON")
     .action(async (opts) => {
+      const remote = await withApiDaemon((client) => client.daemonRestart());
+      if (remote.routed) {
+        deps.out(opts.json ? JSON.stringify({ action: "restart", ...remote.value }, null, 2) : remote.value.ok ? `daemon restarted (pid ${remote.value.started.pid})` : "daemon restart failed");
+        if (!remote.value.ok) process.exitCode = 1;
+        return;
+      }
       const stopped = await stopDaemon();
       const started = await startCurrentDaemon();
       if (!started) {
@@ -92,6 +183,17 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
     .command("stop")
     .description("Stop the running daemon and wait for it to exit")
     .action(async () => {
+      const remote = await withApiDaemon((client) => client.daemonStop());
+      if (remote.routed) {
+        if (remote.value.stopped) {
+          deps.out(`daemon stopped (pid ${remote.value.pid})${remote.value.forced ? " [forced]" : ""}`);
+        } else if (remote.value.pid && !remote.value.wasRunning) {
+          deps.out(`removed stale pidfile (pid ${remote.value.pid} was not running)`);
+        } else {
+          deps.out("daemon is not running");
+        }
+        return;
+      }
       const res = await stopDaemon();
       if (res.stopped) {
         deps.out(`daemon stopped (pid ${res.pid})${res.forced ? " [forced]" : ""}`);
@@ -106,31 +208,16 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
     .command("status")
     .description("Show daemon + queue status")
     .option("--json", "output JSON")
-    .action((opts) => {
+    .action(async (opts) => {
+      const remote = await withApiDaemon((client) => client.daemonStatus());
+      if (remote.routed) {
+        printDaemonStatus(remote.value, opts.json === true);
+        return;
+      }
       const store = new Store();
       try {
         const st = daemonStatus(store);
-        if (opts.json) {
-          deps.out(JSON.stringify(st, null, 2));
-          return;
-        }
-        const head = st.running
-          ? `daemon running (pid ${st.pid})`
-          : st.stale
-            ? `daemon not running (stale pidfile, pid ${st.pid})`
-            : "daemon not running";
-        deps.out(head);
-        deps.out(`  health: ${st.health}${st.heartbeatAgeMs !== undefined ? `  heartbeat_age_ms: ${st.heartbeatAgeMs}` : ""}`);
-        if (st.lastTickAt) deps.out(`  last tick: ${st.lastTickAt}`);
-        if (st.nextDue) deps.out(`  next due: ${st.nextDue.id} ${st.nextDue.kind ?? "schedule"} ${st.nextDue.nextRun} ${st.nextDue.machine ?? "local"}/${st.nextDue.target}`);
-        deps.out(`  scheduled: ${st.scheduled}  paused: ${st.paused}  fired: ${st.fired}  cancelled: ${st.cancelled}  failed: ${st.failed}`);
-        if (st.recentFailures.length > 0) {
-          deps.out("  recent failures:");
-          for (const f of st.recentFailures) deps.out(`    ${f.id} ${f.lastFailureAt} ${f.lastFailureReason ?? "unknown failure"}`);
-        }
-        deps.out(`  dispatches recorded: ${st.recentDispatches}`);
-        deps.out(`  log: ${st.logPath}`);
-        deps.out(`  state: ${st.statePath}`);
+        printDaemonStatus(st, opts.json === true);
       } finally {
         store.close();
       }
@@ -140,7 +227,18 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
     .command("doctor")
     .description("Check daemon health and print small actionable diagnostics")
     .option("--json", "output JSON")
-    .action((opts) => {
+    .action(async (opts) => {
+      const remote = await withApiDaemon((client) => client.daemonDoctor());
+      if (remote.routed) {
+        if (opts.json) {
+          deps.out(JSON.stringify(remote.value, null, 2));
+        } else {
+          deps.out(remote.value.ok ? "daemon doctor: ok" : "daemon doctor: attention needed");
+          for (const f of remote.value.findings) deps.out(`  - ${f}`);
+        }
+        if (!remote.value.ok) process.exitCode = 1;
+        return;
+      }
       const store = new Store();
       try {
         const st = daemonStatus(store);
@@ -167,11 +265,16 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
     .description("Manage the user-level systemd service (install|start|stop|restart|status|uninstall)")
     .option("--start", "start/restart the service after install")
     .option("--json", "output JSON")
-    .action((action: ServiceAction, opts) => {
+    .action(async (action: ServiceAction, opts) => {
       const allowed = new Set<ServiceAction>(["install", "start", "stop", "restart", "status", "uninstall"]);
       if (!allowed.has(action)) {
         deps.err(`unknown service action: ${action}`);
         process.exitCode = 1;
+        return;
+      }
+      const remote = await withApiDaemon((client) => client.daemonService({ action, start: opts.start === true }));
+      if (remote.routed) {
+        printServiceResult(remote.value, opts.json === true);
         return;
       }
       const res = serviceAction(action, {
@@ -179,15 +282,7 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
         cliEntry: cliEntry(),
         startAfterInstall: opts.start === true,
       });
-      if (opts.json) {
-        deps.out(JSON.stringify(res, null, 2));
-      } else {
-        deps.out(res.detail);
-        if (res.unitPath) deps.out(`unit: ${res.unitPath}`);
-        if (res.stdout?.trim()) deps.out(res.stdout.trim());
-        if (res.stderr?.trim()) deps.err(res.stderr.trim());
-      }
-      if (!res.ok) process.exitCode = 1;
+      printServiceResult(res, opts.json === true);
     });
 
   daemon

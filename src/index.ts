@@ -6,8 +6,8 @@
  * confirmation, scheduled dispatches, and a live daemon.
  */
 export * from "./types.js";
-export { DispatchClient, dispatch, dispatchExec, dispatchKey, dispatchCapture, dispatchTriage, dispatchRecover, dispatchBulk } from "./sdk/index.js";
-export type { DispatchClientOptions } from "./sdk/index.js";
+export { DispatchClient, createDispatchClientFromEnv, dispatch, dispatchExec, dispatchKey, dispatchCapture, dispatchTriage, dispatchRecover, dispatchBulk } from "./sdk/index.js";
+export type { DispatchClientFromEnvOptions, DispatchClientLike, DispatchClientOptions } from "./sdk/index.js";
 
 // Building blocks (advanced / programmatic use).
 export { performDispatch, chooseMode, applyGoalPrefix, PASTE_LENGTH_THRESHOLD } from "./lib/engine.js";
@@ -53,6 +53,22 @@ export {
   performMosaicDispatch,
 } from "./lib/mosaic.js";
 export { normalizeBackend } from "./lib/backend.js";
+export {
+  DispatchApiClient,
+  DispatchApiEmptyResponseError,
+  DispatchApiError,
+  DispatchApiMalformedResponseError,
+  getDispatchApiClient,
+  getDispatchApiConfigStatus,
+} from "./lib/api-client.js";
+export type {
+  DispatchApiClientOptions,
+  DispatchApiConfigStatus,
+  DispatchApiRouteResult,
+  DispatchClientRoute,
+  DispatchTargetsOptions,
+  FetchLike,
+} from "./lib/api-client.js";
 export { parseSessionsTargets, resolveSessionsTargets } from "./lib/sessions-source.js";
 export {
   classifyPaneCommand,

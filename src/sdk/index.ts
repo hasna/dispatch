@@ -41,6 +41,7 @@ import { resolveSessionsTargets } from "../lib/sessions-source.js";
 import { normalizeBackend } from "../lib/backend.js";
 import { Mosaic, performMosaicCapture, performMosaicDispatch } from "../lib/mosaic.js";
 import { performFleetSummary } from "../lib/fleet-summary.js";
+import { DispatchApiClient, getDispatchApiClient, type Env, type FetchLike } from "../lib/api-client.js";
 
 export interface DispatchClientOptions {
   /** Use an explicit store; otherwise the default sqlite store is opened. */
@@ -53,8 +54,17 @@ export interface DispatchClientOptions {
   backend?: DispatchBackend;
 }
 
+export interface DispatchClientFromEnvOptions extends DispatchClientOptions {
+  env?: Env;
+  fetchImpl?: FetchLike;
+}
+
+export type DispatchClientLike = DispatchClient | DispatchApiClient;
+
 /** High-level programmatic client for dispatching prompts to tmux agents. */
 export class DispatchClient {
+  readonly mode = "local";
+  readonly baseUrl = null;
   private readonly store?: Store;
   private readonly ownsStore: boolean;
   private readonly defaultBackend?: DispatchBackend;
@@ -254,6 +264,12 @@ export class DispatchClient {
   close(): void {
     if (this.ownsStore) this.store?.close();
   }
+}
+
+export function createDispatchClientFromEnv(opts: DispatchClientFromEnvOptions = {}): DispatchClientLike {
+  const api = getDispatchApiClient(opts.env, opts.fetchImpl);
+  if (api) return api;
+  return new DispatchClient(opts);
 }
 
 /** One-shot convenience: dispatch without managing a client. */

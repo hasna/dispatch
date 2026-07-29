@@ -569,6 +569,51 @@ the historical raw records should pass `verbose: true`.
 `dispatch_exec` accepts `policyFile` for the same reviewed JSON policy used by
 CLI `--allow`; it does not accept inline allowlists from the caller.
 
+## Local and API mode
+
+By default, `dispatch` runs in local mode: live commands use local or
+`--machine`-resolved terminal runners, and recorded dispatches/schedules live in
+on-box SQLite under `DISPATCH_DATA_DIR`.
+
+Set the dispatch storage mode to `api`, `self_hosted`, `remote`, `cloud`, or
+`hybrid` to route the CLI/MCP client through the authenticated `/v1` HTTP
+authority instead. API mode is fail-closed: it requires both
+`HASNA_DISPATCH_API_URL` and `HASNA_DISPATCH_API_KEY`, normalizes the authority to
+`/v1`, does not accept URL userinfo/query/fragment data, and never falls back to
+local SQLite after an API mode misconfiguration. Once API mode is selected, the
+route is fixed for the whole command: an empty or `null` answer from the
+authority is reported as a remote failure (`REMOTE_API_EMPTY_RESPONSE`), never
+quietly answered from the local box.
+
+Every 2xx body is checked against the endpoint's documented response contract
+before it reaches a caller. A payload that does not match — `{}`, `[]`,
+`{"ok":true}`, an HTML error page, a record missing required fields — raises
+`REMOTE_API_MALFORMED_RESPONSE` and a non-zero exit, rather than being cast to
+the declared return type and reported as a completed dispatch. Extra fields are
+passed through untouched. [docs/api-v1.md](docs/api-v1.md) publishes the shapes
+an authority must answer with.
+
+Side-effecting requests (`send`, `exec`, `key`, bulk dispatch, `recover`) are sent
+exactly once. They carry an `Idempotency-Key` header for the authority's benefit,
+but the client does not replay them — including after a client-side timeout, which
+is not proof the authority never received the request. Only HTTP-idempotent reads
+are retried. Write retries stay off until the authority's idempotency contract is
+specified and covered by tests.
+
+```bash
+HASNA_DISPATCH_STORAGE_MODE=api
+HASNA_DISPATCH_API_URL=https://dispatch.example.internal
+HASNA_DISPATCH_API_KEY=...
+
+dispatch list --json
+dispatch schedule --to work:agent --prompt "later" --in 30m --json
+dispatch targets --json
+dispatch daemon status --json
+```
+
+An explicit `HASNA_DISPATCH_STORAGE_MODE=local` keeps local mode even if API
+URL/key variables are present.
+
 ## How auto-submit works (the key feature)
 
 1. Snapshot the pane.
@@ -604,6 +649,9 @@ CLI `--allow`; it does not accept inline allowlists from the caller.
 | `DISPATCH_SETTLE_TIMEOUT_MS` | Prompt-parked settle budget before the first submit key; default 2000ms |
 | `DISPATCH_SUBMIT_TIMEOUT_MS` / `DISPATCH_SUBMIT_RETRY_INTERVAL_MS` | Submit confirmation/retry budget; defaults 10000ms / 2000ms |
 | `DISPATCH_DAEMON_INTERVAL_MS` | Daemon tick interval |
+| `HASNA_DISPATCH_STORAGE_MODE` / `DISPATCH_STORAGE_MODE` | `local` or API-backed mode (`api`, `self_hosted`, `remote`, `cloud`, `hybrid`) |
+| `HASNA_DISPATCH_API_URL` / `DISPATCH_API_URL` | API authority root or `/v1` URL for API mode |
+| `HASNA_DISPATCH_API_KEY` / `DISPATCH_API_KEY` | Bearer/API key for API mode; value is never printed |
 
 ## Development
 
@@ -615,7 +663,7 @@ bun run build
 ```
 
 See [AGENTS.md](AGENTS.md) for repo conventions and [docs/](docs/) for architecture,
-reliability, self-healing, and cross-machine details.
+reliability, self-healing, cross-machine, and `/v1` API contract details.
 
 ## License
 

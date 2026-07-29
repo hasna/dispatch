@@ -19,6 +19,7 @@ import { DispatchClient } from "../sdk/index.js";
 import { Store } from "../lib/store.js";
 import { MockRunner } from "../test/mock-runner.js";
 import { SELF_HEAL_MAX_DISPLAY_CHARS } from "../lib/self-heal.js";
+import type { FetchLike } from "../lib/api-client.js";
 import type {
   AgentRecoverOptions,
   AgentRecoverResult,
@@ -1253,5 +1254,242 @@ describe("CLI read/schedule commands (in-memory client)", () => {
     expect(text).not.toContain("would paste");
     expect(text).not.toContain("would send key");
     process.exitCode = 0;
+  });
+
+  test("api mode routes CLI read, schedule, target, and daemon commands through HTTP", async () => {
+    const out: string[] = [];
+    const calls: Array<{ path: string; method: string; body: unknown }> = [];
+    const fetchImpl: FetchLike = async (url, init = {}) => {
+      const method = init.method ?? "GET";
+      const body = init.body ? JSON.parse(String(init.body)) : undefined;
+      const path = `${new URL(url).pathname}${new URL(url).search}`;
+      calls.push({ path, method, body });
+      if (path.startsWith("/v1/dispatches")) {
+        return Response.json({
+          dispatches: [
+            {
+              id: "d1",
+              target: "work:agent",
+              machine: "local",
+              prompt: "hello",
+              status: "delivered",
+              createdAt: "x",
+              updatedAt: "x",
+            },
+          ],
+        });
+      }
+      if (path === "/v1/schedules") {
+        return Response.json({
+          schedule: {
+            id: "s1",
+            options: body?.options,
+            at: body?.at,
+            nextRun: "2099-01-01T00:00:00.000Z",
+            status: "scheduled",
+            createdAt: "x",
+            updatedAt: "x",
+          },
+        });
+      }
+      if (path.startsWith("/v1/targets")) {
+        return Response.json({ targets: [{ target: "work:1.0", window: "agent", active: true }] });
+      }
+      if (path === "/v1/fleet/summary") {
+        return Response.json({
+          summary: {
+            schemaVersion: "dispatch.fleet_summary.v1",
+            status: "completed",
+            machine: "local",
+            generatedAt: "x",
+            targetGlobs: ["*"],
+            limit: body?.limit ?? 1,
+            maxLimit: 50,
+            requestedMaxPaneChars: body?.maxPaneChars ?? 1200,
+            maxPaneChars: body?.maxPaneChars ?? 1200,
+            maxAllowedPaneChars: 4000,
+            totalTargets: 0,
+            matchedTargets: 0,
+            inspectedTargets: 0,
+            omittedTargets: 0,
+            totals: {},
+            items: [],
+            compact: true,
+          },
+        });
+      }
+      if (path === "/v1/daemon/status") {
+        return Response.json({
+          running: true,
+          stale: false,
+          health: "alive",
+          scheduled: 1,
+          paused: 0,
+          fired: 0,
+          cancelled: 0,
+          failed: 0,
+          recentDispatches: 1,
+          heartbeatStaleMs: 30000,
+          recentFailures: [],
+          logPath: "remote-log",
+          pidPath: "remote-pid",
+          statePath: "remote-state",
+        });
+      }
+      return Response.json({});
+    };
+    const program = buildProgram({
+      env: {
+        HASNA_DISPATCH_STORAGE_MODE: "api",
+        HASNA_DISPATCH_API_URL: "https://dispatch.hasna.xyz",
+        HASNA_DISPATCH_API_KEY: "test-key",
+      } as NodeJS.ProcessEnv,
+      fetchImpl,
+      runnerFactory: async () => {
+        throw new Error("API mode must not enumerate local tmux targets");
+      },
+      out: (s) => out.push(s),
+    });
+
+    await program.parseAsync(["list", "--limit", "1", "--json"], { from: "user" });
+    await program.parseAsync(["schedule", "--to", "work:agent", "--prompt", "later", "--in", "30m", "--json"], {
+      from: "user",
+    });
+    await program.parseAsync(["targets", "--limit", "1", "--json"], { from: "user" });
+    await program.parseAsync(["fleet", "summary", "--limit", "1", "--json"], { from: "user" });
+    await program.parseAsync(["daemon", "status", "--json"], { from: "user" });
+
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+      "GET /v1/dispatches?limit=1",
+      "POST /v1/schedules",
+      "GET /v1/targets?backend=tmux&limit=1&verbose=true",
+      "POST /v1/fleet/summary",
+      "GET /v1/daemon/status",
+    ]);
+    expect(JSON.parse(out[0]!)).toHaveLength(1);
+    expect(JSON.parse(out[1]!)).toMatchObject({ id: "s1", status: "scheduled" });
+    expect(JSON.parse(out[2]!)).toEqual([{ target: "work:1.0", window: "agent", active: true }]);
+    expect(JSON.parse(out[3]!)).toMatchObject({ schemaVersion: "dispatch.fleet_summary.v1", status: "completed" });
+    expect(JSON.parse(out[4]!)).toMatchObject({ health: "alive", scheduled: 1 });
+  });
+
+  test("api mode fails closed on an empty authority response instead of answering from the local box", async () => {
+    const out: string[] = [];
+    const calls: string[] = [];
+    const fetchImpl: FetchLike = async (url, init = {}) => {
+      calls.push(`${init.method ?? "GET"} ${new URL(url).pathname}`);
+      return new Response(null, { status: 204 });
+    };
+    const program = buildProgram({
+      env: {
+        HASNA_DISPATCH_STORAGE_MODE: "api",
+        HASNA_DISPATCH_API_URL: "https://dispatch.hasna.xyz",
+        HASNA_DISPATCH_API_KEY: "test-key",
+      } as NodeJS.ProcessEnv,
+      fetchImpl,
+      runnerFactory: async () => {
+        throw new Error("API mode must not enumerate local tmux targets");
+      },
+      out: (s) => out.push(s),
+    });
+
+    // A body-less 204 is indistinguishable from "not API mode" if the route
+    // decision is derived from the payload; each of these must surface the remote
+    // failure rather than print local daemon/tmux state.
+    await expect(program.parseAsync(["daemon", "status", "--json"], { from: "user" })).rejects.toThrow(/REMOTE_API_EMPTY_RESPONSE/);
+    await expect(program.parseAsync(["daemon", "doctor", "--json"], { from: "user" })).rejects.toThrow(/REMOTE_API_EMPTY_RESPONSE/);
+    await expect(program.parseAsync(["fleet", "summary", "--json"], { from: "user" })).rejects.toThrow(/REMOTE_API_EMPTY_RESPONSE/);
+
+    expect(calls).toEqual(["GET /v1/daemon/status", "GET /v1/daemon/doctor", "POST /v1/fleet/summary"]);
+    expect(out).toEqual([]);
+  });
+
+  test("api mode fails closed on a null authority body instead of running the local fleet summary", async () => {
+    const out: string[] = [];
+    const fetchImpl: FetchLike = async () =>
+      new Response("null", { status: 200, headers: { "content-type": "application/json" } });
+    const program = buildProgram({
+      env: {
+        HASNA_DISPATCH_STORAGE_MODE: "api",
+        HASNA_DISPATCH_API_URL: "https://dispatch.hasna.xyz",
+        HASNA_DISPATCH_API_KEY: "test-key",
+      } as NodeJS.ProcessEnv,
+      fetchImpl,
+      runnerFactory: async () => {
+        throw new Error("LOCAL RUNNER USED");
+      },
+      out: (s) => out.push(s),
+    });
+
+    await expect(program.parseAsync(["fleet", "summary", "--json"], { from: "user" })).rejects.toThrow(/REMOTE_API_EMPTY_RESPONSE/);
+    await expect(program.parseAsync(["targets", "--json"], { from: "user" })).rejects.toThrow(/REMOTE_API_EMPTY_RESPONSE/);
+    expect(out).toEqual([]);
+  });
+
+  test("a falsy authority payload still reports the remote answer instead of local state", async () => {
+    const out: string[] = [];
+    const err: string[] = [];
+    const fetchImpl: FetchLike = async () =>
+      new Response("false", { status: 200, headers: { "content-type": "application/json" } });
+    const program = buildProgram({
+      env: {
+        HASNA_DISPATCH_STORAGE_MODE: "api",
+        HASNA_DISPATCH_API_URL: "https://dispatch.hasna.xyz",
+        HASNA_DISPATCH_API_KEY: "test-key",
+      } as NodeJS.ProcessEnv,
+      fetchImpl,
+      runnerFactory: async () => {
+        throw new Error("API mode must not enumerate local tmux targets");
+      },
+      out: (s) => out.push(s),
+      err: (s) => err.push(s),
+    });
+
+    // `cancel` declares a boolean outcome, so a bare `false` IS the authority's
+    // answer: the route decision must not be re-derived from its truthiness —
+    // that is what silently ran the command against the local box instead.
+    process.exitCode = 0;
+    await program.parseAsync(["cancel", "s1"], { from: "user" });
+    expect(err.join("\n")).toContain("could not cancel s1");
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+
+    // `daemon status` declares a DaemonStatus, and `false` is not one. It must
+    // fail closed on the contract rather than print local daemon state — and it
+    // must still not be mistaken for "not API mode".
+    await expect(program.parseAsync(["daemon", "status", "--json"], { from: "user" })).rejects.toThrow(
+      /REMOTE_API_MALFORMED_RESPONSE/,
+    );
+    expect(out).toEqual([]);
+    process.exitCode = 0;
+  });
+
+  test("a stale DISPATCH_STORAGE_MODE alias does not brick commands that the canonical mode governs", async () => {
+    const out: string[] = [];
+    const calls: string[] = [];
+    const fetchImpl: FetchLike = async (url, init = {}) => {
+      calls.push(`${init.method ?? "GET"} ${new URL(url).pathname}`);
+      return Response.json({ dispatches: [] });
+    };
+    const program = buildProgram({
+      env: {
+        HASNA_DISPATCH_STORAGE_MODE: "api",
+        // Left over from an older install; it loses to the canonical name above
+        // and is therefore never consulted, so it must not fail the run either.
+        DISPATCH_STORAGE_MODE: "sqlite",
+        HASNA_DISPATCH_API_URL: "https://dispatch.hasna.xyz",
+        HASNA_DISPATCH_API_KEY: "test-key",
+      } as NodeJS.ProcessEnv,
+      fetchImpl,
+      runnerFactory: async () => {
+        throw new Error("API mode must not enumerate local tmux targets");
+      },
+      out: (s) => out.push(s),
+    });
+
+    await program.parseAsync(["list", "--json"], { from: "user" });
+
+    expect(calls).toEqual(["GET /v1/dispatches"]);
+    expect(JSON.parse(out[0]!)).toEqual([]);
   });
 });

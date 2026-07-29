@@ -22,7 +22,7 @@
                     LocalRunner                 RemoteRunner
                     (spawnSync)            (@hasna/machines → ssh)
                                        |
-                                Store (sqlite)  ← dispatches + schedules
+                    Store (sqlite) or /v1 API  ← dispatches + schedules
 ```
 
 ## Surfaces
@@ -55,7 +55,31 @@ tmux is the default backend. The optional Mosaic backend is selected through
 the public `mosaic` binary directly (`mosaic.control.v1` JSON receipts/envelopes)
 rather than using tmux compatibility shims.
 
-## State
+## Client route
+
+Local mode is the default and uses the on-box runner/store described below. API
+mode is selected with `HASNA_DISPATCH_STORAGE_MODE=api` (or
+`self_hosted`/`remote`/`cloud`/`hybrid`) plus `HASNA_DISPATCH_API_URL` and
+`HASNA_DISPATCH_API_KEY`. In API mode, CLI and MCP client commands route through
+the authenticated `/v1` authority for dispatch records, schedules, targets, fleet
+summary, and daemon actions. Invalid API configuration fails closed instead of
+falling back to local SQLite.
+
+The route decision is computed once per command and is never re-derived from the
+response value, so an empty or falsy authority payload cannot be mistaken for
+"local mode"; a body-less success raises `REMOTE_API_EMPTY_RESPONSE`. The client
+retries only HTTP-idempotent methods, and never after a client-side abort/timeout,
+so a dispatch/exec/key/recover POST is submitted to a pane at most once.
+
+Every endpoint declares the shape it promises (`src/lib/api-schemas.ts`), and
+`request` checks each 2xx body against it before returning: an unrecognized
+payload raises `REMOTE_API_MALFORMED_RESPONSE` instead of being cast to the
+declared return type, which would report an unknown outcome as a completed
+dispatch. The check is a gate rather than a transform — the authority's own
+object is returned, so fields the client does not model still reach `--json`.
+[api-v1.md](api-v1.md) is the contract an authority implements.
+
+## Local state
 
 Everything lives in sqlite at `~/.hasna/dispatch/dispatch.db` (override with
 `DISPATCH_DATA_DIR`):

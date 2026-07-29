@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ZodRawShape } from "zod";
-import { DispatchClient } from "../sdk/index.js";
+import type { DispatchClientLike } from "../sdk/index.js";
 import { Store } from "../lib/store.js";
 import { Tmux } from "../lib/tmux.js";
 import { createRunner } from "../lib/runner.js";
@@ -14,10 +14,12 @@ import { normalizeBackend } from "../lib/backend.js";
 import { Mosaic } from "../lib/mosaic.js";
 import { SELF_HEAL_MAX_DIRECT_INPUT_CHARS, diagnoseDispatchSelfHeal } from "../lib/self-heal.js";
 import { MAX_FLEET_MAX_PANE_CHARS, MAX_FLEET_SUMMARY_LIMIT, performFleetSummary } from "../lib/fleet-summary.js";
+import { DispatchApiClient } from "../lib/api-client.js";
+import type { DispatchRecord, ScheduledDispatch } from "../types.js";
 
 export interface ToolDeps {
-  client: DispatchClient;
-  store: Store;
+  client: DispatchClientLike;
+  store?: Store;
   /** Build a Tmux for a machine (defaults to a real runner). */
   makeTmux?: (machine?: string) => Promise<Tmux>;
   /** Build a Mosaic controller for a machine (defaults to a real runner). */
@@ -42,14 +44,23 @@ async function tmuxFor(deps: ToolDeps, machine?: string): Promise<Tmux> {
   return new Tmux(await createRunner(machine));
 }
 
-function compactRecordResult(record: Awaited<ReturnType<DispatchClient["send"]>>, hint = "pass verbose:true for the full record") {
+function compactRecordResult(record: DispatchRecord, hint = "pass verbose:true for the full record") {
   const summary = summarizeRecord(record);
   return { id: summary.id, kind: summary.kind, status: summary.status, record: summary, compact: true, hint };
 }
 
-function compactScheduleResult(schedule: ReturnType<DispatchClient["schedule"]>, hint = "pass verbose:true for the full schedule") {
+function compactScheduleResult(schedule: ScheduledDispatch, hint = "pass verbose:true for the full schedule") {
   const summary = summarizeSchedule(schedule);
   return { id: summary.id, kind: summary.kind, status: summary.status, schedule: summary, compact: true, hint };
+}
+
+function apiClient(deps: ToolDeps): DispatchApiClient | undefined {
+  return deps.client instanceof DispatchApiClient ? deps.client : undefined;
+}
+
+function requireStore(deps: ToolDeps): Store {
+  if (!deps.store) throw new Error("local daemon tools require a local dispatch store");
+  return deps.store;
 }
 
 async function mosaicFor(deps: ToolDeps, machine?: string): Promise<Mosaic> {
@@ -322,9 +333,9 @@ export const TOOLS: ToolDef[] = [
       verbose: z.boolean().optional().describe("return the full stored object instead of a compact summary"),
     },
     handler: async (deps, a) => {
-      const rec = deps.client.status(a.id as string);
+      const rec = await deps.client.status(a.id as string);
       if (rec) return a.verbose === true ? rec : { ...compactRecordResult(rec), resultKind: "dispatch" };
-      const sched = deps.client.scheduleStatus(a.id as string);
+      const sched = await deps.client.scheduleStatus(a.id as string);
       if (sched) return a.verbose === true ? sched : { ...compactScheduleResult(sched), resultKind: "schedule" };
       return { error: "not found", id: a.id };
     },
@@ -339,12 +350,12 @@ export const TOOLS: ToolDef[] = [
       verbose: z.boolean().optional().describe("return the full stored object instead of compact details"),
     },
     handler: async (deps, a) => {
-      const rec = deps.client.status(a.id as string);
+      const rec = await deps.client.status(a.id as string);
       if (rec) {
         const summary = summarizeRecord(rec, { previewChars: 500 });
         return a.verbose === true ? rec : { id: summary.id, kind: summary.kind, status: summary.status, resultKind: "dispatch", record: summary, compact: true, hint: "pass verbose:true for the full record including full prompt" };
       }
-      const sched = deps.client.scheduleStatus(a.id as string);
+      const sched = await deps.client.scheduleStatus(a.id as string);
       if (sched) {
         const summary = summarizeSchedule(sched, { previewChars: 500 });
         return a.verbose === true ? sched : { id: summary.id, kind: summary.kind, status: summary.status, resultKind: "schedule", schedule: summary, compact: true, hint: "pass verbose:true for the full schedule including full prompt" };
@@ -364,7 +375,7 @@ export const TOOLS: ToolDef[] = [
     },
     handler: async (deps, a) => {
       const limit = (a.limit as number | undefined) ?? 20;
-      const rows = deps.client.list({ status: a.status as never, limit: a.verbose === true ? limit : limit + 1 });
+      const rows = await deps.client.list({ status: a.status as never, limit: a.verbose === true ? limit : limit + 1 });
       const shown = rows.slice(0, limit);
       return a.verbose === true
         ? rows
@@ -394,7 +405,7 @@ export const TOOLS: ToolDef[] = [
       verbose: z.boolean().optional().describe("return the full schedule instead of a compact summary"),
     },
     handler: async (deps, a) => {
-      const sched = deps.client.schedule({
+      const sched = await deps.client.schedule({
         options: {
           target: a.target as string,
           prompt: a.prompt as string,
@@ -435,7 +446,7 @@ export const TOOLS: ToolDef[] = [
       verbose: z.boolean().optional().describe("return the full loop instead of a compact summary"),
     },
     handler: async (deps, a) => {
-      const loop = deps.client.loop({
+      const loop = await deps.client.loop({
         options: {
           target: a.target as string,
           prompt: a.prompt as string,
@@ -466,7 +477,7 @@ export const TOOLS: ToolDef[] = [
     },
     handler: async (deps, a) => {
       const limit = (a.limit as number | undefined) ?? 20;
-      const rows = deps.client.listSchedules({ status: a.status as never, kind: a.kind as never, limit: a.verbose === true ? limit : limit + 1 });
+      const rows = await deps.client.listSchedules({ status: a.status as never, kind: a.kind as never, limit: a.verbose === true ? limit : limit + 1 });
       const shown = rows.slice(0, limit);
       return a.verbose === true
         ? rows
@@ -485,7 +496,7 @@ export const TOOLS: ToolDef[] = [
     },
     handler: async (deps, a) => {
       const limit = (a.limit as number | undefined) ?? 20;
-      const rows = deps.client.listLoops({ status: a.status as never, limit: a.verbose === true ? limit : limit + 1 });
+      const rows = await deps.client.listLoops({ status: a.status as never, limit: a.verbose === true ? limit : limit + 1 });
       const shown = rows.slice(0, limit);
       return a.verbose === true
         ? rows
@@ -498,7 +509,7 @@ export const TOOLS: ToolDef[] = [
     title: "Cancel a scheduled dispatch",
     description: "Cancel a scheduled dispatch by id.",
     inputSchema: { id: z.string() },
-    handler: async (deps, a) => ({ cancelled: deps.client.cancelSchedule(a.id as string) }),
+    handler: async (deps, a) => ({ cancelled: await deps.client.cancelSchedule(a.id as string) }),
   },
   {
     name: "dispatch_pause",
@@ -506,7 +517,7 @@ export const TOOLS: ToolDef[] = [
     title: "Pause a scheduled dispatch or loop",
     description: "Pause a scheduled dispatch or loop so it will not fire until resumed.",
     inputSchema: { id: z.string() },
-    handler: async (deps, a) => ({ paused: deps.client.pauseSchedule(a.id as string) }),
+    handler: async (deps, a) => ({ paused: await deps.client.pauseSchedule(a.id as string) }),
   },
   {
     name: "dispatch_resume",
@@ -514,7 +525,7 @@ export const TOOLS: ToolDef[] = [
     title: "Resume a scheduled dispatch or loop",
     description: "Resume a paused scheduled dispatch or loop.",
     inputSchema: { id: z.string() },
-    handler: async (deps, a) => ({ resumed: deps.client.resumeSchedule(a.id as string) }),
+    handler: async (deps, a) => ({ resumed: await deps.client.resumeSchedule(a.id as string) }),
   },
   {
     name: "dispatch_clear",
@@ -522,7 +533,7 @@ export const TOOLS: ToolDef[] = [
     title: "Clear a scheduled dispatch or loop",
     description: "Delete a scheduled dispatch or loop from the store.",
     inputSchema: { id: z.string() },
-    handler: async (deps, a) => ({ cleared: deps.client.clearSchedule(a.id as string) }),
+    handler: async (deps, a) => ({ cleared: await deps.client.clearSchedule(a.id as string) }),
   },
   {
     name: "dispatch_targets",
@@ -537,8 +548,34 @@ export const TOOLS: ToolDef[] = [
       includeDetection: z.boolean().optional().describe("alias for verbose on tmux targets"),
     },
     handler: async (deps, a) => {
-      const backend = normalizeBackend(a.backend as string | undefined);
+      // Resolved before the branch so the authority is bounded by the same default
+      // as a local fleet capture; an unbounded remote request would dump the whole
+      // fleet for a caller that simply omitted `limit`.
       const limit = (a.limit as number | undefined) ?? 50;
+      const fullDetection = a.verbose === true || a.includeDetection === true;
+      const api = apiClient(deps);
+      if (api) {
+        // One row beyond the bound, so truncation is measured rather than guessed;
+        // this mirrors dispatch_schedules/dispatch_loops. No `total` is reported:
+        // a truncated page cannot know the authority's full target count, and
+        // echoing the page length as a total would be a fabricated number.
+        const rows = await api.targets({
+          machine: a.machine as string | undefined,
+          backend: normalizeBackend(a.backend as string | undefined),
+          limit: limit + 1,
+          verbose: fullDetection,
+        });
+        const items = rows.slice(0, limit);
+        return {
+          items,
+          count: items.length,
+          limit,
+          hasMore: rows.length > limit,
+          compact: !fullDetection,
+          hint: "pass verbose:true for full target metadata",
+        };
+      }
+      const backend = normalizeBackend(a.backend as string | undefined);
       if (backend === "mosaic") {
         const targets = (await mosaicFor(deps, a.machine as string | undefined)).listTargets();
         const items = targets.slice(0, limit);
@@ -546,7 +583,6 @@ export const TOOLS: ToolDef[] = [
       }
       const tmux = await tmuxFor(deps, a.machine as string | undefined);
       const targets = tmux.listTargets();
-      const fullDetection = a.verbose === true || a.includeDetection === true;
       const items = targets.slice(0, limit).map((target) => {
         const detection = inspectListedAgentTarget(tmux, target.target, {
           assumeExists: true,
@@ -602,27 +638,28 @@ export const TOOLS: ToolDef[] = [
       provider: z.enum(["groq", "cerebras", "openai", "none"]).optional().describe("AI provider for preflight"),
       model: z.string().optional().describe("AI model override for preflight"),
     },
-    handler: async (deps, a) =>
-      performFleetSummary(
-        {
-          machine: a.machine as string | undefined,
-          targets: a.targets as string | string[] | undefined,
-          changedSince: a.changedSince as string | undefined,
-          changedSinceMs: a.changedSinceMs as number | undefined,
-          maxPaneChars: a.maxPaneChars as number | undefined,
-          limit: a.limit as number | undefined,
-          preflightAi: a.preflightAi as boolean | undefined,
-          ai:
-            a.preflightAi || a.provider || a.model
-              ? {
-                  enabled: true,
-                  provider: a.provider as never,
-                  model: a.model as string | undefined,
-                }
-              : undefined,
-        },
-        { tmux: await tmuxFor(deps, a.machine as string | undefined) },
-      ),
+    handler: async (deps, a) => {
+      const options = {
+        machine: a.machine as string | undefined,
+        targets: a.targets as string | string[] | undefined,
+        changedSince: a.changedSince as string | undefined,
+        changedSinceMs: a.changedSinceMs as number | undefined,
+        maxPaneChars: a.maxPaneChars as number | undefined,
+        limit: a.limit as number | undefined,
+        preflightAi: a.preflightAi as boolean | undefined,
+        ai:
+          a.preflightAi || a.provider || a.model
+            ? {
+                enabled: true,
+                provider: a.provider as never,
+                model: a.model as string | undefined,
+              }
+            : undefined,
+      };
+      const api = apiClient(deps);
+      if (api) return api.fleetSummary(options);
+      return performFleetSummary(options, { tmux: await tmuxFor(deps, a.machine as string | undefined) });
+    },
   },
   {
     name: "dispatch_daemon_start",
@@ -631,6 +668,8 @@ export const TOOLS: ToolDef[] = [
     description: "Start the dispatch daemon (scheduled-dispatch queue) in the background.",
     inputSchema: {},
     handler: async (deps) => {
+      const api = apiClient(deps);
+      if (api) return api.daemonStart();
       const entry = deps.daemonEntry ? deps.daemonEntry() : defaultDaemonEntry();
       return startDaemon({ cliEntry: entry, args: [] });
     },
@@ -641,7 +680,7 @@ export const TOOLS: ToolDef[] = [
     title: "Stop the daemon",
     description: "Stop the running dispatch daemon.",
     inputSchema: {},
-    handler: async () => stopDaemon(),
+    handler: async (deps) => apiClient(deps)?.daemonStop() ?? stopDaemon(),
   },
   {
     name: "dispatch_daemon_ensure",
@@ -650,12 +689,15 @@ export const TOOLS: ToolDef[] = [
     description: "Idempotently ensure the dispatch daemon is running; recover stale state.",
     inputSchema: {},
     handler: async (deps) => {
-      const before = daemonStatus(deps.store);
+      const api = apiClient(deps);
+      if (api) return api.daemonEnsure();
+      const store = requireStore(deps);
+      const before = daemonStatus(store);
       if (before.health === "alive") return { ok: true, started: false, alreadyRunning: true, before, after: before };
       if (before.running || before.stale) await stopDaemon();
       const entry = deps.daemonEntry ? deps.daemonEntry() : defaultDaemonEntry();
       const started = await startDaemon({ cliEntry: entry, args: [] });
-      const after = daemonStatus(deps.store);
+      const after = daemonStatus(store);
       return { ok: after.running, started: started.started, alreadyRunning: started.alreadyRunning, before, after };
     },
   },
@@ -666,6 +708,8 @@ export const TOOLS: ToolDef[] = [
     description: "Stop and restart the dispatch daemon.",
     inputSchema: {},
     handler: async (deps) => {
+      const api = apiClient(deps);
+      if (api) return api.daemonRestart();
       const stopped = await stopDaemon();
       const entry = deps.daemonEntry ? deps.daemonEntry() : defaultDaemonEntry();
       const started = await startDaemon({ cliEntry: entry, args: [] });
@@ -678,7 +722,7 @@ export const TOOLS: ToolDef[] = [
     title: "Daemon status",
     description: "Report daemon + queue status (running, scheduled, fired, dispatch counts).",
     inputSchema: {},
-    handler: async (deps) => daemonStatus(deps.store),
+    handler: async (deps) => apiClient(deps)?.daemonStatus() ?? daemonStatus(requireStore(deps)),
   },
   {
     name: "dispatch_daemon_doctor",
@@ -687,7 +731,9 @@ export const TOOLS: ToolDef[] = [
     description: "Return lightweight daemon health diagnostics.",
     inputSchema: {},
     handler: async (deps) => {
-      const status = daemonStatus(deps.store);
+      const api = apiClient(deps);
+      if (api) return api.daemonDoctor();
+      const status = daemonStatus(requireStore(deps));
       const findings: string[] = [];
       if (status.health === "dead") findings.push("daemon is not running");
       if (status.health === "stale") findings.push("daemon health is stale");
@@ -705,12 +751,16 @@ export const TOOLS: ToolDef[] = [
       action: z.enum(["install", "start", "stop", "restart", "status", "uninstall"]),
       start: z.boolean().optional(),
     },
-    handler: async (deps, a) =>
-      serviceAction(a.action as never, {
+    handler: async (deps, a) => {
+      const action = a.action as never;
+      const api = apiClient(deps);
+      if (api) return api.daemonService({ action, start: a.start === true });
+      return serviceAction(action, {
         execPath: process.execPath,
         cliEntry: deps.daemonEntry ? deps.daemonEntry() : defaultDaemonEntry(),
         startAfterInstall: a.start === true,
-      }),
+      });
+    },
   },
 ];
 

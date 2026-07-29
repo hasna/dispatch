@@ -2,7 +2,7 @@
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { Command, InvalidArgumentError } from "commander";
 import { getPackageVersion } from "../lib/version.js";
-import { DispatchClient } from "../sdk/index.js";
+import { createDispatchClientFromEnv, type DispatchClientLike } from "../sdk/index.js";
 import type {
   AgentRecoverOptions,
   AgentTargetInfo,
@@ -38,15 +38,24 @@ import { normalizeBackend } from "../lib/backend.js";
 import { Mosaic } from "../lib/mosaic.js";
 import { SELF_HEAL_MAX_FILE_INPUT_BYTES, diagnoseDispatchSelfHeal, formatSelfHealDiagnosis } from "../lib/self-heal.js";
 import { DEFAULT_FLEET_MAX_PANE_CHARS, DEFAULT_FLEET_SUMMARY_LIMIT, performFleetSummary } from "../lib/fleet-summary.js";
+import {
+  DispatchApiClient,
+  getDispatchApiConfigStatus,
+  type DispatchApiRouteResult,
+  type DispatchTargetsOptions,
+  type FetchLike,
+} from "../lib/api-client.js";
 
 export interface CliDeps {
   /** Factory for the client; when provided, the CLI will NOT close it (tests own it). */
-  clientFactory?: () => DispatchClient;
+  clientFactory?: () => DispatchClientLike;
   out?: (s: string) => void;
   err?: (s: string) => void;
   runnerFactory?: (machine?: string) => Promise<Runner>;
   /** Pre-read stdin content (piped prompt). */
   stdin?: string;
+  env?: NodeJS.ProcessEnv;
+  fetchImpl?: FetchLike;
 }
 
 export function parseIntegerOption(label: string, min: number) {
@@ -91,20 +100,41 @@ function readBoundedSelfHealFile(path: string): string {
   }
 }
 
+function formatApiTargetRow(row: unknown): { target: string; window: string; active: boolean; detection?: AgentTargetInfo } {
+  const value = row && typeof row === "object" ? (row as Record<string, unknown>) : {};
+  return {
+    target: typeof value.target === "string" ? value.target : "unknown",
+    window: typeof value.window === "string" ? value.window : typeof value.session === "string" ? value.session : "target",
+    active: value.active === true,
+    detection: value.detection && typeof value.detection === "object" ? (value.detection as AgentTargetInfo) : undefined,
+  };
+}
+
 export function buildProgram(deps: CliDeps = {}): Command {
   const out = deps.out ?? ((s: string) => console.log(s));
   const err = deps.err ?? ((s: string) => console.error(s));
   const ownClient = !deps.clientFactory;
-  const makeClient = deps.clientFactory ?? (() => new DispatchClient());
+  const makeClient = deps.clientFactory ?? (() => createDispatchClientFromEnv({ env: deps.env, fetchImpl: deps.fetchImpl }));
   const makeRunner = deps.runnerFactory ?? createRunner;
 
-  async function withClient<T>(fn: (c: DispatchClient) => T | Promise<T>): Promise<T> {
+  async function withClient<T>(fn: (c: DispatchClientLike) => T | Promise<T>): Promise<T> {
     const client = makeClient();
     try {
       return await fn(client);
     } finally {
       if (ownClient) client.close();
     }
+  }
+
+  /**
+   * Run `fn` against the remote authority when the client route is API mode.
+   * `routed` reflects the route decision only, never the truthiness of the remote
+   * payload, so an empty or falsy remote answer can never silently fall back to
+   * the local box.
+   */
+  async function withApiClient<T>(fn: (c: DispatchApiClient) => T | Promise<T>): Promise<DispatchApiRouteResult<T>> {
+    if (!deps.clientFactory && !getDispatchApiConfigStatus(deps.env).selected) return { routed: false };
+    return withClient(async (c) => (c instanceof DispatchApiClient ? { routed: true as const, value: await fn(c) } : { routed: false as const }));
   }
 
   const program = new Command();
@@ -434,6 +464,37 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .option("--json", "output JSON")
     .action(async (opts) => {
       const backend = normalizeBackend(opts.backend);
+      const apiRoute = await withApiClient((c) =>
+        c.targets({
+          machine: opts.machine,
+          backend,
+          limit: opts.limit ?? 50,
+          all: opts.all === true,
+          verbose: opts.verbose === true || opts.json === true,
+        } satisfies DispatchTargetsOptions),
+      );
+      if (apiRoute.routed) {
+        const apiTargets = apiRoute.value;
+        if (opts.json) {
+          out(JSON.stringify(apiTargets, null, 2));
+        } else if (apiTargets.length === 0) {
+          out(`no ${backend} targets found`);
+        } else {
+          out(`targets: showing ${apiTargets.length} of ${apiTargets.length}${opts.machine ? ` on ${opts.machine}` : ""}`);
+          for (const row of apiTargets) {
+            const target = formatApiTargetRow(row);
+            const base = `${target.active ? "▸" : " "} ${target.target}  (${target.window})`;
+            if (opts.verbose) {
+              const d = target.detection;
+              out(`${base}  ${d?.targetKind ?? "unknown"}/${d?.agentKind ?? "unknown"} state=${d?.composerState ?? "unknown"} receive=${d?.canReceivePrompt ?? false} queue=${d?.canQueuePrompt ?? false}`);
+            } else {
+              out(base);
+            }
+          }
+          out("hint: use --verbose for detection details or --json for full target metadata");
+        }
+        return;
+      }
       const runner = await makeRunner(opts.machine);
       const tmux = backend === "tmux" ? new Tmux(runner) : undefined;
       let allTargets;
@@ -532,26 +593,24 @@ export function buildProgram(deps: CliDeps = {}): Command {
     .option("--model <model>", "AI model override for preflight")
     .option("--json", "output JSON")
     .action(async (opts) => {
-      const runner = await makeRunner(opts.machine);
-      const result = performFleetSummary(
-        {
-          machine: opts.machine,
-          targets: opts.targets,
-          changedSince: opts.changedSince,
-          maxPaneChars: opts.maxPaneChars,
-          limit: opts.limit,
-          preflightAi: opts.preflightAi === true,
-          ai:
-            opts.preflightAi || opts.provider || opts.model
-              ? {
-                  enabled: true,
-                  provider: opts.provider,
-                  model: opts.model,
-                }
-              : undefined,
-        },
-        { tmux: new Tmux(runner) },
-      );
+      const options = {
+        machine: opts.machine,
+        targets: opts.targets,
+        changedSince: opts.changedSince,
+        maxPaneChars: opts.maxPaneChars,
+        limit: opts.limit,
+        preflightAi: opts.preflightAi === true,
+        ai:
+          opts.preflightAi || opts.provider || opts.model
+            ? {
+                enabled: true,
+                provider: opts.provider,
+                model: opts.model,
+              }
+            : undefined,
+      };
+      const apiRoute = await withApiClient((c) => c.fleetSummary(options));
+      const result = apiRoute.routed ? apiRoute.value : performFleetSummary(options, { tmux: new Tmux(await makeRunner(opts.machine)) });
       out(opts.json ? JSON.stringify(result, null, 2) : formatFleetSummary(result));
       if (result.status === "failed") process.exitCode = 1;
     });
@@ -727,7 +786,13 @@ export function buildProgram(deps: CliDeps = {}): Command {
       }
     });
 
-  registerDaemonCommands(program, { out, err });
+  registerDaemonCommands(program, {
+    out,
+    err,
+    clientFactory: makeClient,
+    ownClient,
+    apiSelected: deps.clientFactory ? undefined : getDispatchApiConfigStatus(deps.env).selected,
+  });
 
   return program;
 }
