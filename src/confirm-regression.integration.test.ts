@@ -60,7 +60,7 @@ d("confirmation regressions (real tmux)", () => {
     // The command actually executed in the pane.
     await Bun.sleep(300);
     const pane = spawnSync("tmux", ["capture-pane", "-t", SESSION, "-p"], { encoding: "utf8" }).stdout;
-    expect(pane).toContain("open-dispatch");
+    expect(pane).toContain(process.cwd());
   }, 20000);
 
   test("busy agent that queues the message is reported delivered + queued (not failed)", async () => {
@@ -140,6 +140,6 @@ d("confirmation regressions (real tmux)", () => {
     // Mode exited and the command executed.
     expect(spawnSync("tmux", ["display-message", "-p", "-t", SESSION, "#{pane_in_mode}"], { encoding: "utf8" }).stdout.trim()).toBe("0");
     const pane = spawnSync("tmux", ["capture-pane", "-t", SESSION, "-p"], { encoding: "utf8" }).stdout;
-    expect(pane).toContain("open-dispatch");
+    expect(pane).toContain(process.cwd());
   }, 20000);
 });
