@@ -548,25 +548,34 @@ export const TOOLS: ToolDef[] = [
       includeDetection: z.boolean().optional().describe("alias for verbose on tmux targets"),
     },
     handler: async (deps, a) => {
+      // Resolved before the branch so the authority is bounded by the same default
+      // as a local fleet capture; an unbounded remote request would dump the whole
+      // fleet for a caller that simply omitted `limit`.
+      const limit = (a.limit as number | undefined) ?? 50;
+      const fullDetection = a.verbose === true || a.includeDetection === true;
       const api = apiClient(deps);
       if (api) {
-        const items = await api.targets({
+        // One row beyond the bound, so truncation is measured rather than guessed;
+        // this mirrors dispatch_schedules/dispatch_loops. No `total` is reported:
+        // a truncated page cannot know the authority's full target count, and
+        // echoing the page length as a total would be a fabricated number.
+        const rows = await api.targets({
           machine: a.machine as string | undefined,
           backend: normalizeBackend(a.backend as string | undefined),
-          limit: a.limit as number | undefined,
-          verbose: a.verbose === true || a.includeDetection === true,
+          limit: limit + 1,
+          verbose: fullDetection,
         });
+        const items = rows.slice(0, limit);
         return {
           items,
           count: items.length,
-          total: items.length,
-          limit: (a.limit as number | undefined) ?? 50,
-          compact: a.verbose !== true && a.includeDetection !== true,
+          limit,
+          hasMore: rows.length > limit,
+          compact: !fullDetection,
           hint: "pass verbose:true for full target metadata",
         };
       }
       const backend = normalizeBackend(a.backend as string | undefined);
-      const limit = (a.limit as number | undefined) ?? 50;
       if (backend === "mosaic") {
         const targets = (await mosaicFor(deps, a.machine as string | undefined)).listTargets();
         const items = targets.slice(0, limit);
@@ -574,7 +583,6 @@ export const TOOLS: ToolDef[] = [
       }
       const tmux = await tmuxFor(deps, a.machine as string | undefined);
       const targets = tmux.listTargets();
-      const fullDetection = a.verbose === true || a.includeDetection === true;
       const items = targets.slice(0, limit).map((target) => {
         const detection = inspectListedAgentTarget(tmux, target.target, {
           assumeExists: true,

@@ -201,7 +201,13 @@ function routeError(baseUrl: string, route: string, error: unknown): never {
       { cause: error },
     );
   }
-  if (isAbortLike(error)) {
+  // Same rule the retry loop uses: only a failure with no numeric status can be a
+  // client-side abort. `isAbortLike` matches on the message, and an answered
+  // request's message embeds the route, so an id or schedule name spelling
+  // "abort"/"timeout" would otherwise forge a timeout out of a real 404 — hiding
+  // the not-found handling in status/scheduleStatus/clearSchedule/scheduleAction
+  // and blaming authority health for a request the authority answered at once.
+  if (typeof status !== "number" && isAbortLike(error)) {
     throw new Error(`REMOTE_API_TIMEOUT: configured Dispatch authority ${baseUrl} timed out for ${route}; local fallback is disabled`, {
       cause: error,
     });

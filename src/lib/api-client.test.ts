@@ -277,6 +277,44 @@ describe("DispatchApiClient", () => {
     expect(calls.map((call) => call.path)).toEqual(["/v1/dispatches/missing"]);
   });
 
+  test("a 404 stays a not-found even when the id spells abort or timeout", async () => {
+    // The abort heuristic matches on the error message, which embeds the request
+    // path, so a free-text id or schedule name can otherwise forge a timeout out
+    // of an answered 404 and blame authority health during an incident.
+    const { calls, fetchImpl } = apiFetch(() => ({ status: 404, body: { error: "not found" } }));
+    const client = new DispatchApiClient({
+      baseUrl: "https://dispatch.hasna.xyz/v1",
+      apiKey: "secret",
+      fetchImpl,
+      sleepImpl: async () => {},
+    });
+
+    expect(await client.status("abort-loop")).toBeUndefined();
+    expect(await client.status("timeout-check")).toBeUndefined();
+    expect(await client.scheduleStatus("abort-loop")).toBeUndefined();
+    expect(await client.clearSchedule("abort-loop")).toBe(false);
+    expect(await client.cancelSchedule("timeout-watchdog")).toBe(false);
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+      "GET /v1/dispatches/abort-loop",
+      "GET /v1/dispatches/timeout-check",
+      "GET /v1/schedules/abort-loop",
+      "GET /v1/loops/abort-loop",
+      "DELETE /v1/schedules/abort-loop",
+      "DELETE /v1/loops/abort-loop",
+      "POST /v1/schedules/timeout-watchdog/cancel",
+      "POST /v1/loops/timeout-watchdog/cancel",
+    ]);
+  });
+
+  test("an answered 4xx whose path spells abort still surfaces its own status, not a timeout", async () => {
+    // Companion to the 404 case: statuses routeError does not special-case must
+    // reach the caller as the authority's own DispatchApiError.
+    const { fetchImpl } = apiFetch(() => ({ status: 409, body: { error: "conflict" } }));
+    const client = new DispatchApiClient({ baseUrl: "https://dispatch.hasna.xyz/v1", apiKey: "secret", fetchImpl });
+    await expect(client.status("abort-loop")).rejects.toBeInstanceOf(DispatchApiError);
+    await expect(client.status("abort-loop")).rejects.not.toThrow(/REMOTE_API_TIMEOUT/);
+  });
+
   test("never replays a side-effecting POST, so a prompt or command is submitted at most once", async () => {
     const { calls, fetchImpl } = apiFetch(() => ({ status: 504, body: { error: "gateway timeout" } }));
     const client = new DispatchApiClient({

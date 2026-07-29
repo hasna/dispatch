@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { z } from "zod";
 import { TOOLS, VERBS, type ToolDeps } from "./tools.js";
 import { DispatchClient } from "../sdk/index.js";
+import { DispatchApiClient, type FetchLike } from "../lib/api-client.js";
 import { Store } from "../lib/store.js";
 import { Tmux } from "../lib/tmux.js";
 import { Mosaic } from "../lib/mosaic.js";
@@ -34,6 +35,23 @@ function tool(name: string) {
   const t = TOOLS.find((x) => x.name === name);
   if (!t) throw new Error(`no tool ${name}`);
   return t;
+}
+
+/**
+ * Deps backed by a real DispatchApiClient, so the API branch of a tool handler
+ * runs. `rows` is the authority's full result set; the fake honours whatever
+ * `limit` the client asks for, which is what makes an unbounded request visible.
+ */
+function apiDeps(rows: unknown[]): { deps: ToolDeps; requested: string[] } {
+  const requested: string[] = [];
+  const fetchImpl: FetchLike = async (url) => {
+    const parsed = new URL(url);
+    requested.push(`${parsed.pathname}${parsed.search}`);
+    const limit = Number(parsed.searchParams.get("limit") ?? rows.length);
+    return Response.json({ targets: rows.slice(0, limit) });
+  };
+  const client = new DispatchApiClient({ baseUrl: "https://dispatch.hasna.xyz/v1", apiKey: "secret", fetchImpl });
+  return { deps: { client }, requested };
 }
 
 const codewithComposerCapture = `
@@ -138,6 +156,46 @@ describe("MCP tool handlers", () => {
     expect(targets).toMatchObject({ count: 2, total: 2, compact: true });
     expect(targets.items[0]).toMatchObject({ target: "work:1.0", window: "agent", active: true } as never);
     expect(targets.items[1]!.active).toBe(false);
+  });
+
+  test("targets bounds the authority the same way it bounds a local fleet capture", async () => {
+    // Parity: an MCP client that omits `limit` must not get 50 rows locally and an
+    // unbounded fleet dump remotely. One extra row is requested so `hasMore` is
+    // measured rather than guessed.
+    const rows = Array.from({ length: 500 }, (_, i) => ({ target: `work:${i}.0` }));
+    const { deps: d, requested } = apiDeps(rows);
+    const targets = (await tool("dispatch_targets").handler(d, {})) as {
+      items: unknown[];
+      count: number;
+      limit: number;
+      hasMore: boolean;
+      compact: boolean;
+      total?: number;
+    };
+    expect(requested).toEqual(["/v1/targets?backend=tmux&limit=51"]);
+    expect(targets).toMatchObject({ count: 50, limit: 50, hasMore: true, compact: true });
+    expect(targets.items).toHaveLength(50);
+    // A truncated remote page cannot know the authority's full target count, so no
+    // total is reported rather than a fabricated one.
+    expect(targets.total).toBeUndefined();
+  });
+
+  test("targets honours an explicit limit against the authority and reports an untruncated page", async () => {
+    const rows = Array.from({ length: 3 }, (_, i) => ({ target: `work:${i}.0` }));
+    const { deps: d, requested } = apiDeps(rows);
+    const targets = (await tool("dispatch_targets").handler(d, { limit: 2, verbose: true })) as {
+      items: unknown[];
+      count: number;
+      limit: number;
+      hasMore: boolean;
+      compact: boolean;
+    };
+    expect(requested).toEqual(["/v1/targets?backend=tmux&limit=3&verbose=true"]);
+    expect(targets).toMatchObject({ count: 2, limit: 2, hasMore: true, compact: false });
+
+    const small = apiDeps(rows.slice(0, 1));
+    const page = (await tool("dispatch_targets").handler(small.deps, { limit: 2 })) as { count: number; hasMore: boolean };
+    expect(page).toMatchObject({ count: 1, hasMore: false });
   });
 
   test("targets exposes wrapper Codewith/Codex detection and refuses arbitrary node panes", async () => {
