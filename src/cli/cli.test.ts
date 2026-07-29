@@ -1426,8 +1426,9 @@ describe("CLI read/schedule commands (in-memory client)", () => {
     expect(out).toEqual([]);
   });
 
-  test("a falsy authority payload still reports the remote answer instead of local daemon state", async () => {
+  test("a falsy authority payload still reports the remote answer instead of local state", async () => {
     const out: string[] = [];
+    const err: string[] = [];
     const fetchImpl: FetchLike = async () =>
       new Response("false", { status: 200, headers: { "content-type": "application/json" } });
     const program = buildProgram({
@@ -1441,14 +1442,25 @@ describe("CLI read/schedule commands (in-memory client)", () => {
         throw new Error("API mode must not enumerate local tmux targets");
       },
       out: (s) => out.push(s),
+      err: (s) => err.push(s),
     });
 
-    // `false` is a well-formed JSON body, so the route decision must not be
-    // re-derived from its truthiness — that is what silently printed local
-    // SQLite daemon state as if it were the authority's.
-    await program.parseAsync(["daemon", "status", "--json"], { from: "user" });
+    // `cancel` declares a boolean outcome, so a bare `false` IS the authority's
+    // answer: the route decision must not be re-derived from its truthiness —
+    // that is what silently ran the command against the local box instead.
+    process.exitCode = 0;
+    await program.parseAsync(["cancel", "s1"], { from: "user" });
+    expect(err.join("\n")).toContain("could not cancel s1");
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
 
-    expect(out).toEqual(["false"]);
+    // `daemon status` declares a DaemonStatus, and `false` is not one. It must
+    // fail closed on the contract rather than print local daemon state — and it
+    // must still not be mistaken for "not API mode".
+    await expect(program.parseAsync(["daemon", "status", "--json"], { from: "user" })).rejects.toThrow(
+      /REMOTE_API_MALFORMED_RESPONSE/,
+    );
+    expect(out).toEqual([]);
     process.exitCode = 0;
   });
 

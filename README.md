@@ -581,9 +581,17 @@ authority instead. API mode is fail-closed: it requires both
 `HASNA_DISPATCH_API_URL` and `HASNA_DISPATCH_API_KEY`, normalizes the authority to
 `/v1`, does not accept URL userinfo/query/fragment data, and never falls back to
 local SQLite after an API mode misconfiguration. Once API mode is selected, the
-route is fixed for the whole command: an empty, `null`, or otherwise falsy answer
-from the authority is reported as a remote failure (`REMOTE_API_EMPTY_RESPONSE`),
-never quietly answered from the local box.
+route is fixed for the whole command: an empty or `null` answer from the
+authority is reported as a remote failure (`REMOTE_API_EMPTY_RESPONSE`), never
+quietly answered from the local box.
+
+Every 2xx body is checked against the endpoint's documented response contract
+before it reaches a caller. A payload that does not match — `{}`, `[]`,
+`{"ok":true}`, an HTML error page, a record missing required fields — raises
+`REMOTE_API_MALFORMED_RESPONSE` and a non-zero exit, rather than being cast to
+the declared return type and reported as a completed dispatch. Extra fields are
+passed through untouched. [docs/api-v1.md](docs/api-v1.md) publishes the shapes
+an authority must answer with.
 
 Side-effecting requests (`send`, `exec`, `key`, bulk dispatch, `recover`) are sent
 exactly once. They carry an `Idempotency-Key` header for the authority's benefit,
@@ -655,7 +663,7 @@ bun run build
 ```
 
 See [AGENTS.md](AGENTS.md) for repo conventions and [docs/](docs/) for architecture,
-reliability, self-healing, and cross-machine details.
+reliability, self-healing, cross-machine, and `/v1` API contract details.
 
 ## License
 

@@ -53,7 +53,14 @@ export {
   performMosaicDispatch,
 } from "./lib/mosaic.js";
 export { normalizeBackend } from "./lib/backend.js";
-export { DispatchApiClient, DispatchApiEmptyResponseError, DispatchApiError, getDispatchApiClient, getDispatchApiConfigStatus } from "./lib/api-client.js";
+export {
+  DispatchApiClient,
+  DispatchApiEmptyResponseError,
+  DispatchApiError,
+  DispatchApiMalformedResponseError,
+  getDispatchApiClient,
+  getDispatchApiConfigStatus,
+} from "./lib/api-client.js";
 export type {
   DispatchApiClientOptions,
   DispatchApiConfigStatus,

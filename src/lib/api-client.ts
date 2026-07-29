@@ -1,6 +1,24 @@
+import type { ZodIssue, ZodTypeAny } from "zod";
 import type { StartDaemonResult } from "../daemon/daemon.js";
 import type { ServiceAction, ServiceResult } from "../daemon/service.js";
 import type { DaemonStatus, StopDaemonResult } from "../daemon/control.js";
+import {
+  agentRecoverResultSchema,
+  agentTriageResultSchema,
+  bulkDispatchResultSchema,
+  captureResultSchema,
+  daemonDoctorResultSchema,
+  daemonEnsureResultSchema,
+  daemonRestartResultSchema,
+  daemonServiceResultSchema,
+  daemonStatusSchema,
+  dispatchRecordSchema,
+  dispatchTargetRowSchema,
+  fleetSummaryResultSchema,
+  scheduledDispatchSchema,
+  startDaemonResultSchema,
+  stopDaemonResultSchema,
+} from "./api-schemas.js";
 import type {
   AgentRecoverOptions,
   AgentRecoverResult,
@@ -118,6 +136,30 @@ export class DispatchApiEmptyResponseError extends Error {
     this.name = "DispatchApiEmptyResponseError";
     this.method = method;
     this.path = path;
+  }
+}
+
+/**
+ * A 2xx whose payload does not match the endpoint's `/v1` response contract.
+ * Same fail-closed family as {@link DispatchApiEmptyResponseError}: without it a
+ * body the client cannot interpret — `{}`, `[]`, `{"ok":true}`, an HTML error
+ * page — is coerced with `as T` and handed to the caller as a completed
+ * dispatch, so `dispatch send --json` prints `{}` and exits 0 while the prompt's
+ * fate is unknown.
+ */
+export class DispatchApiMalformedResponseError extends Error {
+  readonly method: string;
+  readonly path: string;
+  readonly issues: string[];
+
+  constructor(baseUrl: string, method: string, path: string, issues: string[]) {
+    super(
+      `REMOTE_API_MALFORMED_RESPONSE: configured Dispatch authority ${baseUrl} answered ${method} ${path} with a body that does not match the documented response contract (${issues.join("; ")}); local fallback is disabled`,
+    );
+    this.name = "DispatchApiMalformedResponseError";
+    this.method = method;
+    this.path = path;
+    this.issues = issues;
   }
 }
 
@@ -241,36 +283,102 @@ function appendQuery(path: string, query?: Record<string, string | number | bool
   return qs ? `${path}${path.includes("?") ? "&" : "?"}${qs}` : path;
 }
 
-function envelope<T>(raw: unknown, keys: readonly string[]): T {
-  if (raw && typeof raw === "object") {
-    const obj = raw as Record<string, unknown>;
-    for (const key of keys) {
-      if (obj[key] !== undefined) return obj[key] as T;
-    }
-  }
-  return raw as T;
+/**
+ * What an endpoint is allowed to answer. Every request declares one, so an
+ * endpoint cannot be added without stating the shape it promises: a body that
+ * fails its contract is a remote failure, never a coerced success.
+ */
+type ResponseContract =
+  | { readonly kind: "object"; readonly schema: ZodTypeAny; readonly keys: readonly string[] }
+  | { readonly kind: "list"; readonly item: ZodTypeAny | null; readonly keys: readonly string[] }
+  | { readonly kind: "boolean"; readonly keys: readonly string[] };
+
+/** A single object payload, optionally wrapped under one of `keys`. */
+function objectResponse(schema: ZodTypeAny, keys: readonly string[] = []): ResponseContract {
+  return { kind: "object", schema, keys };
 }
 
-function listEnvelope<T>(raw: unknown, keys: readonly string[]): T[] {
-  if (Array.isArray(raw)) return raw as T[];
-  if (raw && typeof raw === "object") {
-    const obj = raw as Record<string, unknown>;
-    for (const key of keys) {
-      if (Array.isArray(obj[key])) return obj[key] as T[];
-    }
-  }
-  return [];
+/** An array payload, bare or wrapped under one of `keys`. `item` null means the rows are untyped. */
+function listResponse(item: ZodTypeAny | null, keys: readonly string[]): ResponseContract {
+  return { kind: "list", item, keys };
 }
 
-function booleanEnvelope(raw: unknown, keys: readonly string[]): boolean {
-  if (typeof raw === "boolean") return raw;
+/** A yes/no outcome, sent bare or as `{ <key>: boolean }`. */
+function booleanResponse(keys: readonly string[]): ResponseContract {
+  return { kind: "boolean", keys };
+}
+
+function describeKeys(keys: readonly string[]): string {
+  return keys.map((key) => `"${key}"`).join(" or ");
+}
+
+/**
+ * Render zod issues as field path plus expectation only. The received value is
+ * deliberately never echoed: the body is authority-controlled and can carry
+ * transcript text, and a diagnostic is not a place to reprint it.
+ */
+function describeIssues(issues: readonly ZodIssue[], prefix?: string): string[] {
+  return issues.slice(0, 5).map((issue) => {
+    const path = [...(prefix ? [prefix] : []), ...issue.path.map(String)].join(".") || "<root>";
+    return issue.code === "invalid_type" ? `${path}: expected ${issue.expected}` : `${path}: ${issue.code}`;
+  });
+}
+
+function unwrapObject(raw: unknown, keys: readonly string[]): unknown {
   if (raw && typeof raw === "object") {
     const obj = raw as Record<string, unknown>;
     for (const key of keys) {
-      if (typeof obj[key] === "boolean") return obj[key] as boolean;
+      if (obj[key] !== undefined) return obj[key];
     }
   }
-  return false;
+  return raw;
+}
+
+function unwrapList(raw: unknown, keys: readonly string[]): unknown[] | null {
+  if (Array.isArray(raw)) return raw;
+  if (raw && typeof raw === "object") {
+    const obj = raw as Record<string, unknown>;
+    for (const key of keys) {
+      const value = obj[key];
+      if (Array.isArray(value)) return value;
+    }
+  }
+  return null;
+}
+
+/**
+ * Unwrap the declared envelope and check the payload against the contract.
+ *
+ * The authority's own value is returned rather than zod's parse output, so a
+ * conforming authority never loses fields this client does not model — the
+ * schema is a gate, not a transform.
+ */
+function checkResponse(contract: ResponseContract, raw: unknown, fail: (issues: string[]) => never): unknown {
+  if (contract.kind === "list") {
+    const rows = unwrapList(raw, contract.keys);
+    if (!rows) fail([`<root>: expected an array or an object carrying ${describeKeys(contract.keys)}`]);
+    if (contract.item) {
+      for (const [index, row] of rows.entries()) {
+        const parsed = contract.item.safeParse(row);
+        if (!parsed.success) fail(describeIssues(parsed.error.issues, String(index)));
+      }
+    }
+    return rows;
+  }
+  if (contract.kind === "boolean") {
+    if (typeof raw === "boolean") return raw;
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      const obj = raw as Record<string, unknown>;
+      for (const key of contract.keys) {
+        if (typeof obj[key] === "boolean") return obj[key];
+      }
+    }
+    fail([`<root>: expected a boolean or an object carrying ${describeKeys(contract.keys)}`]);
+  }
+  const value = unwrapObject(raw, contract.keys);
+  const parsed = contract.schema.safeParse(value);
+  if (!parsed.success) fail(describeIssues(parsed.error.issues));
+  return value;
 }
 
 export function getDispatchApiConfigStatus(env: Env = process.env as Env): DispatchApiConfigStatus {
@@ -367,6 +475,7 @@ export class DispatchApiClient {
   private async request<T>(
     method: string,
     path: string,
+    expect: ResponseContract,
     body?: unknown,
     opts: { query?: Record<string, string | number | boolean | undefined>; idempotencyKey?: string; retries?: number } = {},
   ): Promise<T> {
@@ -400,11 +509,17 @@ export class DispatchApiClient {
         const parsed = text ? safeJson(text) : undefined;
         if (response.ok) {
           if (parsed === undefined || parsed === null) throw new DispatchApiEmptyResponseError(this.baseUrl, upper, rel);
-          return parsed as T;
+          // An answered 2xx is a definitive answer, so a body that fails its
+          // contract is reported as a remote failure rather than replayed or
+          // coerced. Both halves of that rule matter: coercion fabricates
+          // success, and replaying would resend a side-effecting POST.
+          return checkResponse(expect, parsed, (issues) => {
+            throw new DispatchApiMalformedResponseError(this.baseUrl, upper, rel, issues);
+          }) as T;
         }
         last = new DispatchApiError(upper, rel, response.status, parsed);
       } catch (error) {
-        if (error instanceof DispatchApiEmptyResponseError) throw error;
+        if (error instanceof DispatchApiEmptyResponseError || error instanceof DispatchApiMalformedResponseError) throw error;
         last = error;
       } finally {
         clearTimeout(timer);
@@ -421,54 +536,49 @@ export class DispatchApiClient {
   }
 
   async send(options: DispatchOptions): Promise<DispatchRecord> {
-    return envelope(await this.request("POST", "/dispatches", { options }, { idempotencyKey: randomIdempotencyKey() }), [
-      "dispatch",
-      "record",
-    ]);
+    return this.request("POST", "/dispatches", objectResponse(dispatchRecordSchema, ["dispatch", "record"]), { options }, {
+      idempotencyKey: randomIdempotencyKey(),
+    });
   }
 
   async bulkSend(options: BulkDispatchOptions): Promise<BulkDispatchResult> {
-    return envelope(await this.request("POST", "/dispatches/bulk", { options }, { idempotencyKey: randomIdempotencyKey() }), [
-      "bulk",
-      "result",
-    ]);
+    return this.request("POST", "/dispatches/bulk", objectResponse(bulkDispatchResultSchema, ["bulk", "result"]), { options }, {
+      idempotencyKey: randomIdempotencyKey(),
+    });
   }
 
   async exec(options: ExecOptions): Promise<DispatchRecord> {
-    return envelope(await this.request("POST", "/exec", { options }, { idempotencyKey: randomIdempotencyKey() }), [
-      "dispatch",
-      "record",
-    ]);
+    return this.request("POST", "/exec", objectResponse(dispatchRecordSchema, ["dispatch", "record"]), { options }, {
+      idempotencyKey: randomIdempotencyKey(),
+    });
   }
 
   async key(options: KeyOptions): Promise<DispatchRecord> {
-    return envelope(await this.request("POST", "/keys", { options }, { idempotencyKey: randomIdempotencyKey() }), [
-      "dispatch",
-      "record",
-    ]);
+    return this.request("POST", "/keys", objectResponse(dispatchRecordSchema, ["dispatch", "record"]), { options }, {
+      idempotencyKey: randomIdempotencyKey(),
+    });
   }
 
   async capture(options: CaptureOptions): Promise<CaptureResult> {
-    return envelope(await this.request("POST", "/captures", { options }), ["capture", "result"]);
+    return this.request("POST", "/captures", objectResponse(captureResultSchema, ["capture", "result"]), { options });
   }
 
   async triage(options: AgentTriageOptions): Promise<AgentTriageResult> {
-    return envelope(await this.request("POST", "/triage", { options }), ["triage", "result"]);
+    return this.request("POST", "/triage", objectResponse(agentTriageResultSchema, ["triage", "result"]), { options });
   }
 
   async recover(options: AgentRecoverOptions): Promise<AgentRecoverResult> {
-    return envelope(await this.request("POST", "/recover", { options }, { idempotencyKey: randomIdempotencyKey() }), [
-      "recover",
-      "result",
-    ]);
+    return this.request("POST", "/recover", objectResponse(agentRecoverResultSchema, ["recover", "result"]), { options }, {
+      idempotencyKey: randomIdempotencyKey(),
+    });
   }
 
   async fleetSummary(options: FleetSummaryOptions = {}): Promise<FleetSummaryResult> {
-    return envelope(await this.request("POST", "/fleet/summary", { options }), ["summary", "result"]);
+    return this.request("POST", "/fleet/summary", objectResponse(fleetSummaryResultSchema, ["summary", "result"]), { options });
   }
 
   async targets(options: DispatchTargetsOptions = {}): Promise<unknown[]> {
-    const raw = await this.request("GET", "/targets", undefined, {
+    return this.request("GET", "/targets", listResponse(dispatchTargetRowSchema, ["targets", "items", "data", "results"]), undefined, {
       query: {
         machine: options.machine,
         backend: options.backend,
@@ -477,12 +587,15 @@ export class DispatchApiClient {
         verbose: options.verbose === true ? true : undefined,
       },
     });
-    return listEnvelope(raw, ["targets", "items", "data", "results"]);
   }
 
   async status(id: string): Promise<DispatchRecord | undefined> {
     try {
-      return envelope(await this.request("GET", `/dispatches/${encodeURIComponent(id)}`), ["dispatch", "record"]);
+      return await this.request(
+        "GET",
+        `/dispatches/${encodeURIComponent(id)}`,
+        objectResponse(dispatchRecordSchema, ["dispatch", "record"]),
+      );
     } catch (error) {
       if (error instanceof DispatchApiError && error.status === 404) return undefined;
       throw error;
@@ -490,8 +603,9 @@ export class DispatchApiClient {
   }
 
   async list(opts: { status?: DispatchStatus; limit?: number } = {}): Promise<DispatchRecord[]> {
-    const raw = await this.request("GET", "/dispatches", undefined, { query: opts });
-    return listEnvelope(raw, ["dispatches", "records", "items", "data", "results"]);
+    return this.request("GET", "/dispatches", listResponse(dispatchRecordSchema, ["dispatches", "records", "items", "data", "results"]), undefined, {
+      query: opts,
+    });
   }
 
   async schedule(input: {
@@ -504,26 +618,25 @@ export class DispatchApiClient {
     name?: string;
     from?: Date;
   }): Promise<ScheduledDispatch> {
-    return envelope(await this.request("POST", "/schedules", input, { idempotencyKey: randomIdempotencyKey() }), [
-      "schedule",
-    ]);
+    return this.request("POST", "/schedules", objectResponse(scheduledDispatchSchema, ["schedule"]), input, {
+      idempotencyKey: randomIdempotencyKey(),
+    });
   }
 
   async loop(input: { options: DispatchOptions; every: string; name?: string; from?: Date }): Promise<ScheduledDispatch> {
-    return envelope(await this.request("POST", "/loops", input, { idempotencyKey: randomIdempotencyKey() }), [
-      "loop",
-      "schedule",
-    ]);
+    return this.request("POST", "/loops", objectResponse(scheduledDispatchSchema, ["loop", "schedule"]), input, {
+      idempotencyKey: randomIdempotencyKey(),
+    });
   }
 
   async scheduleStatus(id: string): Promise<ScheduledDispatch | undefined> {
     try {
-      return envelope(await this.request("GET", `/schedules/${encodeURIComponent(id)}`), ["schedule"]);
+      return await this.request("GET", `/schedules/${encodeURIComponent(id)}`, objectResponse(scheduledDispatchSchema, ["schedule"]));
     } catch (error) {
       if (!(error instanceof DispatchApiError) || error.status !== 404) throw error;
     }
     try {
-      return envelope(await this.request("GET", `/loops/${encodeURIComponent(id)}`), ["loop", "schedule"]);
+      return await this.request("GET", `/loops/${encodeURIComponent(id)}`, objectResponse(scheduledDispatchSchema, ["loop", "schedule"]));
     } catch (error) {
       if (error instanceof DispatchApiError && error.status === 404) return undefined;
       throw error;
@@ -531,14 +644,20 @@ export class DispatchApiClient {
   }
 
   async listSchedules(opts: { status?: ScheduleStatus; kind?: ScheduleKind; limit?: number } = {}): Promise<ScheduledDispatch[]> {
-    const raw = await this.request("GET", "/schedules", undefined, { query: opts });
-    return listEnvelope(raw, ["schedules", "items", "data", "results"]);
+    return this.request("GET", "/schedules", listResponse(scheduledDispatchSchema, ["schedules", "items", "data", "results"]), undefined, {
+      query: opts,
+    });
   }
 
   async listLoops(opts: { status?: ScheduleStatus; limit?: number } = {}): Promise<ScheduledDispatch[]> {
     try {
-      const raw = await this.request("GET", "/loops", undefined, { query: opts });
-      return listEnvelope(raw, ["loops", "schedules", "items", "data", "results"]);
+      return await this.request(
+        "GET",
+        "/loops",
+        listResponse(scheduledDispatchSchema, ["loops", "schedules", "items", "data", "results"]),
+        undefined,
+        { query: opts },
+      );
     } catch (error) {
       if (!(error instanceof DispatchApiError) || error.status !== 404) throw error;
     }
@@ -558,13 +677,14 @@ export class DispatchApiClient {
   }
 
   async clearSchedule(id: string): Promise<boolean> {
+    const cleared = booleanResponse(["cleared", "deleted"]);
     try {
-      return booleanEnvelope(await this.request("DELETE", `/schedules/${encodeURIComponent(id)}`), ["cleared", "deleted"]);
+      return await this.request("DELETE", `/schedules/${encodeURIComponent(id)}`, cleared);
     } catch (error) {
       if (!(error instanceof DispatchApiError) || error.status !== 404) throw error;
     }
     try {
-      return booleanEnvelope(await this.request("DELETE", `/loops/${encodeURIComponent(id)}`), ["cleared", "deleted"]);
+      return await this.request("DELETE", `/loops/${encodeURIComponent(id)}`, cleared);
     } catch (error) {
       if (error instanceof DispatchApiError && error.status === 404) return false;
       throw error;
@@ -572,31 +692,31 @@ export class DispatchApiClient {
   }
 
   async daemonStart(): Promise<StartDaemonResult> {
-    return this.request("POST", "/daemon/start", {});
+    return this.request("POST", "/daemon/start", objectResponse(startDaemonResultSchema), {});
   }
 
   async daemonStop(): Promise<StopDaemonResult> {
-    return this.request("POST", "/daemon/stop", {});
+    return this.request("POST", "/daemon/stop", objectResponse(stopDaemonResultSchema), {});
   }
 
   async daemonEnsure(): Promise<DispatchDaemonEnsureResult> {
-    return this.request("POST", "/daemon/ensure", {});
+    return this.request("POST", "/daemon/ensure", objectResponse(daemonEnsureResultSchema), {});
   }
 
   async daemonRestart(): Promise<{ ok: boolean; stopped: StopDaemonResult; started: StartDaemonResult }> {
-    return this.request("POST", "/daemon/restart", {});
+    return this.request("POST", "/daemon/restart", objectResponse(daemonRestartResultSchema), {});
   }
 
   async daemonStatus(): Promise<DaemonStatus> {
-    return this.request("GET", "/daemon/status");
+    return this.request("GET", "/daemon/status", objectResponse(daemonStatusSchema));
   }
 
   async daemonDoctor(): Promise<DispatchDaemonDoctorResult> {
-    return this.request("GET", "/daemon/doctor");
+    return this.request("GET", "/daemon/doctor", objectResponse(daemonDoctorResultSchema));
   }
 
   async daemonService(options: DispatchDaemonServiceOptions): Promise<ServiceResult> {
-    return this.request("POST", "/daemon/service", options);
+    return this.request("POST", "/daemon/service", objectResponse(daemonServiceResultSchema), options);
   }
 
   close(): void {
@@ -604,13 +724,14 @@ export class DispatchApiClient {
   }
 
   private async scheduleAction(id: string, action: "cancel" | "pause" | "resume", keys: readonly string[]): Promise<boolean> {
+    const applied = booleanResponse(keys);
     try {
-      return booleanEnvelope(await this.request("POST", `/schedules/${encodeURIComponent(id)}/${action}`, {}), keys);
+      return await this.request("POST", `/schedules/${encodeURIComponent(id)}/${action}`, applied, {});
     } catch (error) {
       if (!(error instanceof DispatchApiError) || error.status !== 404) throw error;
     }
     try {
-      return booleanEnvelope(await this.request("POST", `/loops/${encodeURIComponent(id)}/${action}`, {}), keys);
+      return await this.request("POST", `/loops/${encodeURIComponent(id)}/${action}`, applied, {});
     } catch (error) {
       if (error instanceof DispatchApiError && error.status === 404) return false;
       throw error;

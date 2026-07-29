@@ -76,6 +76,26 @@ const schedule = {
   updatedAt: "x",
 } as const;
 
+const daemonStatusBody = {
+  running: true,
+  stale: false,
+  health: "alive",
+  scheduled: 0,
+  paused: 0,
+  fired: 0,
+  cancelled: 0,
+  failed: 0,
+  recentDispatches: 0,
+  heartbeatStaleMs: 30000,
+  recentFailures: [],
+  logPath: "log",
+  pidPath: "pid",
+  statePath: "state",
+} as const;
+
+const startBody = { started: true, alreadyRunning: false } as const;
+const stopBody = { stopped: true, forced: false, wasRunning: true } as const;
+
 describe("dispatch API route resolution", () => {
   test("explicit api/self-hosted mode resolves to /v1 with auth required", () => {
     const status = getDispatchApiConfigStatus({
@@ -193,10 +213,12 @@ describe("DispatchApiClient", () => {
       if (path === "/v1/triage") return { body: { triage: { schemaVersion: "dispatch.agentTriage.v1", status: "failed", target: "work:agent", machine: "local", generatedAt: "x", action: { kind: "refuse", safeToApply: false, reason: "test" }, capture: { status: "failed", requestedLines: 1, lines: 0, maxLines: 2000, maxChars: 0, textLength: 0, truncatedChars: false, redacted: true, excerptChars: 0 } } } };
       if (path === "/v1/recover") return { body: { recover: { schemaVersion: "dispatch.agentRecover.v1", status: "planned", target: "work:agent", machine: "local", dryRun: true, generatedAt: "x", promptPreview: "fix", promptLength: 3, action: { kind: "refuse", safeToApply: false, reason: "test" }, triage: { schemaVersion: "dispatch.agentTriage.v1", status: "failed", target: "work:agent", machine: "local", generatedAt: "x", action: { kind: "refuse", safeToApply: false, reason: "test" }, capture: { status: "failed", requestedLines: 1, lines: 0, maxLines: 2000, maxChars: 0, textLength: 0, truncatedChars: false, redacted: true, excerptChars: 0 } } } } };
       if (path.startsWith("/v1/daemon/")) {
-        if (path === "/v1/daemon/status") return { body: { running: true, stale: false, health: "alive", scheduled: 0, paused: 0, fired: 0, cancelled: 0, failed: 0, recentDispatches: 0, heartbeatStaleMs: 30000, recentFailures: [], logPath: "log", pidPath: "pid", statePath: "state" } };
-        if (path === "/v1/daemon/doctor") return { body: { ok: true, status: { running: true, stale: false, health: "alive", scheduled: 0, paused: 0, fired: 0, cancelled: 0, failed: 0, recentDispatches: 0, heartbeatStaleMs: 30000, recentFailures: [], logPath: "log", pidPath: "pid", statePath: "state" }, findings: [] } };
+        if (path === "/v1/daemon/status") return { body: daemonStatusBody };
+        if (path === "/v1/daemon/doctor") return { body: { ok: true, status: daemonStatusBody, findings: [] } };
         if (path === "/v1/daemon/service") return { body: { ok: true, action: "status", detail: "remote service status" } };
-        return { body: { ok: true, started: true, stopped: false, alreadyRunning: false } };
+        if (path === "/v1/daemon/stop") return { body: stopBody };
+        if (path === "/v1/daemon/restart") return { body: { ok: true, stopped: stopBody, started: startBody } };
+        return { body: { ok: true, ...startBody } };
       }
       return { body: { dispatch: record } };
     });
@@ -376,6 +398,142 @@ describe("DispatchApiClient", () => {
     const nulled: FetchLike = async () => new Response("null", { status: 200, headers: { "content-type": "application/json" } });
     const nullClient = new DispatchApiClient({ baseUrl: "https://dispatch.hasna.xyz/v1", apiKey: "secret", fetchImpl: nulled });
     await expect(nullClient.fleetSummary()).rejects.toThrow(/REMOTE_API_EMPTY_RESPONSE/);
+  });
+
+  test("an unrecognized 200 fails closed instead of being coerced into a fabricated success", async () => {
+    // These are the bodies a half-built authority actually answers with, and the
+    // exact reason a contract check exists: `as T` turns every one of them into a
+    // "successful" dispatch, so `dispatch send --json` prints `{}` and exits 0
+    // for a prompt whose delivery is entirely unknown.
+    const bodies: unknown[] = [
+      {},
+      [],
+      { ok: true },
+      { dispatch: {} },
+      "<html>login</html>",
+      // Right envelope, wrong record: no timestamps, so callers that read them
+      // would render `undefined` as if the authority had reported one.
+      { dispatch: { id: "d1", target: "work:agent", machine: "local", prompt: "hello", status: "delivered" } },
+      // Right fields, undeclared status value.
+      { dispatch: { ...record, status: "queued" } },
+    ];
+
+    for (const body of bodies) {
+      const { calls, fetchImpl } = apiFetch(() => ({ body }));
+      const client = new DispatchApiClient({
+        baseUrl: "https://dispatch.hasna.xyz/v1",
+        apiKey: "secret",
+        fetchImpl,
+        sleepImpl: async () => {},
+      });
+      await expect(client.send({ target: "work:agent", prompt: "deploy prod" })).rejects.toThrow(/REMOTE_API_MALFORMED_RESPONSE/);
+      // An answered 2xx is definitive, so the side-effecting POST is not replayed.
+      expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual(["POST /v1/dispatches"]);
+    }
+  });
+
+  test("every typed endpoint family checks its own contract, not just the dispatch record", async () => {
+    const { fetchImpl } = apiFetch(() => ({ body: { ok: true } }));
+    const client = new DispatchApiClient({
+      baseUrl: "https://dispatch.hasna.xyz/v1",
+      apiKey: "secret",
+      fetchImpl,
+      sleepImpl: async () => {},
+    });
+
+    await expect(client.exec({ target: "work:shell", command: "pwd" })).rejects.toThrow(/REMOTE_API_MALFORMED_RESPONSE/);
+    await expect(client.key({ target: "work:agent", key: "Tab" })).rejects.toThrow(/REMOTE_API_MALFORMED_RESPONSE/);
+    await expect(client.bulkSend({ targets: [], prompt: "hi" })).rejects.toThrow(/REMOTE_API_MALFORMED_RESPONSE/);
+    await expect(client.capture({ target: "work:agent" })).rejects.toThrow(/REMOTE_API_MALFORMED_RESPONSE/);
+    await expect(client.triage({ target: "work:agent" })).rejects.toThrow(/REMOTE_API_MALFORMED_RESPONSE/);
+    await expect(client.recover({ target: "work:agent", prompt: "fix" })).rejects.toThrow(/REMOTE_API_MALFORMED_RESPONSE/);
+    await expect(client.fleetSummary()).rejects.toThrow(/REMOTE_API_MALFORMED_RESPONSE/);
+    await expect(client.schedule({ options: { target: "work:agent", prompt: "later" }, in: "30m" })).rejects.toThrow(
+      /REMOTE_API_MALFORMED_RESPONSE/,
+    );
+    await expect(client.loop({ options: { target: "work:agent", prompt: "poll" }, every: "5m" })).rejects.toThrow(
+      /REMOTE_API_MALFORMED_RESPONSE/,
+    );
+    await expect(client.daemonStatus()).rejects.toThrow(/REMOTE_API_MALFORMED_RESPONSE/);
+    await expect(client.daemonDoctor()).rejects.toThrow(/REMOTE_API_MALFORMED_RESPONSE/);
+    await expect(client.daemonStop()).rejects.toThrow(/REMOTE_API_MALFORMED_RESPONSE/);
+    await expect(client.daemonRestart()).rejects.toThrow(/REMOTE_API_MALFORMED_RESPONSE/);
+    await expect(client.daemonService({ action: "status" })).rejects.toThrow(/REMOTE_API_MALFORMED_RESPONSE/);
+  });
+
+  test("an unreadable list envelope fails closed instead of reporting an empty fleet", async () => {
+    // Silently answering "no dispatches"/"no targets" for a body the client cannot
+    // read is the same fabricated success: an operator reads it as a healthy,
+    // empty fleet rather than as an authority it cannot talk to.
+    const { fetchImpl } = apiFetch(() => ({ body: { rows_v2: [record] } }));
+    const client = new DispatchApiClient({
+      baseUrl: "https://dispatch.hasna.xyz/v1",
+      apiKey: "secret",
+      fetchImpl,
+      sleepImpl: async () => {},
+    });
+
+    await expect(client.list()).rejects.toThrow(/REMOTE_API_MALFORMED_RESPONSE/);
+    await expect(client.targets()).rejects.toThrow(/REMOTE_API_MALFORMED_RESPONSE/);
+    await expect(client.listSchedules()).rejects.toThrow(/REMOTE_API_MALFORMED_RESPONSE/);
+  });
+
+  test("a list row that is not a record fails closed rather than reaching callers as one", async () => {
+    const { fetchImpl } = apiFetch(() => ({ body: { dispatches: [record, { id: "d2" }] } }));
+    const client = new DispatchApiClient({
+      baseUrl: "https://dispatch.hasna.xyz/v1",
+      apiKey: "secret",
+      fetchImpl,
+      sleepImpl: async () => {},
+    });
+    await expect(client.list()).rejects.toThrow(/REMOTE_API_MALFORMED_RESPONSE/);
+  });
+
+  test("a boolean endpoint that answers an unrecognized shape is not reported as a no-op", async () => {
+    // `{"ok":true}` for a cancel that succeeded used to fall through to the
+    // boolean default and print "could not cancel s1", exit 1 — the authority
+    // did the work and the operator was told it did not.
+    const { fetchImpl } = apiFetch(() => ({ body: { ok: true } }));
+    const client = new DispatchApiClient({
+      baseUrl: "https://dispatch.hasna.xyz/v1",
+      apiKey: "secret",
+      fetchImpl,
+      sleepImpl: async () => {},
+    });
+
+    await expect(client.cancelSchedule("s1")).rejects.toThrow(/REMOTE_API_MALFORMED_RESPONSE/);
+    await expect(client.pauseSchedule("s1")).rejects.toThrow(/REMOTE_API_MALFORMED_RESPONSE/);
+    await expect(client.clearSchedule("s1")).rejects.toThrow(/REMOTE_API_MALFORMED_RESPONSE/);
+  });
+
+  test("a conforming payload keeps the fields this client does not model", async () => {
+    // The contract is a gate, not a transform. If validation ever starts
+    // returning zod's parse output instead of the authority's own object, every
+    // unmodelled field silently disappears from `--json`.
+    const { fetchImpl } = apiFetch(() => ({
+      body: { dispatch: { ...record, detail: "working detected", confirm: { delivered: true, reason: "composer cleared" } } },
+    }));
+    const client = new DispatchApiClient({ baseUrl: "https://dispatch.hasna.xyz/v1", apiKey: "secret", fetchImpl });
+
+    const result = await client.send({ target: "work:agent", prompt: "hello" });
+    expect(result).toMatchObject({ id: "d1", status: "delivered", detail: "working detected" });
+    expect(result.confirm).toEqual({ delivered: true, reason: "composer cleared" });
+  });
+
+  test("the malformed-response diagnostic names the offending field and echoes neither payload nor key", async () => {
+    const transcript = "TRANSCRIPT_BODY_SHOULD_NOT_BE_ECHOED";
+    const { fetchImpl } = apiFetch(() => ({ body: { capture: { ...record, status: "captured", text: 42, detail: transcript } } }));
+    const client = new DispatchApiClient({ baseUrl: "https://dispatch.hasna.xyz/v1", apiKey: "secret", fetchImpl });
+
+    const error = await client.capture({ target: "work:agent" }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    const message = (error as Error).message;
+    // Diagnosable: the reviewer's live probe got a raw `text.replace` TypeError
+    // out of the formatter instead of anything naming the endpoint or the field.
+    expect(message).toContain("POST /captures");
+    expect(message).toContain("text: expected string");
+    expect(message).not.toContain(transcript);
+    expect(message).not.toContain("secret");
   });
 
   test("rejects redirects so credentials are not followed to another authority", async () => {

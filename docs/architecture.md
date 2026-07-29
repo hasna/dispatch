@@ -71,6 +71,14 @@ response value, so an empty or falsy authority payload cannot be mistaken for
 retries only HTTP-idempotent methods, and never after a client-side abort/timeout,
 so a dispatch/exec/key/recover POST is submitted to a pane at most once.
 
+Every endpoint declares the shape it promises (`src/lib/api-schemas.ts`), and
+`request` checks each 2xx body against it before returning: an unrecognized
+payload raises `REMOTE_API_MALFORMED_RESPONSE` instead of being cast to the
+declared return type, which would report an unknown outcome as a completed
+dispatch. The check is a gate rather than a transform — the authority's own
+object is returned, so fields the client does not model still reach `--json`.
+[api-v1.md](api-v1.md) is the contract an authority implements.
+
 ## Local state
 
 Everything lives in sqlite at `~/.hasna/dispatch/dispatch.db` (override with
