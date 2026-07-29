@@ -7,18 +7,33 @@ import { serviceAction, type ServiceAction } from "../daemon/service.js";
 export interface DaemonCommandDeps {
   out: (s: string) => void;
   err: (s: string) => void;
+  /** Optional side-effect seams for deterministic command-level tests. */
+  createStore?: () => Store;
+  getDaemonStatus?: typeof daemonStatus;
+  stopDaemon?: typeof stopDaemon;
+  runDaemon?: typeof runDaemon;
+  startDaemon?: typeof startDaemon;
+  serviceAction?: typeof serviceAction;
+  cliEntry?: () => string | undefined;
+  execPath?: string;
 }
 
 /** Register the `daemon` command group (start | stop | status | run). */
 export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps): void {
   const daemon = program.command("daemon").description("Manage the dispatch daemon (scheduled-dispatch queue)");
 
-  const cliEntry = (): string | undefined => process.argv[1];
+  const createStore = deps.createStore ?? (() => new Store());
+  const getDaemonStatus = deps.getDaemonStatus ?? daemonStatus;
+  const stop = deps.stopDaemon ?? stopDaemon;
+  const run = deps.runDaemon ?? runDaemon;
+  const start = deps.startDaemon ?? startDaemon;
+  const manageService = deps.serviceAction ?? serviceAction;
+  const cliEntry = deps.cliEntry ?? (() => process.argv[1]);
 
   const startCurrentDaemon = async (): Promise<Awaited<ReturnType<typeof startDaemon>> | undefined> => {
     const entry = cliEntry();
     if (!entry) return undefined;
-    return startDaemon({ cliEntry: entry });
+    return start({ cliEntry: entry });
   };
 
   daemon
@@ -31,7 +46,7 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
         process.exitCode = 1;
         return;
       }
-      const res = await startDaemon({ cliEntry: entry });
+      const res = await start({ cliEntry: entry });
       if (res.alreadyRunning) {
         deps.out(`daemon already running (pid ${res.pid})`);
       } else if (res.started) {
@@ -47,22 +62,22 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
     .description("Idempotently ensure the daemon is running; recover stale state")
     .option("--json", "output JSON")
     .action(async (opts) => {
-      const store = new Store();
+      const store = createStore();
       try {
-        const before = daemonStatus(store);
+        const before = getDaemonStatus(store);
         if (before.health === "alive") {
           const result = { ok: true, action: "ensure", started: false, alreadyRunning: true, before, after: before };
           deps.out(opts.json ? JSON.stringify(result, null, 2) : `daemon already healthy (pid ${before.pid})`);
           return;
         }
-        if (before.running || before.stale) await stopDaemon();
+        if (before.running || before.stale) await stop();
         const started = await startCurrentDaemon();
         if (!started) {
           deps.err("cannot determine CLI entry to launch the daemon");
           process.exitCode = 1;
           return;
         }
-        const after = daemonStatus(store);
+        const after = getDaemonStatus(store);
         const result = { ok: after.running, action: "ensure", started: started.started, alreadyRunning: started.alreadyRunning, before, after };
         deps.out(opts.json ? JSON.stringify(result, null, 2) : after.running ? `daemon ensured (pid ${after.pid})` : "daemon ensure failed");
         if (!after.running) process.exitCode = 1;
@@ -76,7 +91,7 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
     .description("Restart the daemon safely")
     .option("--json", "output JSON")
     .action(async (opts) => {
-      const stopped = await stopDaemon();
+      const stopped = await stop();
       const started = await startCurrentDaemon();
       if (!started) {
         deps.err("cannot determine CLI entry to launch the daemon");
@@ -92,7 +107,7 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
     .command("stop")
     .description("Stop the running daemon and wait for it to exit")
     .action(async () => {
-      const res = await stopDaemon();
+      const res = await stop();
       if (res.stopped) {
         deps.out(`daemon stopped (pid ${res.pid})${res.forced ? " [forced]" : ""}`);
       } else if (res.pid && !res.wasRunning) {
@@ -107,9 +122,9 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
     .description("Show daemon + queue status")
     .option("--json", "output JSON")
     .action((opts) => {
-      const store = new Store();
+      const store = createStore();
       try {
-        const st = daemonStatus(store);
+        const st = getDaemonStatus(store);
         if (opts.json) {
           deps.out(JSON.stringify(st, null, 2));
           return;
@@ -141,9 +156,9 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
     .description("Check daemon health and print small actionable diagnostics")
     .option("--json", "output JSON")
     .action((opts) => {
-      const store = new Store();
+      const store = createStore();
       try {
-        const st = daemonStatus(store);
+        const st = getDaemonStatus(store);
         const findings: string[] = [];
         if (st.health === "dead") findings.push("daemon is not running; run `dispatch daemon ensure` or install the user service");
         if (st.health === "stale") findings.push("daemon health is stale; run `dispatch daemon restart`");
@@ -174,8 +189,8 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
         process.exitCode = 1;
         return;
       }
-      const res = serviceAction(action, {
-        execPath: process.execPath,
+      const res = manageService(action, {
+        execPath: deps.execPath ?? process.execPath,
         cliEntry: cliEntry(),
         startAfterInstall: opts.start === true,
       });
@@ -195,6 +210,6 @@ export function registerDaemonCommands(program: Command, deps: DaemonCommandDeps
     .description("Run the daemon in the foreground (used internally by `start`)")
     .option("--interval <ms>", "tick interval", (v) => parseInt(v, 10))
     .action(async (opts) => {
-      await runDaemon({ intervalMs: opts.interval });
+      await run({ intervalMs: opts.interval });
     });
 }
