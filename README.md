@@ -112,7 +112,8 @@ git diff | dispatch send --to work:agent --prompt "review this diff"
 # Type without submitting (leave it in the composer)
 dispatch send --to work:agent --prompt "draft" --no-submit
 
-# Queue to an active Codewith/Claude pane that proves Tab queued-message support
+# Queue to an active Codewith/Claude pane that proves queued-message support
+# (Codewith queues with Tab, Claude Code queues with Enter)
 dispatch send --to open-dispatch:1.1 --prompt "Follow up safely" --queue --dry-run
 
 # Explicit submit key. Tab is accepted only when detection proves queue support.
@@ -173,11 +174,12 @@ bulk send results include detection metadata when available:
 Normal prompt delivery uses `Enter` and refuses active agents unless `--force-active`
 is explicitly passed. `--queue` is the safe active-agent path: when detection proves
 the target supports queued-message behavior, dispatch types the prompt and presses
-`Tab`; otherwise it refuses. Prompt sends wait until the delivered text is visibly
+the agent's queue key (`Tab` for Codewith, `Enter` for Claude Code); otherwise it
+refuses. Prompt sends wait until the delivered text is visibly
 parked in the composer before pressing Enter/Tab; if it never parks within
-`DISPATCH_SETTLE_TIMEOUT_MS`, dispatch refuses the submit key. Queued Tab delivery
+`DISPATCH_SETTLE_TIMEOUT_MS`, dispatch refuses the submit key. Queued delivery
 is single-shot to avoid duplicate queued follow-up inputs; `--retries` applies to
-Enter submission. Detection supports
+idle Enter submission. Detection supports
 direct binaries and compatible `node`/`bun`/`npx`/`bunx`/`pnpm`/`yarn`/`npm exec`
 launchers, but wrapper panes still need live composer UI proof so arbitrary `node`
 output and copied transcripts stay fail-closed.
