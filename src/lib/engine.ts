@@ -1,4 +1,4 @@
-import type { DispatchOptions, DispatchRecord } from "../types.js";
+import type { AgentTargetInfo, DispatchOptions, DispatchRecord } from "../types.js";
 import { Tmux } from "./tmux.js";
 import type { Store } from "./store.js";
 import { computeSubmitDelay } from "./delay.js";
@@ -40,9 +40,19 @@ export interface DispatchDeps {
   sleep?: (ms: number) => Promise<void>;
 }
 
-function resolveSubmitKey(options: DispatchOptions, targetState: string): "Enter" | "Tab" {
+function resolveSubmitKey(
+  options: DispatchOptions,
+  targetState: string,
+  detection?: AgentTargetInfo,
+): "Enter" | "Tab" {
   if (options.submitKey === "Enter" || options.submitKey === "Tab") return options.submitKey;
-  if (options.queue === true && targetState === "active") return "Tab";
+  if (options.queue === true && targetState === "active") {
+    // The queue key is agent-specific: Codewith stages queued messages with
+    // Tab, Claude Code queues with plain Enter. Detection carries the proven
+    // key; fall back to Tab so unproven targets hit the Tab safety gate.
+    if (detection?.canQueuePrompt === true && detection.recommendedSubmitKey) return detection.recommendedSubmitKey;
+    return "Tab";
+  }
   return "Enter";
 }
 
@@ -105,7 +115,17 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
   }
   const targetState = target.activity ?? "unknown";
   const detection = target.detection;
-  const submitKey = resolveSubmitKey(options, targetState);
+  const submitKey = resolveSubmitKey(options, targetState, detection);
+  // A queued delivery: explicitly requested, the active target proved it can
+  // queue, and the resolved submit key IS the proven queue key. Lets
+  // Enter-queueing agents (Claude Code) through the idle-only Enter gates
+  // below, exactly as Tab does for Codewith — but an explicit --submit-key
+  // that differs from the proven queue key never rides this exemption.
+  const queuedDelivery =
+    options.queue === true &&
+    targetState === "active" &&
+    detection?.canQueuePrompt === true &&
+    submitKey === detection.recommendedSubmitKey;
   let captureBefore = target.visible && options.captureBeforeLines
     ? await performCapture({ target: options.target, lines: options.captureBeforeLines }, { tmux })
     : undefined;
@@ -115,7 +135,10 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
   const before = tmux.capturePane(options.target, { start: 50 });
   record = { ...record, targetState, detection, captureBefore };
 
-  if (submitKey === "Tab" && detection?.canQueuePrompt !== true) {
+  // Tab submits only where Tab is the proven queue key: an agent may prove
+  // queueing generally (Claude Code queues with Enter) while Tab remains a
+  // destructive key in its composer.
+  if (submitKey === "Tab" && !(detection?.canQueuePrompt === true && detection.recommendedSubmitKey === "Tab")) {
     return finish({
       status: "skipped",
       detail: `target does not prove queued Tab prompt support (${detection?.reason ?? "no detection available"})`,
@@ -126,7 +149,13 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
     });
   }
 
-  if (submitEnabled && submitKey === "Enter" && detection?.canReceivePrompt !== true && options.forceActive !== true) {
+  if (
+    submitEnabled &&
+    submitKey === "Enter" &&
+    detection?.canReceivePrompt !== true &&
+    !queuedDelivery &&
+    options.forceActive !== true
+  ) {
     return finish({
       status: "skipped",
       detail: `target cannot receive an Enter prompt safely (${detection?.reason ?? "no detection available"}); pass --queue for supported active agents or --force-active to override`,
@@ -148,7 +177,7 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
     });
   }
 
-  if (options.ifIdle && targetState !== "idle" && submitKey !== "Tab" && options.forceActive !== true) {
+  if (options.ifIdle && targetState !== "idle" && submitKey !== "Tab" && !queuedDelivery && options.forceActive !== true) {
     return finish({
       status: "skipped",
       detail: `target is ${targetState}; refusing because --if-idle was requested (pass --queue to let the agent queue it, or --force-active to override)`,
@@ -255,7 +284,9 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
 
   const submitResult = await submit(tmux, options.target, {
     delayMs,
-    maxRetries: submitKey === "Tab" ? 0 : options.maxSubmitRetries,
+    // Queued deliveries are single-shot: retrying the queue key against a
+    // busy agent risks double-queueing the same prompt.
+    maxRetries: submitKey === "Tab" || queuedDelivery ? 0 : options.maxSubmitRetries,
     submitKey,
     isPromptParked,
     isSubmitted: probe,

@@ -33,7 +33,18 @@ const DIRECT_AGENT_KINDS: Record<string, AgentKind> = {
   opencode: "opencode",
 };
 
-const QUEUE_CAPABLE_AGENTS = new Set<AgentKind>(["codewith", "claude"]);
+/**
+ * Key that queues a prompt typed into an ACTIVE composer, per agent family.
+ * Codewith stages queued messages with Tab; Claude Code queues a message
+ * submitted with plain Enter while the agent is working. Agents without an
+ * entry cannot queue. Tab is never advertised to Claude Code panes — there it
+ * triggers completion, not submission.
+ */
+const AGENT_QUEUE_SUBMIT_KEYS: Partial<Record<AgentKind, SubmitKey>> = {
+  codewith: "Tab",
+  claude: "Enter",
+};
+
 
 const DEFAULT_ALLOW_PREFIXES = [
   "mailery status",
@@ -345,6 +356,36 @@ function hasWrappedAgentLiveUi(text: string, processTree?: string): boolean {
   return hasGoalActivity && (hasComposer || hasModelStatus);
 }
 
+/**
+ * Live-UI proof for Claude Code panes launched through runtime wrappers
+ * (e.g. `accounts launch … --tool claude` spawning `claude` under `node`).
+ * The steady-state Claude Code TUI renders no name banner, so recognition
+ * rests on its composer glyph plus the chrome it always draws: the
+ * permission-mode footer (`⏵⏵ bypass permissions on`, `⏵ accept edits on`,
+ * `plan mode on`, or the default `? for shortcuts` hint) or the
+ * account/model status lines. `esc to interrupt` marks a working agent whose
+ * composer still accepts queued input. A bare composer glyph with none of
+ * this chrome stays refused — copied transcripts must not become targets.
+ */
+function hasWrappedClaudeComposer(text: string, processTree?: string): boolean {
+  if (detectAgentKindFromProcessTree(processTree) !== "claude") return false;
+  const normalized = text
+    .split("\n")
+    .map(stripTuiLineChrome)
+    .map((line) => line.replace(/[ \t\u00a0]+/g, " ").trim())
+    .join("\n");
+  const hasComposer = /^[›❯>](?:\s|$)/m.test(normalized);
+  const hasBusySignal = /\besc to interrupt\b/i.test(normalized);
+  const hasModeFooter =
+    /[⏵⏸]{1,2} ?(?:bypass permissions|accept edits) on\b/i.test(normalized) ||
+    /\bplan mode on\b/i.test(normalized) ||
+    /\? for shortcuts\b/i.test(normalized);
+  const hasStatusLine =
+    /^account[\w-]+ · \S+/im.test(normalized) ||
+    /^(?:opus|sonnet|haiku|claude)[\w .()+-]* · [^\n]*% left\b/im.test(normalized);
+  return (hasComposer || hasBusySignal) && (hasModeFooter || hasStatusLine);
+}
+
 function hasWrappedCodexComposer(text: string, processTree?: string): boolean {
   if (detectAgentKindFromProcessTree(processTree) !== "codex") return false;
   const normalized = text
@@ -388,7 +429,8 @@ export function detectAgentActivity(text: string): AgentActivityState {
 function submitKeysFor(agentKind: AgentKind): SubmitKey[] {
   if (agentKind === "unknown") return [];
   const keys: SubmitKey[] = ["Enter"];
-  if (QUEUE_CAPABLE_AGENTS.has(agentKind)) keys.push("Tab");
+  const queueKey = AGENT_QUEUE_SUBMIT_KEYS[agentKind];
+  if (queueKey && !keys.includes(queueKey)) keys.push(queueKey);
   return keys;
 }
 
@@ -405,6 +447,7 @@ function liveUiProofForKind(kind: AgentKind, text: string, processTree?: string)
     return true;
   }
   if (kind === "codex" && hasWrappedCodexComposer(text, processTree)) return true;
+  if (kind === "claude" && hasWrappedClaudeComposer(text, processTree)) return true;
   return false;
 }
 
@@ -468,13 +511,14 @@ export function detectAgentTargetFromSignals(input: {
   const composerState = detectAgentActivity(visible) as ComposerState;
   const submitKeys = submitKeysFor(agentKind);
   const canReceivePrompt = composerState === "idle";
-  const canQueuePrompt = composerState === "active" && QUEUE_CAPABLE_AGENTS.has(agentKind);
-  const recommendedSubmitKey = canReceivePrompt ? "Enter" : canQueuePrompt ? "Tab" : undefined;
+  const queueKey = AGENT_QUEUE_SUBMIT_KEYS[agentKind];
+  const canQueuePrompt = composerState === "active" && queueKey !== undefined;
+  const recommendedSubmitKey = canReceivePrompt ? "Enter" : canQueuePrompt ? queueKey : undefined;
   const stateReason =
     composerState === "idle"
       ? "idle composer can receive Enter prompt delivery"
       : canQueuePrompt
-        ? "active composer supports queued Tab prompt delivery"
+        ? `active composer supports queued ${queueKey} prompt delivery`
         : composerState === "active"
           ? "active composer does not prove queued prompt support"
           : "composer state is unknown";

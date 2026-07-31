@@ -623,6 +623,80 @@ describe("performDispatch", () => {
     expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("Enter"))).toBe(false);
   });
 
+  test("queues active wrapped Claude Code seats with Enter when queue is explicitly requested", async () => {
+    const activeClaudeCapture = `
+✶ Wandering… (12m 2s · ↓ 29.6k tokens)
+
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on · 2 monitors · esc to interrupt · ← for agents
+`;
+    const claudeSeatProcessTree = `
+1234272    8038 Ss   /bin/bash -l
+1301071 1234272 Sl+   \\_ node /home/hasna/.local/bin/accounts launch account005 --tool claude --permissions dangerous
+1302384 1301071 Sl+       \\_ claude --dangerously-skip-permissions
+`;
+    const r = composerRunner(
+      "node",
+      activeClaudeCapture,
+      "✶ Wandering… (esc to interrupt)\nQueued: Queue this directive",
+      claudeSeatProcessTree,
+    );
+
+    const rec = await performDispatch(
+      { target: "hq:staff", prompt: "Queue this directive", queue: true, submitDelayMs: 0 },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("delivered");
+    expect(rec.targetState).toBe("active");
+    expect(rec.confirm?.queued).toBe(true);
+    expect(rec.detection).toMatchObject({ agentKind: "claude", canQueuePrompt: true, recommendedSubmitKey: "Enter" });
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("-l"))).toBe(true);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("Enter"))).toBe(true);
+    expect(r.argvs().some((a) => a[1] === "send-keys" && a.includes("Tab"))).toBe(false);
+  });
+
+  test("refuses --queue --submit-key Tab against active Claude Code seats", async () => {
+    const activeClaudeCapture = `
+✶ Wandering… (12m 2s · ↓ 29.6k tokens)
+
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on · 2 monitors · esc to interrupt · ← for agents
+`;
+    const claudeSeatProcessTree = `
+1234272    8038 Ss   /bin/bash -l
+1301071 1234272 Sl+   \\_ node /home/hasna/.local/bin/accounts launch account005 --tool claude --permissions dangerous
+1302384 1301071 Sl+       \\_ claude --dangerously-skip-permissions
+`;
+    const r = composerRunner("node", activeClaudeCapture, "✶ Wandering… (esc to interrupt)", claudeSeatProcessTree);
+
+    const rec = await performDispatch(
+      { target: "hq:staff", prompt: "Queue this", queue: true, submitKey: "Tab", submitDelayMs: 0 },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("skipped");
+    expect(rec.detail).toMatch(/does not prove queued Tab prompt support/);
+    expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
+  });
+
+  test("refuses --queue --submit-key Enter against active Codewith panes", async () => {
+    const r = composerRunner("node", activeCodewithCapture, "✶ Working… (esc to interrupt)", codewithProcessTree);
+
+    const rec = await performDispatch(
+      { target: "open-sessions:2.1", prompt: "Queue this", queue: true, submitKey: "Enter", submitDelayMs: 0 },
+      { tmux: new Tmux(r), sleep: noSleep },
+    );
+
+    expect(rec.status).toBe("skipped");
+    expect(rec.detail).toMatch(/cannot receive an Enter prompt safely/);
+    expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
+  });
+
   test("reports Codewith auth-switch queued stalls as action-needed instead of delivered", async () => {
     const r = composerRunner(
       "node",

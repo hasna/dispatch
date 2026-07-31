@@ -185,6 +185,38 @@ describe("agent triage and recovery", () => {
     expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
   });
 
+  test("recover plans queued Enter recovery for active Claude Code seats, never Tab", async () => {
+    const activeClaudeCapture = `
+✶ Wandering… (12m 2s · ↓ 29.6k tokens)
+
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on · 2 monitors · esc to interrupt · ← for agents
+`;
+    const claudeSeatProcessTree = `
+1234272    8038 Ss   /bin/bash -l
+1301071 1234272 Sl+   \\_ node /home/hasna/.local/bin/accounts launch account005 --tool claude --permissions dangerous
+1302384 1301071 Sl+       \\_ claude --dangerously-skip-permissions
+`;
+    const r = recoveryRunner(activeClaudeCapture, claudeSeatProcessTree);
+
+    const result = await performAgentRecovery(
+      { target: "hq:staff", prompt: "Please post a one-line status.", lines: 20 },
+      { tmux: new Tmux(r) },
+    );
+
+    expect(result).toMatchObject({
+      status: "planned",
+      dryRun: true,
+      // Claude Code queues with plain Enter; Tab is completion there, so a Tab
+      // recovery would corrupt the composer instead of queueing the prompt.
+      action: { kind: "queue", submitKey: "Enter", safeToApply: true },
+      triage: { detection: { agentKind: "claude", composerState: "active", canQueuePrompt: true } },
+    });
+    expect(r.argvs().some((a) => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
+  });
+
   test("recover refuses arbitrary node panes even with copied agent-looking text", async () => {
     const r = recoveryRunner(
       `${idleCodewithCapture}\nnode server.js\nListening\n`,

@@ -404,6 +404,114 @@ Goal active Objective: Copied from a real Codewith pane
     });
   });
 
+  // Measured on station01 (2026-07-31): the hq seats run Claude Code behind
+  // `accounts launch`, so the pane command is bare `node` and the agent proof
+  // is the `claude` child process plus the live TUI footer/composer chrome.
+  const claudeSeatProcessTree = `
+1234272    8038 Ss   /bin/bash -l
+1301071 1234272 Sl+   \\_ node /home/hasna/.local/bin/accounts launch account005 --tool claude --permissions dangerous
+1302384 1301071 Sl+       \\_ claude --dangerously-skip-permissions
+`;
+
+  const idleClaudeSeatCapture = `
+  The previous turn's summary text is still visible in the transcript above
+  the composer, exactly as a live seat renders it.
+
+✻ Churned for 1m 43s · 2 monitors still running
+
+────────────────────────────────────────────────────────────────────────────────
+❯ run the follow-through check now
+────────────────────────────────────────────────────────────────────────────────
+  account006 · wks_c0ffee1234567890abcdef1
+  opus 5 (1m context) (medium) · 7% left · $12.34
+  ⏵⏵ bypass permissions on · 2 monitors · ← for agents
+`;
+
+  const activeClaudeSeatCapture = `
+✶ Wandering… (12m 2s · ↓ 29.6k tokens)
+  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work
+
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for agents
+`;
+
+  test("recognizes wrapped idle Claude Code seats launched through the accounts wrapper", () => {
+    expect(
+      looksLikeWrappedAgentComposer(idleClaudeSeatCapture, { processTree: claudeSeatProcessTree }),
+    ).toBe(true);
+    expect(
+      detectAgentTargetFromSignals({
+        paneCommand: "node",
+        visible: idleClaudeSeatCapture,
+        processTree: claudeSeatProcessTree,
+        cwd: "/home/hasna/.hasna/projects/workspaces/wks_c0ffee1234567890abcdef1",
+      }),
+    ).toMatchObject({
+      targetKind: "agent",
+      agentKind: "claude",
+      composerState: "idle",
+      canReceivePrompt: true,
+      canQueuePrompt: false,
+      submitKeys: ["Enter"],
+      recommendedSubmitKey: "Enter",
+    });
+  });
+
+  test("recognizes busy wrapped Claude Code seats and offers Enter queueing", () => {
+    expect(
+      detectAgentTargetFromSignals({
+        paneCommand: "node",
+        visible: activeClaudeSeatCapture,
+        processTree: claudeSeatProcessTree,
+        cwd: "/home/hasna/.hasna/projects/workspaces/wks_c0ffee1234567890abcdef1",
+      }),
+    ).toMatchObject({
+      targetKind: "agent",
+      agentKind: "claude",
+      composerState: "active",
+      canReceivePrompt: false,
+      canQueuePrompt: true,
+      submitKeys: ["Enter"],
+      recommendedSubmitKey: "Enter",
+    });
+  });
+
+  test("recognizes the Claude Code composer glyph followed by a non-breaking space", () => {
+    const capture = `
+❯${"\u00a0"}deliver the directive to the seat
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on · 2 monitors · ← for agents
+`;
+    expect(
+      detectAgentTargetFromSignals({
+        paneCommand: "node",
+        visible: capture,
+        processTree: claudeSeatProcessTree,
+      }),
+    ).toMatchObject({ targetKind: "agent", agentKind: "claude", composerState: "idle", canReceivePrompt: true });
+  });
+
+  test("refuses Claude Code seat content without Claude process evidence", () => {
+    for (const processTree of [
+      "1234 1 Ss /usr/bin/bash\n1240 1234 Sl+ node /srv/transcript-viewer.js\n",
+      // The accounts launcher alone (no claude child) is not agent evidence:
+      // the pane could be mid-launch or showing a copied transcript.
+      "1234 1 Ss /bin/bash -l\n1240 1234 Sl+  \\_ node /home/hasna/.local/bin/accounts launch account005 --tool claude --permissions dangerous\n",
+    ]) {
+      expect(
+        detectAgentTargetFromSignals({
+          paneCommand: "node",
+          visible: idleClaudeSeatCapture,
+          processTree,
+        }),
+        processTree,
+      ).toMatchObject({ targetKind: "unknown", agentKind: "unknown", canReceivePrompt: false });
+      expect(looksLikeWrappedAgentComposer(idleClaudeSeatCapture, { processTree })).toBe(false);
+    }
+  });
+
   test("detects direct Claude Code and OpenCode panes", () => {
     const claude = detectAgentTargetFromSignals({
       paneCommand: "claude",
@@ -420,7 +528,10 @@ Goal active Objective: Copied from a real Codewith pane
       agentKind: "claude",
       composerState: "idle",
       canReceivePrompt: true,
-      submitKeys: ["Enter", "Tab"],
+      // Claude Code submits and queues with Enter only; Tab is completion, not
+      // a submit key, so advertising it would let `dispatch key Tab` corrupt
+      // the composer.
+      submitKeys: ["Enter"],
       recommendedSubmitKey: "Enter",
     });
 
