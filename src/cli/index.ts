@@ -140,12 +140,12 @@ export function buildProgram(deps: CliDeps = {}): Command {
   const program = new Command();
   program
     .name("dispatch")
-    .description("Dispatch prompts to coding agents running in tmux windows — reliably")
+    .description("Dispatch prompts to coding agents through tmux or Open Mosaic — reliably")
     .version(getPackageVersion());
 
   program
     .command("send")
-    .description("Dispatch a prompt to a tmux target and auto-submit it")
+    .description("Dispatch a prompt to an agent target and auto-submit it")
     .option("-t, --to <target>", "tmux target, e.g. session:window or session:window.pane. Comma-separate for bulk.")
     .option("-p, --prompt <text>", "prompt text (or use --file / stdin)")
     .option("-f, --file <path>", "read the prompt from a file")
@@ -259,7 +259,7 @@ export function buildProgram(deps: CliDeps = {}): Command {
 
   program
     .command("capture")
-    .description("Capture a bounded, redacted tmux pane transcript, optionally with an AI transform")
+    .description("Capture a bounded, redacted target transcript, optionally with an AI transform")
     .requiredOption("-t, --to <target>", "tmux target, e.g. session:window or session:window.pane")
     .option("-n, --lines <n>", "recent line count to capture (default 200, max 2000)", (v) => parseInt(v, 10))
     .option("-m, --machine <id>", "target machine (via @hasna/machines); local when omitted")

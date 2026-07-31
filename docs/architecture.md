@@ -27,20 +27,23 @@
 
 ## Surfaces
 
-- **SDK** — `DispatchClient` (`send`, `status`, `list`, `schedule`, `loop`,
-  `scheduleStatus`, `listSchedules`, `listLoops`, `pauseSchedule`, `resumeSchedule`,
-  `cancelSchedule`, `clearSchedule`). The programmatic core; the other surfaces wrap it.
+- **SDK** — `DispatchClient` exposes delivery (`send`, `bulkSend`, `exec`, `key`),
+  observation/recovery (`capture`, `triage`, `recover`, `fleetSummary`), record
+  reads (`status`, `list`), and the complete schedule lifecycle (`schedule`,
+  `loop`, `scheduleStatus`, `listSchedules`, `listLoops`, `pauseSchedule`,
+  `resumeSchedule`, `cancelSchedule`, `clearSchedule`). See [sdk-mcp.md](sdk-mcp.md).
 - **CLI** — `commander` commands; thin adapters over the client. Read/list commands
   use compact defaults with bounded previews and explicit `show`/`--verbose`/`--json`
   detail paths. They are unit-tested with an injected in-memory client; `send` is
-  integration-tested.
+  integration-tested. See [cli.md](cli.md).
 - **MCP** — every verb defined once in `mcp/tools.ts` (zod schema + handler) and
   registered on `McpServer`. A parity test keeps the MCP and CLI verb sets identical;
   read/list tools return compact wrapper summaries unless `verbose: true` is requested.
 - **Daemon** — a long-running loop (`daemon/loop.ts`) that runs the scheduler `tick()` on
   an interval, owns the scheduled-dispatch queue, and tracks deliveries. Single-instance
   via an atomic pidfile claim; schedules live in sqlite so they survive restarts. A small
-  heartbeat file records start time, last tick, and tick errors for health checks.
+  heartbeat file records start time, last tick, and tick errors for health checks. See
+  [scheduling.md](scheduling.md) for cadence, retries, lifecycle, and service ownership.
 
 ## The Runner abstraction
 
@@ -92,6 +95,8 @@ Everything lives in sqlite at `~/.hasna/dispatch/dispatch.db` (override with
   (`last_failure_at`, `last_failure_reason`, `failure_count`).
 - `daemon.pid`, `daemon.state.json`, `daemon.log` — process ownership, heartbeat,
   and append-only daemon logs in `DISPATCH_DATA_DIR`.
+- `artifacts/` — bounded, redacted recovery captures; requested artifact paths
+  cannot escape this directory.
 
 ## Daemon health
 

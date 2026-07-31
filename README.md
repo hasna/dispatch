@@ -45,16 +45,16 @@ bun install -g @hasna/dispatch
 ## CLI
 
 ```text
-dispatch send       Dispatch a prompt to a tmux target and auto-submit it
+dispatch send       Dispatch a prompt to an agent target and auto-submit it
 dispatch exec       Dispatch a filtered shell command to a shell tmux target
 dispatch key        Send an allowlisted special key to an agent composer
-dispatch capture    Capture a bounded, redacted pane transcript
+dispatch capture    Capture a bounded, redacted target transcript
 dispatch triage     Classify an agent target and return bounded recovery context
 dispatch recover    Plan or apply a guarded recovery prompt
 dispatch status     Show a recorded dispatch, schedule, or loop by id
 dispatch show       Show expanded details for a dispatch, schedule, or loop
 dispatch list       List recorded dispatches (newest first)
-dispatch targets    List dispatchable tmux targets (panes) on a machine
+dispatch targets    List dispatchable tmux or Mosaic targets on a machine
 dispatch fleet summary  Summarize bounded fleet and pane state
 dispatch schedule   Queue a dispatch to fire later (--at, --in, --cron, or --every)
 dispatch loop       Create a recurring interval loop (--every)
@@ -64,9 +64,14 @@ dispatch pause      Pause a schedule/loop
 dispatch resume     Resume a paused schedule/loop
 dispatch clear      Delete a schedule/loop
 dispatch cancel     Cancel a scheduled dispatch
-dispatch daemon     start | ensure | restart | status | doctor | service | stop
-dispatch self-heal  diagnose
+dispatch daemon     start | ensure | restart | stop | status | doctor | service
+dispatch self-heal diagnose  Classify a failure and recommend a safe next action
 ```
+
+`dispatch daemon run` is the foreground daemon entry used by process supervisors and
+`dispatch daemon start`; normal interactive use should prefer `ensure`, `status`, or
+the `service` actions. Run `dispatch <command> --help` for the authoritative option
+list. See [docs/cli.md](docs/cli.md) for the complete command reference.
 
 ### Output defaults
 
@@ -91,7 +96,7 @@ dispatch list --limit 50 --json # full stored JSON objects for selected rows
 ```
 
 Compact rows include ids, status, target, timing, and short prompt previews. Use
-`show`/`inspect` or `--verbose` for a bounded detail view, and `--json` when you
+`show` or `--verbose` for a bounded detail view, and `--json` when you
 really need the full stored object for selected rows. Existing JSON output remains
 the machine-readable path and may include full prompt text by design.
 When more rows exist beyond the current limit, human output says `more available`;
@@ -466,7 +471,7 @@ waits until its next interval.
 
 Failure behavior is deliberately conservative:
 
-- one-shot schedules retry transient failures every 60s and give up after the retry
+- one-shot schedules retry failures every 60s and give up after the one-hour retry
   window, then become `failed`;
 - cron schedules and interval loops stay `scheduled` and retry at their next cadence;
 - each failed attempt records `lastFailureAt`, `lastFailureReason`, and `failureCount`;
@@ -646,11 +651,18 @@ URL/key variables are present.
 | Variable | Purpose |
 |---|---|
 | `DISPATCH_DATA_DIR` | State dir (default `~/.hasna/dispatch`) |
+| `DISPATCH_BACKEND` | Default backend: `tmux` (default) or `mosaic` |
+| `DISPATCH_MOSAIC_BIN` | Mosaic executable name/path (default `mosaic`) |
+| `DISPATCH_REMOTE_TIMEOUT_MS` | Timeout for each resolved remote machine command (default 30000ms) |
 | `DISPATCH_MIN_DELAY_MS` / `DISPATCH_MAX_DELAY_MS` | Clamp for the auto delay |
 | `DISPATCH_MS_PER_WORD` / `DISPATCH_MS_PER_CHAR` | Auto-delay coefficients |
 | `DISPATCH_SETTLE_TIMEOUT_MS` | Prompt-parked settle budget before the first submit key; default 2000ms |
 | `DISPATCH_SUBMIT_TIMEOUT_MS` / `DISPATCH_SUBMIT_RETRY_INTERVAL_MS` | Submit confirmation/retry budget; defaults 10000ms / 2000ms |
 | `DISPATCH_DAEMON_INTERVAL_MS` | Daemon tick interval |
+| `DISPATCH_AI_PROVIDER` | Capture/fleet AI provider: `groq`, `cerebras`, `openai`, or `none` |
+| `DISPATCH_AI_MODEL` / `DISPATCH_AI_BASE_URL` / `DISPATCH_AI_API_KEY` | Provider-independent AI model, endpoint, and credential overrides |
+| `GROQ_API_KEY` / `CEREBRAS_API_KEY` / `OPENAI_API_KEY` | Provider credentials used when `DISPATCH_AI_API_KEY` is unset |
+| `GROQ_MODEL` / `CEREBRAS_MODEL` / `OPENAI_MODEL` | Provider-specific model overrides |
 | `HASNA_DISPATCH_STORAGE_MODE` / `DISPATCH_STORAGE_MODE` | `local` or API-backed mode (`api`, `self_hosted`, `remote`, `cloud`, `hybrid`) |
 | `HASNA_DISPATCH_API_URL` / `DISPATCH_API_URL` | API authority root or `/v1` URL for API mode |
 | `HASNA_DISPATCH_API_KEY` / `DISPATCH_API_KEY` | Bearer/API key for API mode; value is never printed |
@@ -664,8 +676,12 @@ bun run typecheck
 bun run build
 ```
 
-See [AGENTS.md](AGENTS.md) for repo conventions and [docs/](docs/) for architecture,
-reliability, self-healing, cross-machine, and `/v1` API contract details.
+See [AGENTS.md](AGENTS.md) for repo conventions and the [documentation
+index](docs/README.md) for the complete reference: [CLI](docs/cli.md), [SDK and
+MCP](docs/sdk-mcp.md), [scheduling and daemon](docs/scheduling.md),
+[architecture](docs/architecture.md), [reliability](docs/reliability.md),
+[self-healing](docs/self-healing.md), [cross-machine routing](docs/cross-machine.md),
+and the [`/v1` API contract](docs/api-v1.md).
 
 ## License
 
