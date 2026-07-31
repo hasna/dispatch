@@ -116,11 +116,16 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
   const targetState = target.activity ?? "unknown";
   const detection = target.detection;
   const submitKey = resolveSubmitKey(options, targetState, detection);
-  // A queued delivery: explicitly requested, and the active target proved it
-  // can queue with the resolved key. Lets Enter-queueing agents (Claude Code)
-  // through the idle-only Enter gates below, exactly as Tab does for Codewith.
+  // A queued delivery: explicitly requested, the active target proved it can
+  // queue, and the resolved submit key IS the proven queue key. Lets
+  // Enter-queueing agents (Claude Code) through the idle-only Enter gates
+  // below, exactly as Tab does for Codewith — but an explicit --submit-key
+  // that differs from the proven queue key never rides this exemption.
   const queuedDelivery =
-    options.queue === true && targetState === "active" && detection?.canQueuePrompt === true;
+    options.queue === true &&
+    targetState === "active" &&
+    detection?.canQueuePrompt === true &&
+    submitKey === detection.recommendedSubmitKey;
   let captureBefore = target.visible && options.captureBeforeLines
     ? await performCapture({ target: options.target, lines: options.captureBeforeLines }, { tmux })
     : undefined;
@@ -130,7 +135,10 @@ export async function performDispatch(options: DispatchOptions, deps: DispatchDe
   const before = tmux.capturePane(options.target, { start: 50 });
   record = { ...record, targetState, detection, captureBefore };
 
-  if (submitKey === "Tab" && detection?.canQueuePrompt !== true) {
+  // Tab submits only where Tab is the proven queue key: an agent may prove
+  // queueing generally (Claude Code queues with Enter) while Tab remains a
+  // destructive key in its composer.
+  if (submitKey === "Tab" && !(detection?.canQueuePrompt === true && detection.recommendedSubmitKey === "Tab")) {
     return finish({
       status: "skipped",
       detail: `target does not prove queued Tab prompt support (${detection?.reason ?? "no detection available"})`,

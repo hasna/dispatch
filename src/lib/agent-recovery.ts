@@ -133,18 +133,21 @@ export function recommendRecoveryAction(
     };
   }
   if (opts.queue !== false && detection.canQueuePrompt) {
+    // The queue key is agent-specific (Tab for Codewith, Enter for Claude
+    // Code); detection carries the proven key for this target.
+    const queueKey = detection.recommendedSubmitKey ?? "Tab";
     return {
       kind: "queue",
-      submitKey: "Tab",
+      submitKey: queueKey,
       safeToApply: true,
-      reason: "active agent composer advertises queued Tab prompt support",
+      reason: `active agent composer advertises queued ${queueKey} prompt support`,
     };
   }
   return {
     kind: "refuse",
     safeToApply: false,
     reason: detection.canQueuePrompt
-      ? "target is active; pass queue=true to allow queued Tab recovery"
+      ? "target is active; pass queue=true to allow queued prompt recovery"
       : detection.reason,
   };
 }

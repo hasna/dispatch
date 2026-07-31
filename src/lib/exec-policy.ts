@@ -45,10 +45,6 @@ const AGENT_QUEUE_SUBMIT_KEYS: Partial<Record<AgentKind, SubmitKey>> = {
   claude: "Enter",
 };
 
-/** The submit key that queues a prompt on an active composer, if the agent supports queueing. */
-export function queueSubmitKeyFor(agentKind: AgentKind): SubmitKey | undefined {
-  return AGENT_QUEUE_SUBMIT_KEYS[agentKind];
-}
 
 const DEFAULT_ALLOW_PREFIXES = [
   "mailery status",
